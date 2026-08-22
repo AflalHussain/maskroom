@@ -53,6 +53,14 @@ DISABLED_ENTITIES = {
     "MEDICAL_LICENSE", "KR_RRN", "TH_TNIN",
 }
 
+# Keep rules: columns whose header says the values are geography or
+# similar aggregation dimensions. Cells below are never analyzed — a
+# "City" column holds no names, and NER misreads unfamiliar town names as
+# people. Checked after COLUMN_RULES (so "City Address" still masks).
+KEEP_COLUMN_RE = re.compile(
+    r"\b(?:city|town|district|province|region|state|country|nationality"
+    r"|village|suburb|division|zone|area)\b", re.I)
+
 # Values that mean "no data" — never worth tokenizing in a rule column.
 NULL_MARKERS = {"", "-", "--", "n/a", "na", "none", "null", "nil"}
 
@@ -73,6 +81,58 @@ NAME_PROPAGATION_STOPWORDS = {
     "secretary", "chairman", "director", "officer", "petitioner",
     "respondent", "appellant", "accused", "complainant",
 }
+
+# Single capitalized words NER sometimes tags as PERSON that are really
+# field labels in a data file ("NIC", "OTP", "Email" as a header fragment).
+LABEL_WORDS = {
+    "nic", "otp", "sms", "email", "e-mail", "address", "phone", "mobile",
+    "name", "surname", "header", "total", "subtotal", "remarks", "notes",
+    "status", "id", "ref", "reference", "amount", "balance", "branch",
+}
+
+# Sri Lankan places (provinces, districts, principal towns, Colombo
+# suburbs). Statistical English NER does not know this geography and
+# labels about half of these as PERSON; a PERSON span made only of these
+# words is relabelled LOCATION, where the location policy applies.
+# Lower-case, single words or exact multi-word names.
+LK_PLACES = {
+    # provinces
+    "western", "central", "southern", "northern", "eastern", "north western",
+    "north central", "uva", "sabaragamuwa",
+    # districts
+    "colombo", "gampaha", "kalutara", "kandy", "matale", "nuwara eliya",
+    "galle", "matara", "hambantota", "jaffna", "kilinochchi", "mannar",
+    "vavuniya", "mullaitivu", "batticaloa", "ampara", "trincomalee",
+    "kurunegala", "puttalam", "anuradhapura", "polonnaruwa", "badulla",
+    "monaragala", "moneragala", "ratnapura", "kegalle",
+    # towns
+    "negombo", "moratuwa", "dehiwala", "mount lavinia", "dehiwala-mount lavinia",
+    "sri jayawardenepura kotte", "kotte", "kaduwela", "maharagama", "kesbewa",
+    "boralesgamuwa", "homagama", "piliyandala", "panadura", "horana",
+    "beruwala", "bentota", "aluthgama", "wadduwa", "ja-ela", "wattala",
+    "kelaniya", "peliyagoda", "minuwangoda", "gampola", "peradeniya",
+    "katugastota", "nawalapitiya", "hatton", "talawakelle", "dambulla",
+    "sigiriya", "ambalangoda", "hikkaduwa", "unawatuna", "weligama", "mirissa",
+    "tangalle", "tissamaharama", "kataragama", "embilipitiya", "balangoda",
+    "pelmadulla", "kuliyapitiya", "chilaw", "wennappuwa", "marawila",
+    "mawanella", "warakapola", "rambukkana", "mahiyanganaya", "bandarawela",
+    "ella", "haputale", "welimada", "diyatalawa", "wellawaya", "bibile",
+    "kalmunai", "akkaraipattu", "sammanthurai", "kattankudy", "eravur",
+    "valaichchenai", "kinniya", "muttur", "point pedro", "chavakachcheri",
+    "nallur", "kopay", "vavuniya", "medawachchiya", "kekirawa", "hingurakgoda",
+    "kantale", "galenbindunuwewa", "nikaweratiya", "galgamuwa", "wariyapola",
+    "pannala", "narammala", "polgahawela", "alawwa", "kegalle", "ruwanwella",
+    "yatiyantota", "deraniyagala", "avissawella", "hanwella", "padukka",
+    "athurugiriya", "malabe", "battaramulla", "rajagiriya", "nugegoda",
+    "kohuwala", "kirulapone", "kollupitiya", "bambalapitiya", "wellawatte",
+    "wellawatta", "havelock town", "cinnamon gardens", "borella", "maradana",
+    "pettah", "fort", "kotahena", "mutwal", "grandpass", "dematagoda",
+    "narahenpita", "thimbirigasyaya", "mattakkuliya", "modara", "ragama",
+    "kadawatha", "kiribathgoda", "ganemulla", "veyangoda", "nittambuwa",
+    "mirigama", "divulapitiya", "katunayake", "seeduwa", "kochchikade",
+    "sri lanka", "ceylon",
+}
+LK_PLACE_TOKEN_RE = re.compile(r"[a-z][a-z-]+")
 
 BIRTH_CONTEXT_RE = re.compile(r"\b(dob|birth|born|birthday)\b", re.IGNORECASE)
 

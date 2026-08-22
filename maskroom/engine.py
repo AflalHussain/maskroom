@@ -3,6 +3,7 @@ tokens and the vault. File formats live in the Excel and PDF mixins."""
 import hashlib
 import json
 import os
+import re
 
 from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
@@ -136,6 +137,29 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
             if (r.entity_type != "PERSON" or plausible_person(text[r.start:r.end]))
             and not (r.entity_type == "NRP" and any(c.isdigit() for c in text[r.start:r.end]))
         ]
+
+        # Statistical NER does not know Sri Lankan geography: about half
+        # of the country's towns come back as PERSON. A "name" made only
+        # of known place names is a place — relabel so the location policy
+        # decides. Lone field-label words ("NIC", "OTP", "Email") are not
+        # names either.
+        def is_place(span):
+            s = span.casefold().strip(" .,;:'\"()")
+            s = re.sub(r"\s*\d+$", "", s)  # "Colombo 03"
+            if s in rules.LK_PLACES:
+                return True
+            words = rules.LK_PLACE_TOKEN_RE.findall(s)
+            return bool(words) and all(w in rules.LK_PLACES for w in words)
+        kept = []
+        for r in results:
+            if r.entity_type == "PERSON":
+                span = text[r.start:r.end]
+                if is_place(span):
+                    r.entity_type = "LOCATION"
+                elif span.strip(" .,;:'\"()").casefold() in rules.LABEL_WORDS:
+                    continue
+            kept.append(r)
+        results = kept
 
         # A "person" whose final word is a role/honorific ("Hon. Attorney")
         # is a title fragment, not a name — drop it.

@@ -83,3 +83,29 @@ def test_location_policy(make_engine, policy, expect_changed):
     e = make_engine(locations=policy)
     _, changed = e.pseudonymize_text("Colombo")
     assert changed is expect_changed
+
+
+def test_lk_towns_are_places_not_people(engine):
+    for value in ("Kandy", "Negombo", "Dehiwala", "Anuradhapura", "Nuwara Eliya",
+                  "Branch: Kandy", "Colombo 03", "Peradeniya"):
+        _, changed = engine.pseudonymize_text(value)
+        assert not changed, value
+        assert all(f["entity"] != "PERSON" for f in engine._last_findings), value
+
+
+def test_lk_town_masked_under_all_policy(make_engine):
+    e = make_engine(locations="all")
+    masked, changed = e.pseudonymize_text("Kandy")
+    assert changed and "TOK_LOCATION_" in masked
+
+
+def test_field_labels_are_not_people(engine):
+    for value in ("NIC", "OTP", "Email", "Address"):
+        _, changed = engine.pseudonymize_text(value)
+        assert not changed, value
+
+
+def test_real_names_still_masked(engine):
+    for value in ("Kandy Perera", "Nimal Galle", "Kumari Bandara"):
+        masked, changed = engine.pseudonymize_text(value)
+        assert changed, value

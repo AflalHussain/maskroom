@@ -85,19 +85,26 @@ and stays untouched in an "Order ID" column — with zero per-dataset configurat
 
 1. **Letter-less NER labels dropped** — `PERSON`/`LOCATION`/`NRP` on text with no letters is
    model noise (the transformer tags bare salary figures as PERSON; observed on real data).
-2. **Role-ending "names" dropped** — a PERSON whose final word is a role/honorific
+2. **Sri Lankan place gazetteer** — `rules.LK_PLACES` (provinces, districts, ~150 towns
+   and Colombo suburbs). `en_core_web_lg` labels roughly half of these as PERSON when they
+   stand alone; a PERSON span consisting only of gazetteer words is relabelled LOCATION so
+   the location policy decides. Multi-word spans with a non-place word (*Kandy Perera*)
+   stay PERSON. Lone field-label words (`rules.LABEL_WORDS`: *NIC*, *OTP*, *Email*…) are
+   dropped. Excel additionally has **keep rules** (`rules.KEEP_COLUMN_RE`): *City /
+   District / Province / Country…* columns are never analyzed.
+3. **Role-ending "names" dropped** — a PERSON whose final word is a role/honorific
    (*Hon. Attorney*) is a title fragment.
-3. **Date policy** — `DATE_TIME` survives only per policy (`birth`/`all`/`none`); digit-only
+4. **Date policy** — `DATE_TIME` survives only per policy (`birth`/`all`/`none`); digit-only
    runs additionally require birth context *and* date-like length, because NER routinely
    labels arbitrary numbers as dates (`1919`, `71829`, six-digit salaries). Dropping the
    date label also lets the correct recognizer (e.g. `FINANCIAL_ACCOUNT`) win the overlap.
-4. **Location policy** — `LOCATION` survives per policy (`address`/`all`/`none`). The
+5. **Location policy** — `LOCATION` survives per policy (`address`/`all`/`none`). The
    default keeps bare place names (a city shared by a million people is an analysis
    dimension, not an identifier) and masks street-level addresses: spans carrying a
    house/box number or street word, or preceded by one (*PO Box 14370 Salem* — NER labels
    only *Salem*). *Address* columns are always masked under `address`. Measured effect:
    LOCATION findings on the public-directory sheet 190 → 74, no other entity affected.
-5. **Token-overlap skip** — spans overlapping an existing `TOK_…` are ignored, which makes
+6. **Token-overlap skip** — spans overlapping an existing `TOK_…` are ignored, which makes
    re-runs idempotent (verified: second pass changes 0 cells).
 
 Filter order matters: each filter removes *labels*, not *text*, so an over-broad DATE match
@@ -351,6 +358,7 @@ Real-data testing drove most of the design. The incidents worth remembering:
 | Presidio compiles patterns IGNORECASE → caps-name heuristic matched "Name, NIC" | `global_regex_flags` without IGNORECASE; header cells skipped |
 | Same value numeric in one sheet, text in another → restore typed both as numbers | per-cell numeric record in the vault |
 | `Salem` ×81 / `Colombo` masked in a directory — the analysis dimension destroyed | location policy: addresses by default, bare place names kept |
+| `Kandy`, `Negombo`, `Dehiwala` pseudonymized as *people* — NER doesn't know Sri Lankan geography | LK place gazetteer relabels to LOCATION; geography keep-columns |
 
 The meta-lesson: every one of these was invisible on synthetic data and obvious on the first
 real document of its kind. Keep the real-document corpus in CI (recommendation #8).

@@ -98,6 +98,9 @@ Every piece of text passes through one shared analysis path (`analyze_text`):
    (*department name, company name, sheet name…*) are excluded, "no data" markers (`-`,
    `N/A`) are skipped, and data cells can never trigger a rule. Disable with
    `--no-column-rules`. Header rows themselves are never analyzed (labels, not data).
+   **Keep rules** go the other way: columns headed *City / Town / District / Province /
+   Region / Country / Nationality…* are never analyzed at all — they hold aggregation
+   dimensions, not people.
    **Stacked tables** on one sheet are segmented automatically (a header-like row after a
    blank row starts a new table with its own rules); transposed layouts fall back to
    per-cell detection.
@@ -109,7 +112,12 @@ Every piece of text passes through one shared analysis path (`analyze_text`):
 5. **Context enhancement** — for spreadsheets, words from each column's header rows are fed to
    Presidio's context enhancer, so a bare phone number in a *"Fixed Line"* column scores as it
    would inside a sentence. This is what makes structured-data detection work.
-6. **False-positive filters** — NER name/place labels on letter-less text are dropped (a salary
+6. **Sri Lankan place gazetteer** — English NER does not know the country's geography and
+   labels about half of its towns as people (*Kandy*, *Negombo*, *Dehiwala*, *Badulla*…).
+   A "name" made only of known provinces, districts, towns or Colombo suburbs is relabelled
+   a location, where the location policy applies (kept by default). *Kandy Perera* is
+   still a person. Lone field-label words (*NIC*, *OTP*, *Email*) are never names.
+7. **False-positive filters** — NER name/place labels on letter-less text are dropped (a salary
    is not a PERSON); PERSON/NRP spans containing digits (`EMP-100`, `WP CAB-1234`) and lone
    ≤3-letter tokens (`Max`, `Pro`) are dropped; "names" ending in a role word
    (*Hon. Attorney*) are dropped; the date policy (below) governs `DATE_TIME`; spans

@@ -144,6 +144,11 @@ class ExcelMixin:
                             break
                         seg_rules[cell.column] = (entity, "column-rule")
                         break
+            # keep rules: geography columns are never analyzed
+            for cell in ws[h]:
+                if (cell.column not in seg_rules and self._is_headerish(cell.value)
+                        and rules.KEEP_COLUMN_RE.search(cell.value)):
+                    seg_rules[cell.column] = ("KEEP", "column-keep")
             for col, r in self._profile_columns(ws, set(seg_rules), h, end).items():
                 seg_rules[col] = (r[0], "value-profile")
             segments.append({"header": h, "end": end, "rules": seg_rules,
@@ -184,6 +189,8 @@ class ExcelMixin:
                     # Column rule: mask the whole column below its header —
                     # any value type, no detection needed.
                     rule = sg["rules"].get(cell.column) if in_seg else None
+                    if rule and rule[0] == "KEEP":
+                        continue
                     if rule and value is not None:
                         rule_text = (str(int(value)) if numeric and float(value).is_integer()
                                      else str(value)).strip()
