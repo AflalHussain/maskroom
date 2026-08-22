@@ -24,9 +24,26 @@ A pseudonymization and redaction engine for Excel workbooks and PDF documents, b
 8. [Test corpus](#test-corpus)
 9. [Known limitations](#known-limitations)
 
-Further reading: [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) (architecture, security,
-performance), [`TECHNOLOGIES.md`](TECHNOLOGIES.md) (techniques explained), and
-[`ROADMAP.md`](ROADMAP.md) (evaluated next steps with pros/cons).
+Further reading: [`docs/TECHNICAL_DESIGN.md`](docs/TECHNICAL_DESIGN.md) (architecture,
+security, performance), [`docs/TECHNOLOGIES.md`](docs/TECHNOLOGIES.md) (techniques explained),
+and [`ROADMAP.md`](ROADMAP.md) (evaluated next steps with pros/cons).
+
+## Project layout
+
+```
+maskroom/            the engine, installed as a package (`pip install -e .`)
+  rules.py           detection policy: column rules, value-profile patterns, validators, entity lists
+  recognizers.py     custom Presidio recognizers (financial, names, Sri Lankan identifiers)
+  engine.py          FinancialPrivacyEngine: analyzer setup, text detection filters, tokens, vault
+  excel.py           Excel pipeline: header/segment detection, column rules, mask & restore
+  pdf.py             PDF pipeline: OCR, two-pass detection, spatial redaction
+  cli.py             the `maskroom` command
+webui/               Flask UI (app.py, static/index.html); uploads land in webui/runs/ (ignored)
+tests/               pytest suite; tests/data/ holds the test corpus and the stress answer key
+scripts/             gen_stress.py (regenerate the stress workbook), time_excel.py (timing)
+docs/                technical design and technologies documents
+setup.sh             one-shot environment setup
+```
 
 ---
 
@@ -175,10 +192,12 @@ Without it the engine falls back to a built-in default salt, which is fine for t
 ### Verify the install
 
 ```bash
-pii_env/bin/python masking.py PII_Test_Dataset_LK.xlsx /tmp/check.xlsx --vault /tmp/check_vault.json
+pii_env/bin/maskroom tests/data/PII_Test_Dataset_LK.xlsx /tmp/check.xlsx --vault /tmp/check_vault.json
 # expected: "[Success] Excel saved to: /tmp/check.xlsx (… cells modified)"
-pii_env/bin/python masking.py PII_Test_Sample_LK_SCANNED.pdf /tmp/check.pdf
+pii_env/bin/maskroom tests/data/PII_Test_Sample_LK_SCANNED.pdf /tmp/check.pdf
 # expected: "[OCR] Page 1 has no text layer — running OCR" then "[Success] PDF saved …"
+pii_env/bin/pytest -q
+# expected: all tests pass (~3–5 min on the default model; adds the stress, round-trip and PDF gates)
 ```
 
 If the second command prints a Tesseract warning instead of `[OCR]`, install `tesseract-ocr`
@@ -232,13 +251,13 @@ systemctl --user daemon-reload && systemctl --user enable --now maskroom
 ### Mask an Excel workbook (reversible)
 
 ```bash
-pii_env/bin/python masking.py data.xlsx data_masked.xlsx --vault vault.json
+pii_env/bin/maskroom data.xlsx data_masked.xlsx --vault vault.json
 ```
 
 ### Restore the original from a masked workbook
 
 ```bash
-pii_env/bin/python masking.py data_masked.xlsx data_restored.xlsx --restore --vault vault.json
+pii_env/bin/maskroom data_masked.xlsx data_restored.xlsx --restore --vault vault.json
 ```
 
 Restore is exact — values *and* cell types (numeric cells return as numbers, text identifiers
@@ -247,7 +266,7 @@ like NICs stay text). It requires the vault saved during masking.
 ### Redact a PDF (irreversible; scans handled automatically)
 
 ```bash
-pii_env/bin/python masking.py document.pdf document_redacted.pdf --vault audit.json
+pii_env/bin/maskroom document.pdf document_redacted.pdf --vault audit.json
 ```
 
 Pages without a text layer are OCR'd automatically (`[OCR] Page N has no text layer`).
@@ -257,7 +276,7 @@ restored**; the vault is an audit log only.
 ### Use the transformer model for better name recall
 
 ```bash
-pii_env/bin/python masking.py report.pdf --nlp-model en_core_web_trf
+pii_env/bin/maskroom report.pdf --nlp-model en_core_web_trf
 ```
 
 ### Web UI
@@ -276,7 +295,7 @@ clear that directory as you would any sensitive working data.
 ### Python API
 
 ```python
-from masking import FinancialPrivacyEngine
+from maskroom import FinancialPrivacyEngine
 
 engine = FinancialPrivacyEngine(
     min_score=0.6,              # detection confidence threshold
@@ -372,13 +391,13 @@ name propagation.
 | File | What it exercises |
 |---|---|
 | `PII_Redaction_Test_Dataset.xlsx` | generic structured/unstructured PII + edge cases |
-| `PII_Test_Dataset_LK.xlsx` | Sri Lankan formats: NIC, +94 phones, EPF/ETF, LKR salaries |
-| `PII_Test_Sample_LK.pdf` | native-text letter with embedded LK PII |
-| `PII_Test_Sample_LK_SCANNED.pdf` | same letter as an image-only scan (OCR path) |
-| `SC_Judgment_Sample.pdf` | real Supreme Court judgment: dense legal text, repeated names |
-| `Ceylon_1888_Scan_Sample.pdf` | real 1888 scan: OCR noise, hard typography |
-| `Real_World_Directory.xlsx` | real public-employee data: normal + all-caps inverted names |
-| `PII_Stress_Test.xlsx` (+ `_key.json`) | hostile synthetic: cryptic & Sinhala headers, header at row 16, stacked tables, numeric-stored NICs, decoy columns, free text — with a machine-readable answer key |
+| `tests/data/PII_Test_Dataset_LK.xlsx` | Sri Lankan formats: NIC, +94 phones, EPF/ETF, LKR salaries |
+| `tests/data/PII_Test_Sample_LK.pdf` | native-text letter with embedded LK PII |
+| `tests/data/PII_Test_Sample_LK_SCANNED.pdf` | same letter as an image-only scan (OCR path) |
+| `tests/data/SC_Judgment_Sample.pdf` | real Supreme Court judgment: dense legal text, repeated names |
+| `tests/data/Ceylon_1888_Scan_Sample.pdf` | real 1888 scan: OCR noise, hard typography |
+| `tests/data/Real_World_Directory.xlsx` | real public-employee data: normal + all-caps inverted names |
+| `tests/data/PII_Stress_Test.xlsx` (+ `_key.json`) | hostile synthetic: cryptic & Sinhala headers, header at row 16, stacked tables, numeric-stored NICs, decoy columns, free text — with a machine-readable answer key |
 
 ---
 

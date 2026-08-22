@@ -19,6 +19,7 @@ echo "==> Creating virtualenv pii_env"
 [ -d pii_env ] || $PY -m venv pii_env
 ./pii_env/bin/pip install --quiet --upgrade pip
 ./pii_env/bin/pip install --quiet -r requirements.txt
+./pii_env/bin/pip install --quiet -e .   # the maskroom package + CLI
 
 echo "==> Downloading spaCy model en_core_web_lg (~560 MB, once)"
 ./pii_env/bin/python -m spacy download en_core_web_lg --quiet
@@ -33,7 +34,7 @@ fi
 echo "==> Verifying"
 ./pii_env/bin/python - <<'PY'
 import warnings; warnings.filterwarnings("ignore")
-from masking import FinancialPrivacyEngine
+from maskroom import FinancialPrivacyEngine
 e = FinancialPrivacyEngine()
 masked, _ = e.pseudonymize_text("Call Nimal Perera on phone 077-1234567, NIC 853421234V")
 assert "TOK_" in masked, masked
@@ -43,5 +44,6 @@ PY
 echo
 echo "Setup complete. Next:"
 echo "  export PII_TOKEN_SALT='choose-a-secret'        # token salt (keep it secret)"
-echo "  pii_env/bin/python masking.py file.xlsx out.xlsx --vault vault.json"
+echo "  pii_env/bin/maskroom file.xlsx out.xlsx --vault vault.json"
+echo "  pii_env/bin/pytest -q                           # regression suite"
 echo "  pii_env/bin/python webui/app.py                 # web UI at http://127.0.0.1:5170"

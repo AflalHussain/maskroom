@@ -12,3 +12,5 @@ salary_masked_*.xlsx
 
 # local secrets
 .env
+local/
+*.egg-info/

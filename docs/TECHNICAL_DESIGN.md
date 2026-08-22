@@ -1,9 +1,10 @@
 # Technical Design — PII Masking Engine
 
-Companion to [README.md](README.md). The README says *how to use* the system; this document
+Companion to [README.md](../README.md). The README says *how to use* the system; this document
 explains *how and why it works*, what each design decision costs, and what should be improved
-before production hardening. Everything here refers to `masking.py`
-(`FinancialPrivacyEngine`).
+before production hardening. Everything here refers to the `maskroom` package
+(`FinancialPrivacyEngine` in `engine.py`; policy in `rules.py`, recognizers in
+`recognizers.py`, file pipelines in `excel.py` / `pdf.py`).
 
 ---
 
@@ -297,7 +298,7 @@ Known inefficiencies (deliberate simplicity, worth fixing at scale):
 ## 7. Recommendations (prioritized)
 
 > Full discussion of items 1–4 and 6 below — problem, pros/cons, options, execution
-> order — is in [`ROADMAP.md`](ROADMAP.md).
+> order — is in [`ROADMAP.md`](../ROADMAP.md).
 
 **P1 — before production use**
 1. Replace salted-hash tokens with **HMAC-SHA256** and a managed key (§5.2).
@@ -315,8 +316,8 @@ Known inefficiencies (deliberate simplicity, worth fixing at scale):
 
 **P3 — scope growth**
 7. DOCX/CSV/JSON input support (the detection layer is already format-agnostic).
-8. Golden-file regression suite in CI over the test corpus (every file in README §Test
-   corpus, asserting zero-leak and keep-lists) so recognizer changes can't silently regress.
+8. ~~Regression suite over the test corpus~~ — *done*: `tests/` (stress answer key,
+   round-trips, PDF leak checks, text rules); wire `pytest` into CI.
 9. Structured run reports (JSON: entities found, counts per type, pages OCR'd, confidence)
    for compliance evidence.
 

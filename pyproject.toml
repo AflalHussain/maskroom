@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maskroom"
+version = "0.2.0"
+description = "PII pseudonymization for spreadsheets and redaction for PDFs (Presidio, Sri Lankan recognizers, OCR)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "presidio-analyzer==2.2.364",
+    "presidio-anonymizer==2.2.364",
+    "spacy==3.8.15",
+    "phonenumbers==9.0.37",
+    "openpyxl==3.1.5",
+    "pymupdf==1.28.2",
+]
+
+[project.optional-dependencies]
+web = ["flask==3.1.3"]
+trf = ["spacy-transformers==1.4.0"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+maskroom = "maskroom.cli:main"
+
+[tool.setuptools]
+packages = ["maskroom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore"]

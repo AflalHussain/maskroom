@@ -1,6 +1,6 @@
 # Technologies & Techniques
 
-Companion to [README.md](README.md) (usage) and [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md)
+Companion to [README.md](../README.md) (usage) and [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md)
 (architecture trade-offs). This document catalogs every technology in the stack and every
 detection/masking technique the engine uses, with enough detail to understand, debug, or
 replace each one.

@@ -1,6 +1,6 @@
 # Roadmap — evaluated options and recommendations
 
-Companion to `TECHNICAL_DESIGN.md` §7. That section lists *what* should be done; this
+Companion to `docs/TECHNICAL_DESIGN.md` §7. That section lists *what* should be done; this
 document records the *discussion* behind each item — the problem it addresses in our
 actual pipeline, the pros and cons, what it does **not** solve, and the recommended
 approach — so the decisions can be revisited without re-deriving them.

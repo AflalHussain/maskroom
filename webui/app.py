@@ -11,7 +11,7 @@ import openpyxl
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from masking import FinancialPrivacyEngine
+from maskroom import FinancialPrivacyEngine
 
 try:
     import pymupdf as fitz
