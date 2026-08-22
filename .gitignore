@@ -1,0 +1,14 @@
+# virtualenv and caches
+pii_env/
+__pycache__/
+*.pyc
+
+# runtime output — contains PII / re-identification data, never commit
+webui/runs/
+vault*.json
+*_MASKED.*
+*_RESTORED.*
+salary_masked_*.xlsx
+
+# local secrets
+.env
