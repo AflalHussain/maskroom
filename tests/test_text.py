@@ -64,3 +64,22 @@ def test_header_like_caps_not_inverted_name(engine):
     # the lone word; sheet header cells are skipped for that reason.
     engine.pseudonymize_text("Name, NIC")
     assert "Name, NIC" not in [f["text"] for f in engine._last_findings]
+
+
+def test_city_names_stay_by_default(engine):
+    for value in ("Colombo", "Jaffna", "Sri Lanka", "Office: Colombo 03"):
+        _, changed = engine.pseudonymize_text(value)
+        assert not changed, value
+
+
+def test_street_addresses_masked_by_default(engine):
+    for value in ("No. 45, Galle Road, Colombo 03", "PO Box 14370 Salem, OR 97309"):
+        masked, changed = engine.pseudonymize_text(value)
+        assert changed and "TOK_LOCATION_" in masked, value
+
+
+@pytest.mark.parametrize("policy,expect_changed", [("all", True), ("none", False)])
+def test_location_policy(make_engine, policy, expect_changed):
+    e = make_engine(locations=policy)
+    _, changed = e.pseudonymize_text("Colombo")
+    assert changed is expect_changed

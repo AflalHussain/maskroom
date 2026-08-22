@@ -91,7 +91,13 @@ and stays untouched in an "Order ID" column — with zero per-dataset configurat
    runs additionally require birth context *and* date-like length, because NER routinely
    labels arbitrary numbers as dates (`1919`, `71829`, six-digit salaries). Dropping the
    date label also lets the correct recognizer (e.g. `FINANCIAL_ACCOUNT`) win the overlap.
-4. **Token-overlap skip** — spans overlapping an existing `TOK_…` are ignored, which makes
+4. **Location policy** — `LOCATION` survives per policy (`address`/`all`/`none`). The
+   default keeps bare place names (a city shared by a million people is an analysis
+   dimension, not an identifier) and masks street-level addresses: spans carrying a
+   house/box number or street word, or preceded by one (*PO Box 14370 Salem* — NER labels
+   only *Salem*). *Address* columns are always masked under `address`. Measured effect:
+   LOCATION findings on the public-directory sheet 190 → 74, no other entity affected.
+5. **Token-overlap skip** — spans overlapping an existing `TOK_…` are ignored, which makes
    re-runs idempotent (verified: second pass changes 0 cells).
 
 Filter order matters: each filter removes *labels*, not *text*, so an over-broad DATE match
@@ -344,6 +350,7 @@ Real-data testing drove most of the design. The incidents worth remembering:
 | 10-digit order id passed the UK NHS checksum | irrelevant country recognizers disabled at startup |
 | Presidio compiles patterns IGNORECASE → caps-name heuristic matched "Name, NIC" | `global_regex_flags` without IGNORECASE; header cells skipped |
 | Same value numeric in one sheet, text in another → restore typed both as numbers | per-cell numeric record in the vault |
+| `Salem` ×81 / `Colombo` masked in a directory — the analysis dimension destroyed | location policy: addresses by default, bare place names kept |
 
 The meta-lesson: every one of these was invisible on synthetic data and obvious on the first
 real document of its kind. Keep the real-document corpus in CI (recommendation #8).

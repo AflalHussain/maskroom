@@ -203,6 +203,16 @@ tbody tr:hover{background:#d9a44108}
   </fieldset>
 
   <fieldset>
+    <legend>Location policy</legend>
+    <div class="seg" id="locseg">
+      <button type="button" data-v="address" class="on">addresses only</button>
+      <button type="button" data-v="all">all places</button>
+      <button type="button" data-v="none">none</button>
+    </div>
+    <div class="note">Default masks street-level addresses; city and district names stay analyzable.</div>
+  </fieldset>
+
+  <fieldset>
     <legend>Entity filter <span style="text-transform:none;letter-spacing:0">(optional)</span></legend>
     <input type="text" id="entities" placeholder="e.g. PERSON, LK_NIC, EMAIL_ADDRESS">
     <div class="note">Comma-separated whitelist. Empty = all entity types.</div>
@@ -243,14 +253,14 @@ function applyTheme(t){document.documentElement.dataset.theme=t;
 let saved=null; try{saved=localStorage.getItem("maskroom-theme")}catch(e){}
 applyTheme(saved||"light");
 themeBtn.addEventListener("click",()=>applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light"));
-let file=null, model="", dates="birth";
+let file=null, model="", dates="birth", locations="address";
 
 function seg(id, cb){ $(id).addEventListener("click",e=>{
   if(e.target.tagName!=="BUTTON")return;
   [...$(id).children].forEach(b=>b.classList.remove("on"));
   e.target.classList.add("on"); cb(e.target.dataset.v);
 });}
-seg("#modelseg",v=>model=v); seg("#dateseg",v=>dates=v);
+seg("#modelseg",v=>model=v); seg("#dateseg",v=>dates=v); seg("#locseg",v=>locations=v);
 
 $("#minscore").addEventListener("input",e=>$("#minscoreval").textContent=(+e.target.value).toFixed(2));
 $("#restore").addEventListener("change",e=>{
@@ -272,6 +282,7 @@ $("#run").addEventListener("click",async()=>{
   fd.append("min_score",$("#minscore").value);
   fd.append("nlp_model",model);
   fd.append("dates",dates);
+  fd.append("locations",locations);
   fd.append("entities",$("#entities").value);
   fd.append("column_rules",$("#colrules").checked);
   fd.append("restore",$("#restore").checked);

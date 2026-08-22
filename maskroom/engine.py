@@ -29,7 +29,7 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
     _NAME_PROPAGATION_STOPWORDS = rules.NAME_PROPAGATION_STOPWORDS
 
     def __init__(self, salt=None, min_score=0.6, entities=None, language="en",
-                 nlp_model=None, dates="birth", column_rules=True):
+                 nlp_model=None, dates="birth", locations="address", column_rules=True):
         """
         salt:      secret used for deterministic tokens. Prefer the
                    PII_TOKEN_SALT environment variable over hardcoding.
@@ -43,12 +43,20 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
                    ordinary transaction/event dates stay analyzable),
                    "all" masks every detected date (HIPAA-style), "none"
                    masks no dates.
+        locations: location-masking policy. "address" (default) masks only
+                   street-level addresses (house/box numbers, street words)
+                   and address columns; bare city/district/country names
+                   stay analyzable. "all" masks every detected location,
+                   "none" masks none.
         column_rules: mask whole columns from header/value-profile rules
                    (Excel only).
         """
         if dates not in ("birth", "all", "none"):
             raise ValueError('dates must be "birth", "all", or "none"')
+        if locations not in ("address", "all", "none"):
+            raise ValueError('locations must be "address", "all", or "none"')
         self.dates = dates
+        self.locations = locations
         self.column_rules = column_rules
         self.salt = salt or os.environ.get("PII_TOKEN_SALT", "EnterpriseRiskManagement2026")
         self.min_score = min_score
@@ -164,8 +172,24 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
             window = text[max(0, r.start - 60):min(len(text), r.end + 30)]
             return ctx_birth or bool(birth_re.search(window))
 
+        results = [r for r in results
+                   if r.entity_type != "DATE_TIME" or keep_date(r)]
+
+        # Location policy. A city or district is an analysis dimension
+        # shared by thousands of people; only a street-level address points
+        # at a household. Default keeps bare place names.
+        def keep_location(r):
+            if self.locations == "none":
+                return False
+            if self.locations == "all":
+                return True
+            span = text[r.start:r.end]
+            before = text[max(0, r.start - 40):r.start]
+            return bool(rules.ADDRESS_HINT_RE.search(span)
+                        or rules.ADDRESS_BEFORE_RE.search(before))
+
         return [r for r in results
-                if r.entity_type != "DATE_TIME" or keep_date(r)]
+                if r.entity_type != "LOCATION" or keep_location(r)]
 
     def pseudonymize_text(self, text, entities=None, context=None):
         """

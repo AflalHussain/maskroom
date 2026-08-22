@@ -76,6 +76,23 @@ NAME_PROPAGATION_STOPWORDS = {
 
 BIRTH_CONTEXT_RE = re.compile(r"\b(dob|birth|born|birthday)\b", re.IGNORECASE)
 
+# A LOCATION span is a street-level address (identifies a household) when it
+# carries a house/box number or a street-type word; a bare city, district or
+# country name is an aggregation dimension, not an identifier.
+ADDRESS_HINT_RE = re.compile(
+    r"\d|\b(?:road|rd|street|st|lane|ln|mawatha|mw|avenue|ave|place|pl|drive|dr"
+    r"|terrace|gardens?|court|crescent|close|boulevard|blvd|square|estate|watta"
+    r"|pedesa|veediya|p\.?o\.? ?box|pobox|apt|apartment|flat|floor|suite|unit"
+    r"|no\.?)\b", re.IGNORECASE)
+# ...or when the text just before the place name is a house/box number or
+# street word ("PO Box 14370 Salem", "45 Galle Road, Colombo") — NER often
+# labels only the place-name part of an address.
+ADDRESS_BEFORE_RE = re.compile(
+    r"(?:(?:p\.?o\.? ?box|pobox|no\.?|#|apt|flat|suite|unit)\s*\d+[a-z]?(?:[/-]\d+)?"
+    r"|\b\d{1,5}[a-z]?(?:/\d+)?"
+    r"|\b(?:road|rd|street|st|lane|mawatha|avenue|ave|terrace|drive|place|gardens?))"
+    r"\s*,?\s*$", re.IGNORECASE)
+
 
 # ---------------------------------------------------------------- validators
 def valid_lk_nic(v):

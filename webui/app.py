@@ -87,6 +87,7 @@ def process():
             entities=[e.strip() for e in opts.get("entities", "").split(",") if e.strip()] or None,
             nlp_model=opts.get("nlp_model") or None,
             dates=opts.get("dates", "birth"),
+            locations=opts.get("locations", "address"),
             column_rules=opts.get("column_rules", "true") != "false",
         )
     except Exception as e:

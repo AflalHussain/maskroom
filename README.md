@@ -118,7 +118,7 @@ Every piece of text passes through one shared analysis path (`analyze_text`):
    Aadhaar, IT/ES/PL ids, US driver licence…) are disabled — their checksums fire on random
    numbers.
 
-### Date & amount policy
+### Date, location & amount policy
 
 Salaries, prices, and quantities are **never masked as amounts** — numbers only mask when they
 match an identifier pattern (account, card, NIC). Dates follow a policy (`--dates`):
@@ -128,6 +128,15 @@ match an identifier pattern (account, card, NIC). Dates follow a policy (`--date
 | `birth` *(default)* | Only dates in a birth context are masked (a *Date of Birth* column, "born on…"). A DOB is a classic re-identification quasi-identifier; ordinary transaction/event dates stay analyzable. |
 | `all` | Every detected date is masked (HIPAA-style). |
 | `none` | No dates are masked. |
+
+Locations follow the same idea (`--locations`): a city or district is something you analyze
+*by*, while a street address points at one household.
+
+| Policy | Behavior |
+|---|---|
+| `address` *(default)* | Only street-level addresses are masked — values with a house/box number or a street word (road, street, lane, mawatha, avenue, P.O. Box, apt…), plus any *Address* column. Bare city, district and country names (`Colombo`, `Jaffna`, `Sri Lanka`) stay. |
+| `all` | Every detected place name is masked (use with the strict/quasi-identifier stance: city + title + DOB can single someone out). |
+| `none` | No locations are masked, not even address columns. |
 
 ---
 
@@ -300,6 +309,7 @@ from maskroom import FinancialPrivacyEngine
 engine = FinancialPrivacyEngine(
     min_score=0.6,              # detection confidence threshold
     dates="birth",              # "birth" | "all" | "none"
+    locations="address",        # "address" | "all" | "none"
     nlp_model=None,             # or "en_core_web_trf"
     entities=None,              # or a whitelist, e.g. ["PERSON", "LK_NIC"]
 )
@@ -333,6 +343,7 @@ engine2.depseudonymize_excel("out.xlsx", "restored.xlsx")
 | `--entities E…` | all | restrict to specific entity types |
 | `--nlp-model M` | `en_core_web_lg` | spaCy NER model, e.g. `en_core_web_trf` |
 | `--dates P` | `birth` | date policy: `birth` / `all` / `none` |
+| `--locations P` | `address` | location policy: `address` / `all` / `none` |
 
 ---
 
@@ -355,12 +366,13 @@ work). Changing `PII_TOKEN_SALT` changes all tokens.
 
 **Masked:** names (including role-titled: "overseer Jayasuriya"), emails, phone numbers
 (LK + international), NIC old/new, passports (with context), bank accounts, routing numbers,
-EPF/ETF refs (with context), credit cards (valid Luhn), SSNs, addresses/locations,
+EPF/ETF refs (with context), credit cards (valid Luhn), SSNs, street addresses,
 birth dates.
 
 **Kept:** salaries and monetary amounts, postal codes, invoice/case/vehicle numbers,
 public hotlines (1919, 119), company registration numbers, transaction/event dates
-(under the default policy), job titles, department and organization names.
+(under the default policy), city/district/country names (under the default policy), job
+titles, department and organization names.
 
 Redaction errs toward over-masking (safe direction); pseudonymization errs toward precision.
 

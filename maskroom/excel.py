@@ -140,6 +140,8 @@ class ExcelMixin:
                     if pat.search(t) and not (deny and deny.search(t)):
                         if entity == "DATE_TIME" and self.dates == "none":
                             break
+                        if entity == "LOCATION" and self.locations == "none":
+                            break
                         seg_rules[cell.column] = (entity, "column-rule")
                         break
             for col, r in self._profile_columns(ws, set(seg_rules), h, end).items():
