@@ -211,7 +211,7 @@ day's work against a real exposure.
   marks will break naive word-boundary matching in the redactor.
 
 ### Recommendation — staged
-1. **Now, cheap:** Sinhala/Tamil header patterns in `COLUMN_RULES`; honorific-triggered
+1. **Now, cheap:** Sinhala/Tamil header patterns (now: `column_header` regexes in `locales/lk.yaml`); honorific-triggered
    PERSON patterns for both scripts; Unicode audit of the PDF word matcher; OCR language
    auto-selection. Build a small bilingual test set (extend the stress generator; team
    sanity check).

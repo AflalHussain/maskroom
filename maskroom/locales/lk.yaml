@@ -1,0 +1,227 @@
+# Sri Lanka locale for maskroom.
+# Everything country-specific lives here: identifier formats, phone formats,
+# local honorifics, address vocabulary and a place gazetteer. See
+# _template.yaml for the schema and README "Localizing to another country".
+code: lk
+name: Sri Lanka
+phone_regions:
+  - LK
+  - US
+  - GB
+  - IN
+enable_builtin: []
+identifiers:
+  - entity: LK_NIC
+    description: 'National Identity Card: old 9 digits + V/X, new 12 digits starting with birth year'
+    patterns:
+      - name: lk_nic_old
+        regex: \b\d{9}[VvXx]\b
+        score: 0.8
+      - name: lk_nic_new
+        regex: \b(?:19|20)\d{10}\b
+        score: 0.45
+    context:
+      - nic
+      - national
+      - identity
+    column_header: \bnic\b|national id
+    profile:
+      regex: (?:\d{9}[VvXx]|(?:19|20)\d{10})
+      validator: lk_nic
+  - entity: LK_PASSPORT
+    description: 'Passport: N/D/S prefix + 7 digits (needs context)'
+    patterns:
+      - name: lk_passport
+        regex: \b[NDS]\d{7}\b
+        score: 0.3
+    context:
+      - passport
+      - travel
+    column_header: passport
+    profile:
+      regex: '[NDS]\d{7}'
+      validator: null
+phone_patterns:
+  - name: lk_mobile
+    regex: (?<!\d)(?:\+94[- ]?|0)7\d[- ]?\d{3}[- ]?\d{4}(?!\d)
+    score: 0.65
+  - name: lk_landline
+    regex: (?<!\d)(?:\+94[- ]?|0)[1-9]\d[- ]?\d{3}[- ]?\d{4}(?!\d)
+    score: 0.45
+phone_profile_regex: (?:\+94[- ]?|0)[1-9]\d[- ]?\d{3}[- ]?\d{4}
+honorifics:
+  - overseer
+  - inspector
+  - constable
+  - sergeant
+  - headman
+  - mudaliyar
+  - arachchi
+address_words:
+  - mawatha
+  - mw
+  - watta
+  - pedesa
+  - veediya
+places:
+  - akkaraipattu
+  - alawwa
+  - aluthgama
+  - ambalangoda
+  - ampara
+  - anuradhapura
+  - athurugiriya
+  - avissawella
+  - badulla
+  - balangoda
+  - bambalapitiya
+  - bandarawela
+  - battaramulla
+  - batticaloa
+  - bentota
+  - beruwala
+  - bibile
+  - boralesgamuwa
+  - borella
+  - central
+  - ceylon
+  - chavakachcheri
+  - chilaw
+  - cinnamon gardens
+  - colombo
+  - dambulla
+  - dehiwala
+  - dehiwala-mount lavinia
+  - dematagoda
+  - deraniyagala
+  - divulapitiya
+  - diyatalawa
+  - eastern
+  - ella
+  - embilipitiya
+  - eravur
+  - fort
+  - galenbindunuwewa
+  - galgamuwa
+  - galle
+  - gampaha
+  - gampola
+  - ganemulla
+  - grandpass
+  - hambantota
+  - hanwella
+  - haputale
+  - hatton
+  - havelock town
+  - hikkaduwa
+  - hingurakgoda
+  - homagama
+  - horana
+  - ja-ela
+  - jaffna
+  - kadawatha
+  - kaduwela
+  - kalmunai
+  - kalutara
+  - kandy
+  - kantale
+  - kataragama
+  - kattankudy
+  - katugastota
+  - katunayake
+  - kegalle
+  - kekirawa
+  - kelaniya
+  - kesbewa
+  - kilinochchi
+  - kinniya
+  - kiribathgoda
+  - kirulapone
+  - kochchikade
+  - kohuwala
+  - kollupitiya
+  - kopay
+  - kotahena
+  - kotte
+  - kuliyapitiya
+  - kurunegala
+  - maharagama
+  - mahiyanganaya
+  - malabe
+  - mannar
+  - maradana
+  - marawila
+  - matale
+  - matara
+  - mattakkuliya
+  - mawanella
+  - medawachchiya
+  - minuwangoda
+  - mirigama
+  - mirissa
+  - modara
+  - monaragala
+  - moneragala
+  - moratuwa
+  - mount lavinia
+  - mullaitivu
+  - muttur
+  - mutwal
+  - nallur
+  - narahenpita
+  - narammala
+  - nawalapitiya
+  - negombo
+  - nikaweratiya
+  - nittambuwa
+  - north central
+  - north western
+  - northern
+  - nugegoda
+  - nuwara eliya
+  - padukka
+  - panadura
+  - pannala
+  - peliyagoda
+  - pelmadulla
+  - peradeniya
+  - pettah
+  - piliyandala
+  - point pedro
+  - polgahawela
+  - polonnaruwa
+  - puttalam
+  - ragama
+  - rajagiriya
+  - rambukkana
+  - ratnapura
+  - ruwanwella
+  - sabaragamuwa
+  - sammanthurai
+  - seeduwa
+  - sigiriya
+  - southern
+  - sri jayawardenepura kotte
+  - sri lanka
+  - talawakelle
+  - tangalle
+  - thimbirigasyaya
+  - tissamaharama
+  - trincomalee
+  - unawatuna
+  - uva
+  - valaichchenai
+  - vavuniya
+  - veyangoda
+  - wadduwa
+  - warakapola
+  - wariyapola
+  - wattala
+  - weligama
+  - welimada
+  - wellawatta
+  - wellawatte
+  - wellawaya
+  - wennappuwa
+  - western
+  - yatiyantota

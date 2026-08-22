@@ -10,27 +10,23 @@ from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
 from . import recognizers, rules
+from .locale import DEFAULT_LOCALE, build_policy
 from .excel import ExcelMixin
 from .pdf import PdfMixin
 
 
 class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
-    # Policy constants re-exported for callers/tests that reach them via
-    # the class (the definitions live in rules.py).
+    # Generic policy constants (rules.py); the country-specific part is
+    # compiled into self.policy from the locale file.
     TOKEN_RE = rules.TOKEN_RE
     NUMERIC_CELL_ENTITIES = rules.NUMERIC_CELL_ENTITIES
-    COLUMN_RULES = rules.COLUMN_RULES
-    DISABLED_ENTITIES = rules.DISABLED_ENTITIES
     NULL_MARKERS = rules.NULL_MARKERS
     MIN_NUMERIC_DIGITS = rules.MIN_NUMERIC_DIGITS
-    PROFILE_MIN_RATIO = rules.PROFILE_MIN_RATIO
-    PROFILE_MIN_SAMPLES = rules.PROFILE_MIN_SAMPLES
-    PROFILE_PATTERNS = rules.PROFILE_PATTERNS
     PHONE_CONTEXT = rules.PHONE_CONTEXT
-    _NAME_PROPAGATION_STOPWORDS = rules.NAME_PROPAGATION_STOPWORDS
 
     def __init__(self, salt=None, min_score=0.6, entities=None, language="en",
-                 nlp_model=None, dates="birth", locations="address", column_rules=True):
+                 nlp_model=None, dates="birth", locations="address", column_rules=True,
+                 locale=DEFAULT_LOCALE):
         """
         salt:      secret used for deterministic tokens. Prefer the
                    PII_TOKEN_SALT environment variable over hardcoding.
@@ -51,6 +47,9 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
                    "none" masks none.
         column_rules: mask whole columns from header/value-profile rules
                    (Excel only).
+        locale:    country knowledge — a bundled code ("lk", "in"), a path
+                   to a locale YAML, or None/"generic" for no country
+                   specifics. Default from PII_LOCALE, else "lk".
         """
         if dates not in ("birth", "all", "none"):
             raise ValueError('dates must be "birth", "all", or "none"')
@@ -58,6 +57,8 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
             raise ValueError('locations must be "address", "all", or "none"')
         self.dates = dates
         self.locations = locations
+        self.policy = build_policy(locale)
+        self.locale = self.policy.code
         self.column_rules = column_rules
         self.salt = salt or os.environ.get("PII_TOKEN_SALT", "EnterpriseRiskManagement2026")
         self.min_score = min_score
@@ -80,7 +81,7 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
         else:
             self.analyzer = AnalyzerEngine()
         self.anonymizer = AnonymizerEngine()
-        recognizers.install(self.analyzer.registry)
+        recognizers.install(self.analyzer.registry, self.policy)
 
     # ------------------------------------------------------------ tokens
     def generate_token(self, original_text, entity_type):
@@ -138,18 +139,12 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
             and not (r.entity_type == "NRP" and any(c.isdigit() for c in text[r.start:r.end]))
         ]
 
-        # Statistical NER does not know Sri Lankan geography: about half
-        # of the country's towns come back as PERSON. A "name" made only
+        # Statistical NER does not know local geography (about half of
+        # Sri Lanka's towns come back as PERSON). A "name" made only
         # of known place names is a place — relabel so the location policy
         # decides. Lone field-label words ("NIC", "OTP", "Email") are not
         # names either.
-        def is_place(span):
-            s = span.casefold().strip(" .,;:'\"()")
-            s = re.sub(r"\s*\d+$", "", s)  # "Colombo 03"
-            if s in rules.LK_PLACES:
-                return True
-            words = rules.LK_PLACE_TOKEN_RE.findall(s)
-            return bool(words) and all(w in rules.LK_PLACES for w in words)
+        is_place = self.policy.is_place
         kept = []
         for r in results:
             if r.entity_type == "PERSON":
@@ -209,8 +204,8 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
                 return True
             span = text[r.start:r.end]
             before = text[max(0, r.start - 40):r.start]
-            return bool(rules.ADDRESS_HINT_RE.search(span)
-                        or rules.ADDRESS_BEFORE_RE.search(before))
+            return bool(self.policy.address_hint_re.search(span)
+                        or self.policy.address_before_re.search(before))
 
         return [r for r in results
                 if r.entity_type != "LOCATION" or keep_location(r)]

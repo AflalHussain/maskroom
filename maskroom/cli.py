@@ -3,6 +3,7 @@ import argparse
 import os
 
 from .engine import FinancialPrivacyEngine
+from .locale import DEFAULT_LOCALE, available_locales
 
 
 def main(argv=None):
@@ -29,6 +30,10 @@ def main(argv=None):
     parser.add_argument("--locations", choices=["address", "all", "none"], default="address",
                         help="Location masking policy: 'address' masks only street-level "
                              "addresses (default), 'all' masks every place name, 'none' keeps all")
+    parser.add_argument("--locale", default=DEFAULT_LOCALE,
+                        help="Country knowledge: a bundled locale code (%s), a path to a "
+                             "locale YAML, or 'generic' (default: $PII_LOCALE or lk)"
+                             % ", ".join(available_locales()))
     parser.add_argument("--no-column-rules", action="store_true",
                         help="Disable header-based column rules (mask whole 'Name'/"
                              "'Address'/... columns without per-cell detection)")
@@ -39,7 +44,7 @@ def main(argv=None):
 
     engine = FinancialPrivacyEngine(min_score=args.min_score, entities=args.entities,
                                     nlp_model=args.nlp_model, dates=args.dates,
-                                    locations=args.locations,
+                                    locations=args.locations, locale=args.locale,
                                     column_rules=not args.no_column_rules)
 
     ext = ext.lower()

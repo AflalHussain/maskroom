@@ -184,6 +184,12 @@ tbody tr:hover{background:#d9a44108}
   </fieldset>
 
   <fieldset>
+    <legend>Locale</legend>
+    <select id="locale"></select>
+    <div class="note">Country identifiers, phone formats, honorifics and place names (<code>maskroom/locales/</code>).</div>
+  </fieldset>
+
+  <fieldset>
     <legend>NER model</legend>
     <div class="seg" id="modelseg">
       <button type="button" data-v="" class="on">lg · fast</button>
@@ -254,6 +260,7 @@ let saved=null; try{saved=localStorage.getItem("maskroom-theme")}catch(e){}
 applyTheme(saved||"light");
 themeBtn.addEventListener("click",()=>applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light"));
 let file=null, model="", dates="birth", locations="address";
+fetch("/api/locales").then(r=>r.json()).then(d=>{const s=document.getElementById("locale");for(const [code,name] of Object.entries(d.locales)){const o=document.createElement("option");o.value=code;o.textContent=`${name} (${code})`;s.appendChild(o);}const g=document.createElement("option");g.value="generic";g.textContent="Generic (no country rules)";s.appendChild(g);s.value=d.default;}).catch(()=>{});
 
 function seg(id, cb){ $(id).addEventListener("click",e=>{
   if(e.target.tagName!=="BUTTON")return;
@@ -283,6 +290,7 @@ $("#run").addEventListener("click",async()=>{
   fd.append("nlp_model",model);
   fd.append("dates",dates);
   fd.append("locations",locations);
+  fd.append("locale",document.getElementById("locale").value||"");
   fd.append("entities",$("#entities").value);
   fd.append("column_rules",$("#colrules").checked);
   fd.append("restore",$("#restore").checked);

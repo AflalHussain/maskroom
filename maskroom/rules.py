@@ -26,9 +26,10 @@ COLUMN_RULES = [
     ("PHONE_NUMBER",
      re.compile(r"phone|mobile|landline|telephone|fixed line|\bcell\b"
                 r"|\bfax\b|contact (no|number)", re.I), None),
-    ("LK_NIC", re.compile(r"\bnic\b|national id", re.I), None),
     ("US_SSN", re.compile(r"\bssn\b|social security|tax id", re.I), None),
-    ("LK_PASSPORT", re.compile(r"passport", re.I), None),
+    # Generic fallbacks; a locale's own identifiers are matched first.
+    ("NATIONAL_ID", re.compile(r"national id|identity (card|no|number)|\bnic\b", re.I), None),
+    ("PASSPORT", re.compile(r"passport", re.I), None),
     ("FINANCIAL_ACCOUNT",
      re.compile(r"account\s*(no|number|#)|\biban\b|routing", re.I), None),
     ("DATE_TIME", re.compile(r"date of birth|\bdob\b|birth ?date", re.I), None),
@@ -90,68 +91,24 @@ LABEL_WORDS = {
     "status", "id", "ref", "reference", "amount", "balance", "branch",
 }
 
-# Sri Lankan places (provinces, districts, principal towns, Colombo
-# suburbs). Statistical English NER does not know this geography and
-# labels about half of these as PERSON; a PERSON span made only of these
-# words is relabelled LOCATION, where the location policy applies.
-# Lower-case, single words or exact multi-word names.
-LK_PLACES = {
-    # provinces
-    "western", "central", "southern", "northern", "eastern", "north western",
-    "north central", "uva", "sabaragamuwa",
-    # districts
-    "colombo", "gampaha", "kalutara", "kandy", "matale", "nuwara eliya",
-    "galle", "matara", "hambantota", "jaffna", "kilinochchi", "mannar",
-    "vavuniya", "mullaitivu", "batticaloa", "ampara", "trincomalee",
-    "kurunegala", "puttalam", "anuradhapura", "polonnaruwa", "badulla",
-    "monaragala", "moneragala", "ratnapura", "kegalle",
-    # towns
-    "negombo", "moratuwa", "dehiwala", "mount lavinia", "dehiwala-mount lavinia",
-    "sri jayawardenepura kotte", "kotte", "kaduwela", "maharagama", "kesbewa",
-    "boralesgamuwa", "homagama", "piliyandala", "panadura", "horana",
-    "beruwala", "bentota", "aluthgama", "wadduwa", "ja-ela", "wattala",
-    "kelaniya", "peliyagoda", "minuwangoda", "gampola", "peradeniya",
-    "katugastota", "nawalapitiya", "hatton", "talawakelle", "dambulla",
-    "sigiriya", "ambalangoda", "hikkaduwa", "unawatuna", "weligama", "mirissa",
-    "tangalle", "tissamaharama", "kataragama", "embilipitiya", "balangoda",
-    "pelmadulla", "kuliyapitiya", "chilaw", "wennappuwa", "marawila",
-    "mawanella", "warakapola", "rambukkana", "mahiyanganaya", "bandarawela",
-    "ella", "haputale", "welimada", "diyatalawa", "wellawaya", "bibile",
-    "kalmunai", "akkaraipattu", "sammanthurai", "kattankudy", "eravur",
-    "valaichchenai", "kinniya", "muttur", "point pedro", "chavakachcheri",
-    "nallur", "kopay", "vavuniya", "medawachchiya", "kekirawa", "hingurakgoda",
-    "kantale", "galenbindunuwewa", "nikaweratiya", "galgamuwa", "wariyapola",
-    "pannala", "narammala", "polgahawela", "alawwa", "kegalle", "ruwanwella",
-    "yatiyantota", "deraniyagala", "avissawella", "hanwella", "padukka",
-    "athurugiriya", "malabe", "battaramulla", "rajagiriya", "nugegoda",
-    "kohuwala", "kirulapone", "kollupitiya", "bambalapitiya", "wellawatte",
-    "wellawatta", "havelock town", "cinnamon gardens", "borella", "maradana",
-    "pettah", "fort", "kotahena", "mutwal", "grandpass", "dematagoda",
-    "narahenpita", "thimbirigasyaya", "mattakkuliya", "modara", "ragama",
-    "kadawatha", "kiribathgoda", "ganemulla", "veyangoda", "nittambuwa",
-    "mirigama", "divulapitiya", "katunayake", "seeduwa", "kochchikade",
-    "sri lanka", "ceylon",
-}
-LK_PLACE_TOKEN_RE = re.compile(r"[a-z][a-z-]+")
+# Place gazetteers come from the locale file (see locale.py). A "person"
+# made only of gazetteer words is relabelled a location.
+PLACE_TOKEN_RE = re.compile(r"[a-z][a-z-]+")
 
 BIRTH_CONTEXT_RE = re.compile(r"\b(dob|birth|born|birthday)\b", re.IGNORECASE)
 
 # A LOCATION span is a street-level address (identifies a household) when it
-# carries a house/box number or a street-type word; a bare city, district or
-# country name is an aggregation dimension, not an identifier.
-ADDRESS_HINT_RE = re.compile(
-    r"\d|\b(?:road|rd|street|st|lane|ln|mawatha|mw|avenue|ave|place|pl|drive|dr"
-    r"|terrace|gardens?|court|crescent|close|boulevard|blvd|square|estate|watta"
-    r"|pedesa|veediya|p\.?o\.? ?box|pobox|apt|apartment|flat|floor|suite|unit"
-    r"|no\.?)\b", re.IGNORECASE)
-# ...or when the text just before the place name is a house/box number or
-# street word ("PO Box 14370 Salem", "45 Galle Road, Colombo") — NER often
-# labels only the place-name part of an address.
-ADDRESS_BEFORE_RE = re.compile(
-    r"(?:(?:p\.?o\.? ?box|pobox|no\.?|#|apt|flat|suite|unit)\s*\d+[a-z]?(?:[/-]\d+)?"
-    r"|\b\d{1,5}[a-z]?(?:/\d+)?"
-    r"|\b(?:road|rd|street|st|lane|mawatha|avenue|ave|terrace|drive|place|gardens?))"
-    r"\s*,?\s*$", re.IGNORECASE)
+# carries a house/box number or a street-type word, or directly follows one
+# ("PO Box 14370 Salem" — NER labels only the place-name part). A bare
+# city, district or country name is an aggregation dimension, not an
+# identifier. Locales add their own vocabulary; locale.py compiles the
+# final regexes (Policy.address_hint_re / address_before_re).
+ADDRESS_WORDS = [
+    "road", "rd", "street", "st", "lane", "ln", "avenue", "ave", "place", "pl",
+    "drive", "dr", "terrace", "garden", "gardens", "court", "crescent", "close",
+    "boulevard", "blvd", "square", "estate", "p.o. box", "po box", "p.o.box",
+    "pobox", "apt", "apartment", "flat", "floor", "suite", "unit", "no", "no.",
+]
 
 
 # ---------------------------------------------------------------- validators
@@ -182,21 +139,37 @@ def valid_ssn(v):
             and group != "00" and serial != "0000")
 
 
+def valid_verhoeff(v):
+    """Verhoeff checksum (Aadhaar)."""
+    d = [[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],
+         [3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],
+         [6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],
+         [9,8,7,6,5,4,3,2,1,0]]
+    p = [[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],
+         [8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],
+         [2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]]
+    c = 0
+    for i, ch in enumerate(reversed([int(x) for x in v if x.isdigit()])):
+        c = d[c][p[i % 8][ch]]
+    return c == 0
+
+
+# Validators a locale file may reference by name in `profile.validator`.
+VALIDATORS = {"luhn": valid_luhn, "ssn": valid_ssn, "lk_nic": valid_lk_nic,
+              "verhoeff": valid_verhoeff}
+
 # Value-profile rules: if >= PROFILE_MIN_RATIO of a column's values match
 # ONE of these high-precision patterns (with validator), the column is an
 # identifier column no matter what its header says — or whether it has
 # one. Covers cryptic headers ("C3"), non-English headers, and headers
 # too deep to be found. Only formats distinctive enough to be safe.
-# Each entry is (entity, fullmatch pattern, validator or None).
+# Generic entries; locale identifiers and phone formats are prepended by
+# locale.py. Each entry is (entity, fullmatch pattern, validator or None).
 PROFILE_MIN_RATIO = 0.9
 PROFILE_MIN_SAMPLES = 4
+INTL_PHONE_PROFILE = r"\+\d{1,3}[- ]?\d{2,4}[- ]?\d{3}[- ]?\d{3,4}"
 PROFILE_PATTERNS = [
-    ("LK_NIC", re.compile(r"(?:\d{9}[VvXx]|(?:19|20)\d{10})"), valid_lk_nic),
     ("EMAIL_ADDRESS", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]{2,})+"), None),
-    ("PHONE_NUMBER",
-     re.compile(r"(?:\+94[- ]?|0)[1-9]\d[- ]?\d{3}[- ]?\d{4}|\+\d{1,3}[- ]?\d{2,4}[- ]?\d{3}[- ]?\d{3,4}"),
-     None),
     ("CREDIT_CARD", re.compile(r"\d[\d -]{11,21}\d"), valid_luhn),
     ("US_SSN", re.compile(r"\d{3}-\d{2}-\d{4}"), valid_ssn),
-    ("LK_PASSPORT", re.compile(r"[NDS]\d{7}"), None),
 ]

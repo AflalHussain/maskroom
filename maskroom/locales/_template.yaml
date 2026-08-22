@@ -1,0 +1,50 @@
+# Template for a new maskroom locale. Copy to <code>.yaml, fill in, and run
+# with --locale <code>. Every key is optional except `code` and `name`;
+# omit what your country doesn't need. Regexes are Python `re` syntax; the
+# analyzer compiles identifier patterns case-insensitively (Presidio default).
+code: xx
+name: Country Name
+
+# Regions for the phonenumbers-based validator (ISO 3166-1 alpha-2).
+phone_regions: [XX, US, GB]
+
+# Presidio ships country recognizers (IN_AADHAAR, IN_PAN, UK_NHS, AU_TFN,
+# ES_NIF, IT_FISCAL_CODE, ...). They are all disabled by default because their
+# checksums fire on random numbers; list the ones relevant to you here.
+enable_builtin: []
+
+# Country identifiers. Each becomes a Presidio PatternRecognizer, a
+# column-header rule (whole column masked when the header matches) and,
+# optionally, a value-profile rule (column masked when >=90% of values match
+# the profile regex + validator, whatever the header says).
+identifiers:
+  - entity: XX_NATIONAL_ID          # token prefix, e.g. TOK_XX_NATIONAL_ID_1A2B3C4D
+    description: what it looks like
+    patterns:
+      - {name: xx_id, regex: '\b\d{10}\b', score: 0.45}   # <0.6 needs context to mask
+    context: [id, identity, national]                      # words that boost the score
+    column_header: 'national id|\bid no\b'                 # header regex (case-insensitive)
+    profile: {regex: '\d{10}', validator: null}            # validators: luhn, ssn, lk_nic, verhoeff, null
+
+# Local phone formats that the phonenumbers library may not score highly
+# enough on its own. Mobile formats are personal -> score >= 0.6; landlines
+# are often business numbers -> keep below 0.6 so context must lift them.
+phone_patterns:
+  - {name: xx_mobile, regex: '(?<!\d)(?:\+1[- ]?)?\d{3}[- ]?\d{3}[- ]?\d{4}(?!\d)', score: 0.65}
+# Full-match regex used for value profiling of phone columns.
+phone_profile_regex: '(?:\+1[- ]?)?\d{3}[- ]?\d{3}[- ]?\d{4}'
+
+# Local honorifics / role nouns: "<honorific> Capitalized" is treated as a
+# person even when NER does not know the name. Generic ones (mr, mrs, dr,
+# prof, officer, manager, ...) are built in.
+honorifics: []
+
+# Local street/address vocabulary added to the generic list (road, street,
+# lane, avenue, box, apt, ...). A place name next to one of these is an
+# address (masked); a bare place name is kept under the default policy.
+address_words: []
+
+# Place gazetteer (lower-case): provinces, districts, towns, suburbs. A
+# "person" made only of these words is really a place. English NER mislabels
+# unfamiliar town names as people; this list is the fix.
+places: []

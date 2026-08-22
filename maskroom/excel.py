@@ -34,7 +34,7 @@ class ExcelMixin:
                 return True
             if isinstance(v, str):
                 t = v.strip()
-                if any(p.fullmatch(t) for _, p, _ in rules.PROFILE_PATTERNS):
+                if any(p.fullmatch(t) for _, p, _ in self.policy.profile_patterns):
                     return True
         return False
 
@@ -62,7 +62,7 @@ class ExcelMixin:
                     values.append(v)
             if len(values) < rules.PROFILE_MIN_SAMPLES:
                 continue
-            for entity, pat, validator in rules.PROFILE_PATTERNS:
+            for entity, pat, validator in self.policy.profile_patterns:
                 check = validator or (lambda v: True)
                 hits = sum(1 for v in values if pat.fullmatch(v) and check(v))
                 if hits / len(values) >= rules.PROFILE_MIN_RATIO:
@@ -136,7 +136,7 @@ class ExcelMixin:
                 if not self._is_headerish(cell.value):
                     continue
                 t = cell.value.strip()
-                for entity, pat, deny in rules.COLUMN_RULES:
+                for entity, pat, deny in self.policy.column_rules:
                     if pat.search(t) and not (deny and deny.search(t)):
                         if entity == "DATE_TIME" and self.dates == "none":
                             break
@@ -147,7 +147,7 @@ class ExcelMixin:
             # keep rules: geography columns are never analyzed
             for cell in ws[h]:
                 if (cell.column not in seg_rules and self._is_headerish(cell.value)
-                        and rules.KEEP_COLUMN_RE.search(cell.value)):
+                        and self.policy.keep_column_re.search(cell.value)):
                     seg_rules[cell.column] = ("KEEP", "column-keep")
             for col, r in self._profile_columns(ws, set(seg_rules), h, end).items():
                 seg_rules[col] = (r[0], "value-profile")

@@ -1,6 +1,6 @@
-"""Custom Presidio recognizers: financial account formats, OCR-tolerant
-email, title/role-triggered and inverted all-caps person names, and Sri
-Lankan identifiers (NIC, passport, phone formats)."""
+"""Presidio recognizers: generic ones (financial accounts, OCR-tolerant
+email, title-triggered and inverted all-caps names) plus the ones built
+from the active locale (identifiers, phone formats, phone regions)."""
 import re
 
 from presidio_analyzer import Pattern, PatternRecognizer
@@ -8,8 +8,15 @@ from presidio_analyzer.predefined_recognizers import PhoneRecognizer
 
 from .rules import PHONE_CONTEXT
 
+# Honorifics and role nouns common to English-language records; a locale
+# adds its own (e.g. mudaliyar, shri).
+GENERIC_HONORIFICS = [
+    "mr", "mrs", "ms", "miss", "dr", "hon", "rev", "prof", "officer", "clerk",
+    "agent", "foreman", "manager", "supervisor", "engineer", "surveyor",
+]
 
-def financial_recognizers():
+
+def generic_recognizers(honorifics=()):
     """Account numbers, loose email, and name patterns statistical NER misses."""
     account = PatternRecognizer(
         supported_entity="FINANCIAL_ACCOUNT",
@@ -42,14 +49,12 @@ def financial_recognizers():
     # strong person signal even when NER does not know the name
     # ("overseer Jayasuriya", "Mr. Silva"). Catches names statistical
     # NER misses, which hits non-Western names hardest.
+    words = sorted({*GENERIC_HONORIFICS, *honorifics}, key=len, reverse=True)
     titled_name = PatternRecognizer(
         supported_entity="PERSON",
         patterns=[Pattern(
             "role_titled_name",
-            r"(?i:\b(?:mr|mrs|ms|miss|dr|hon|rev|prof|overseer|inspector|"
-            r"officer|constable|sergeant|clerk|agent|foreman|headman|"
-            r"mudaliyar|arachchi|manager|supervisor|engineer|surveyor)"
-            r"\b\.?\s+)(?-i:[A-Z][\w'’-]{2,})",
+            r"(?i:\b(?:" + "|".join(map(re.escape, words)) + r")\b\.?\s+)(?-i:[A-Z][\w'’-]{2,})",
             0.6)],
     )
 
@@ -71,56 +76,37 @@ def financial_recognizers():
     return [account, loose_email, titled_name, inverted_caps_name]
 
 
-def sri_lanka_recognizers():
-    """Recognizers for Sri Lankan identifier formats."""
-    nic = PatternRecognizer(
-        supported_entity="LK_NIC",
-        patterns=[
-            # Old NIC: 9 digits + V/X suffix — distinctive on its own.
-            Pattern("lk_nic_old", r"\b\d{9}[VvXx]\b", 0.8),
-            # New NIC: 12 digits starting with the birth year. Ambiguous
-            # with other long numbers, so it needs context to pass.
-            Pattern("lk_nic_new", r"\b(?:19|20)\d{10}\b", 0.45),
-        ],
-        context=["nic", "national", "identity"],
-    )
-    passport = PatternRecognizer(
-        supported_entity="LK_PASSPORT",
-        # N/D/S prefix + 7 digits; too generic alone, requires context.
-        patterns=[Pattern("lk_passport", r"\b[NDS]\d{7}\b", 0.3)],
-        context=["passport", "travel"],
-    )
-    # Sri Lankan phone formats. A formatted MOBILE (07X / +94 7X) is a
-    # personal identifier distinctive enough to mask without context;
-    # landlines are often business numbers, so they stay below the
-    # threshold until context (a header, 'call', 'tel'...) lifts them.
-    lk_phone = PatternRecognizer(
-        supported_entity="PHONE_NUMBER",
-        patterns=[
-            Pattern("lk_mobile",
-                    r"(?<!\d)(?:\+94[- ]?|0)7\d[- ]?\d{3}[- ]?\d{4}(?!\d)", 0.65),
-            Pattern("lk_landline",
-                    r"(?<!\d)(?:\+94[- ]?|0)[1-9]\d[- ]?\d{3}[- ]?\d{4}(?!\d)", 0.45),
-        ],
-        context=PHONE_CONTEXT,
-    )
-    return [nic, passport, lk_phone]
+def locale_recognizers(policy):
+    """Identifier and phone-format recognizers declared by the locale."""
+    recs = []
+    for ident in policy.identifiers:
+        recs.append(PatternRecognizer(
+            supported_entity=ident["entity"],
+            patterns=[Pattern(p["name"], p["regex"], float(p["score"]))
+                      for p in ident.get("patterns") or []],
+            context=ident.get("context") or [],
+        ))
+    if policy.phone_patterns:
+        # Local phone formats. Mobile numbers are personal identifiers
+        # distinctive enough to mask without context; landlines are often
+        # business numbers and stay below the threshold until context (a
+        # header, 'call', 'tel'...) lifts them — the locale sets the scores.
+        recs.append(PatternRecognizer(
+            supported_entity="PHONE_NUMBER",
+            patterns=[Pattern(n, r, s) for n, r, s in policy.phone_patterns],
+            context=PHONE_CONTEXT,
+        ))
+    return recs
 
 
-def phone_recognizer():
-    """Presidio's phonenumbers-backed recognizer with Sri Lanka included,
-    so +94 / 0XX-XXXXXXX formats validate."""
-    return PhoneRecognizer(supported_regions=("LK", "US", "GB", "IN"),
-                           context=PHONE_CONTEXT)
-
-
-def install(registry):
-    """Prune irrelevant built-ins and add the custom recognizers."""
-    from .rules import DISABLED_ENTITIES
+def install(registry, policy):
+    """Prune irrelevant built-ins, add generic + locale recognizers, and
+    re-register Presidio's phone recognizer with the locale's regions."""
     for rec in list(registry.recognizers):
-        if set(rec.supported_entities) <= DISABLED_ENTITIES:
+        if set(rec.supported_entities) <= policy.disabled_entities:
             registry.remove_recognizer(rec.name)
-    for rec in financial_recognizers() + sri_lanka_recognizers():
+    for rec in generic_recognizers(policy.honorifics) + locale_recognizers(policy):
         registry.add_recognizer(rec)
     registry.remove_recognizer("PhoneRecognizer")
-    registry.add_recognizer(phone_recognizer())
+    registry.add_recognizer(PhoneRecognizer(supported_regions=policy.phone_regions,
+                                            context=PHONE_CONTEXT))

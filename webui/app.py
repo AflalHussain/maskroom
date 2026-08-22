@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from maskroom import FinancialPrivacyEngine
+from maskroom.locale import DEFAULT_LOCALE, available_locales
 
 try:
     import pymupdf as fitz
@@ -32,6 +33,11 @@ app = Flask(__name__, static_folder="static")
 @app.get("/")
 def index():
     return send_from_directory(os.path.join(BASE, "static"), "index.html")
+
+
+@app.get("/api/locales")
+def locales():
+    return jsonify({"default": DEFAULT_LOCALE, "locales": available_locales()})
 
 
 def excel_preview(path, limit_sheets=6):
@@ -88,6 +94,7 @@ def process():
             nlp_model=opts.get("nlp_model") or None,
             dates=opts.get("dates", "birth"),
             locations=opts.get("locations", "address"),
+            locale=opts.get("locale") or DEFAULT_LOCALE,
             column_rules=opts.get("column_rules", "true") != "false",
         )
     except Exception as e:

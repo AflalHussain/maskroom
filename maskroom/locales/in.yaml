@@ -1,0 +1,84 @@
+# India starter locale. Demonstrates localizing maskroom to another country;
+# extend the gazetteer and identifiers for production use.
+code: in
+name: India
+phone_regions: [IN, US, GB]
+# Presidio's Aadhaar (Verhoeff-validated) and PAN recognizers are relevant here.
+enable_builtin: [IN_AADHAAR, IN_PAN]
+identifiers:
+  - entity: IN_AADHAAR
+    description: 12-digit Aadhaar, often written as 4-4-4
+    patterns:
+      - {name: in_aadhaar_grouped, regex: '\b[2-9]\d{3}[ -]\d{4}[ -]\d{4}\b', score: 0.5}
+    context: [aadhaar, aadhar, uid, uidai]
+    column_header: 'aadha?ar|\buid\b'
+    profile: {regex: '[2-9]\d{3}[ -]?\d{4}[ -]?\d{4}', validator: verhoeff}
+  - entity: IN_PAN
+    description: Permanent Account Number, 5 letters + 4 digits + 1 letter
+    patterns:
+      - {name: in_pan, regex: '\b[A-Z]{5}\d{4}[A-Z]\b', score: 0.5}
+    context: [pan, permanent account, income tax]
+    column_header: '\bpan\b'
+    profile: {regex: '[A-Z]{5}\d{4}[A-Z]', validator: null}
+  - entity: IN_PASSPORT
+    description: Passport, 1 letter + 7 digits (needs context)
+    patterns:
+      - {name: in_passport, regex: '\b[A-Z]\d{7}\b', score: 0.3}
+    context: [passport]
+    column_header: passport
+phone_patterns:
+  - {name: in_mobile, regex: '(?<!\d)(?:\+91[- ]?|0)?[6-9]\d{4}[- ]?\d{5}(?!\d)', score: 0.65}
+phone_profile_regex: '(?:\+91[- ]?|0)?[6-9]\d{4}[- ]?\d{5}'
+honorifics: [shri, smt, kumari, sri, thiru, sardar]
+address_words: [nagar, marg, gali, chowk, sector, colony, layout, vihar, enclave, bhavan]
+places:
+  - india
+  - delhi
+  - new delhi
+  - mumbai
+  - bengaluru
+  - bangalore
+  - chennai
+  - kolkata
+  - hyderabad
+  - pune
+  - ahmedabad
+  - surat
+  - jaipur
+  - lucknow
+  - kanpur
+  - nagpur
+  - indore
+  - bhopal
+  - patna
+  - vadodara
+  - ludhiana
+  - agra
+  - nashik
+  - kochi
+  - coimbatore
+  - madurai
+  - thiruvananthapuram
+  - visakhapatnam
+  - guwahati
+  - chandigarh
+  - mysuru
+  - mysore
+  - noida
+  - gurugram
+  - gurgaon
+  - maharashtra
+  - karnataka
+  - tamil nadu
+  - kerala
+  - gujarat
+  - rajasthan
+  - punjab
+  - haryana
+  - bihar
+  - odisha
+  - west bengal
+  - telangana
+  - andhra pradesh
+  - uttar pradesh
+  - madhya pradesh

@@ -85,13 +85,22 @@ and stays untouched in an "Order ID" column — with zero per-dataset configurat
 
 1. **Letter-less NER labels dropped** — `PERSON`/`LOCATION`/`NRP` on text with no letters is
    model noise (the transformer tags bare salary figures as PERSON; observed on real data).
-2. **Sri Lankan place gazetteer** — `rules.LK_PLACES` (provinces, districts, ~150 towns
-   and Colombo suburbs). `en_core_web_lg` labels roughly half of these as PERSON when they
+2. **Place gazetteer (locale)** — `places` in the locale file (Sri Lanka: provinces,
+   districts, ~150 towns and Colombo suburbs). `en_core_web_lg` labels roughly half of these as PERSON when they
    stand alone; a PERSON span consisting only of gazetteer words is relabelled LOCATION so
    the location policy decides. Multi-word spans with a non-place word (*Kandy Perera*)
    stay PERSON. Lone field-label words (`rules.LABEL_WORDS`: *NIC*, *OTP*, *Email*…) are
    dropped. Excel additionally has **keep rules** (`rules.KEEP_COLUMN_RE`): *City /
    District / Province / Country…* columns are never analyzed.
+
+   **Localization.** Everything country-specific — identifier recognizers and their
+   column/profile rules, phone formats and regions, honorifics, address vocabulary, the
+   gazetteer, and which Presidio country recognizers to enable — is declared in
+   `maskroom/locales/<code>.yaml` and compiled by `locale.build_policy()` into a `Policy`
+   the engine and pipelines read (`self.policy`). `rules.py` holds only the generic layer.
+   Equivalence was verified: `locale="lk"` reproduces the previously hard-coded outputs
+   byte-for-byte on the whole corpus. Trade-off: regexes in YAML are harder to unit-test
+   than code, so `tests/test_locale.py` validates the template and each bundled file.
 3. **Role-ending "names" dropped** — a PERSON whose final word is a role/honorific
    (*Hon. Attorney*) is a title fragment.
 4. **Date policy** — `DATE_TIME` survives only per policy (`birth`/`all`/`none`); digit-only

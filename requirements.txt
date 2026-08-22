@@ -5,6 +5,7 @@ spacy==3.8.15
 phonenumbers==9.0.37
 openpyxl==3.1.5
 pymupdf==1.28.2
+pyyaml>=6
 
 # Web UI
 flask==3.1.3

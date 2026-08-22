@@ -32,8 +32,10 @@ and [`ROADMAP.md`](ROADMAP.md) (evaluated next steps with pros/cons).
 
 ```
 maskroom/            the engine, installed as a package (`pip install -e .`)
-  rules.py           detection policy: column rules, value-profile patterns, validators, entity lists
-  recognizers.py     custom Presidio recognizers (financial, names, Sri Lankan identifiers)
+  rules.py           generic detection policy: column rules, profile patterns, validators, entity lists
+  locale.py          loads a country locale (YAML) and compiles it with the generic rules into a Policy
+  locales/           lk.yaml (Sri Lanka), in.yaml (India starter), _template.yaml
+  recognizers.py     Presidio recognizers: generic (financial, names) + built from the locale
   engine.py          FinancialPrivacyEngine: analyzer setup, text detection filters, tokens, vault
   excel.py           Excel pipeline: header/segment detection, column rules, mask & restore
   pdf.py             PDF pipeline: OCR, two-pass detection, spatial redaction
@@ -318,6 +320,7 @@ engine = FinancialPrivacyEngine(
     min_score=0.6,              # detection confidence threshold
     dates="birth",              # "birth" | "all" | "none"
     locations="address",        # "address" | "all" | "none"
+    locale="lk",                # "lk" | "in" | path/to/locale.yaml | "generic"
     nlp_model=None,             # or "en_core_web_trf"
     entities=None,              # or a whitelist, e.g. ["PERSON", "LK_NIC"]
 )
@@ -352,6 +355,7 @@ engine2.depseudonymize_excel("out.xlsx", "restored.xlsx")
 | `--nlp-model M` | `en_core_web_lg` | spaCy NER model, e.g. `en_core_web_trf` |
 | `--dates P` | `birth` | date policy: `birth` / `all` / `none` |
 | `--locations P` | `address` | location policy: `address` / `all` / `none` |
+| `--locale L` | `$PII_LOCALE` or `lk` | country knowledge: bundled code (`lk`, `in`), a YAML path, or `generic` |
 
 ---
 
@@ -383,6 +387,38 @@ public hotlines (1919, 119), company registration numbers, transaction/event dat
 titles, department and organization names.
 
 Redaction errs toward over-masking (safe direction); pseudonymization errs toward precision.
+
+---
+
+## Localizing to another country
+
+Nothing about Sri Lanka is hard-coded. All country knowledge lives in one YAML file under
+`maskroom/locales/` and is selected with `--locale` (CLI), the *Locale* selector (web UI),
+`locale=` (API) or the `PII_LOCALE` environment variable. `lk` is the default; `in` is a
+starter for India; `generic` runs with no country rules at all.
+
+A locale file declares:
+
+| Key | What it drives |
+|---|---|
+| `identifiers` | one Presidio recognizer per national ID/passport/etc. (patterns + scores + context words), a **column-header rule** (whole column masked when the header matches) and an optional **value-profile rule** (column masked when ≥90% of values match the regex + validator, whatever the header says) |
+| `phone_patterns`, `phone_profile_regex`, `phone_regions` | local phone formats and the regions for the `phonenumbers` validator |
+| `enable_builtin` | which of Presidio's country recognizers (`IN_AADHAAR`, `UK_NHS`, `ES_NIF`…) to switch on — all are off by default because their checksums fire on random numbers |
+| `honorifics` | local titles/role nouns so "*Shri* Ramesh" / "*Mudaliyar* Silva" count as people |
+| `address_words` | local street vocabulary (*mawatha*, *nagar*, *marg*) for the address policy |
+| `places` | gazetteer of provinces/districts/towns — NER mislabels unfamiliar towns as people; this relabels them as places |
+
+To add a country:
+
+```bash
+cp maskroom/locales/_template.yaml maskroom/locales/xx.yaml   # edit: code, name, identifiers, places…
+pii_env/bin/maskroom data.xlsx out.xlsx --locale xx             # or --locale /path/to/xx.yaml
+pii_env/bin/pytest -q tests/test_locale.py                      # template/schema checks
+```
+
+Validators referenced by name in `profile.validator` are `luhn`, `ssn`, `lk_nic`, `verhoeff`
+(Aadhaar); add new ones to `rules.VALIDATORS`. The generic layer (emails, cards, accounts,
+inverted all-caps names, date/location policies, column and keep rules) applies to every locale.
 
 ---
 
