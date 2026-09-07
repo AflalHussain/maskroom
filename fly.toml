@@ -1,0 +1,17 @@
+# Fly.io config: `fly launch --copy-config --no-deploy`, then
+# `fly secrets set PII_TOKEN_SALT=...` and `fly deploy`.
+app = "maskroom"
+primary_region = "sin"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # keep the model loaded
+  min_machines_running = 1
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 2

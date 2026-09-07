@@ -165,4 +165,6 @@ def download(run_id, fname):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5170, debug=False)
+    # Local default: loopback only. Containers/PaaS set HOST=0.0.0.0 and PORT.
+    app.run(host=os.environ.get("HOST", "127.0.0.1"),
+            port=int(os.environ.get("PORT", "5170")), debug=False)

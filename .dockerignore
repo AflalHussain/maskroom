@@ -1,0 +1,14 @@
+pii_env/
+local/
+webui/runs/
+tests/
+docs/
+scripts/
+.git/
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+vault*.json
+*_MASKED.*
+*_RESTORED.*

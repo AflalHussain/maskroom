@@ -1,0 +1,11 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: maskroom
+    runtime: docker
+    plan: standard          # 2 GB RAM; the NLP model needs ~1 GB
+    region: singapore
+    healthCheckPath: /
+    envVars:
+      - key: PII_TOKEN_SALT
+        sync: false         # set in the dashboard, never committed

@@ -45,6 +45,7 @@ tests/               pytest suite; tests/data/ holds the test corpus and the str
 scripts/             gen_stress.py (regenerate the stress workbook), time_excel.py (timing)
 docs/                technical design and technologies documents
 setup.sh             one-shot environment setup
+Dockerfile           container image for the web UI (gunicorn); render.yaml / fly.toml deploy configs
 ```
 
 ---
@@ -251,6 +252,40 @@ WantedBy=default.target
 ```bash
 systemctl --user daemon-reload && systemctl --user enable --now maskroom
 ```
+
+### Deploy as a container
+
+The web UI is a long-running server with a ~1 GB in-memory NLP model, Tesseract and a
+local scratch directory, so static/serverless hosts (Netlify, Vercel, Cloudflare Pages)
+cannot run it. Deploy the `Dockerfile` on any platform that keeps one container alive
+with **2 GB RAM or more**; the image is ~2 GB and the first request after a deploy takes
+up to a minute while the model loads.
+
+```bash
+docker build -t maskroom .
+docker run --rm -p 8080:8080 -e PII_TOKEN_SALT="choose-a-long-random-secret" maskroom
+# → open http://127.0.0.1:8080
+```
+
+The container runs gunicorn with one worker (each worker would load its own copy of the
+model) and reads `HOST` / `PORT` from the environment. Ready-made configs:
+
+| Platform | Config | Deploy |
+|---|---|---|
+| Render | `render.yaml` | New → Blueprint, pick the repo, set `PII_TOKEN_SALT` in the dashboard |
+| Fly.io | `fly.toml` | `fly launch --copy-config --no-deploy`, `fly secrets set PII_TOKEN_SALT=…`, `fly deploy` |
+| Cloud Run / others | `Dockerfile` | build & push the image; set min instances to 1 so the model stays loaded |
+| Own VPS | `Dockerfile` | `docker run` as above under systemd; the only option where data never leaves your infrastructure |
+
+Before exposing it publicly:
+
+- **Add authentication.** The UI and `/api/*` endpoints have no login; put them behind an
+  auth proxy (Cloudflare Access, oauth2-proxy, your platform's SSO) or a private network.
+- **Choose the region deliberately.** Uploads contain PII; both configs default to
+  Singapore — change `region` / `primary_region` to match your data-residency needs.
+- **Treat `webui/runs/` as ephemeral.** It lives on the container filesystem and is lost
+  on redeploy; download masked files and vaults promptly.
+- **Skip the transformer model** unless the instance has 4 GB+ RAM.
 
 ### Troubleshooting
 
