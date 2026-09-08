@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Maskroom for Claude",
+  "version": "0.1.0",
+  "description": "Pseudonymize names, identifiers and contact details in the claude.ai composer before you send, and show the real values again in replies. Needs a Maskroom server.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://claude.ai/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["tokens.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": { "page": "options.html", "open_in_tab": false },
+  "action": { "default_title": "Maskroom", "default_popup": "options.html" },
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
+}

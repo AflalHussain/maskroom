@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Maskroom harness</title>
+<style>body{font-family:system-ui;margin:24px} main{max-width:700px} .msg{padding:10px;border:1px solid #ccc;margin:8px 0}
+.ProseMirror{border:1px solid #888;min-height:60px;padding:8px} .ProseMirror p{margin:0}</style></head>
+<body>
+<main>
+  <div id="messages"></div>
+  <fieldset>
+    <div contenteditable="true" class="ProseMirror" data-placeholder="Reply to Claude..."><p></p></div>
+    <button aria-label="Send message" id="send">Send</button>
+  </fieldset>
+</main>
+<script>
+// A stand-in for claude.ai: Enter or the send button "sends" the composer
+// text as a user message; tests append assistant messages via addReply().
+const composer = document.querySelector(".ProseMirror");
+window.sent = [];
+function send() {
+  const t = composer.innerText.trim();
+  if (!t) return;
+  window.sent.push(t);
+  const d = document.createElement("div"); d.className = "msg user"; d.textContent = t;
+  document.getElementById("messages").appendChild(d);
+  composer.innerHTML = "<p></p>";
+}
+document.getElementById("send").addEventListener("click", send);
+composer.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+window.addReply = (text) => {
+  const d = document.createElement("div"); d.className = "msg assistant";
+  document.getElementById("messages").appendChild(d);
+  // stream it in chunks like the real UI
+  let i = 0; const step = () => { d.textContent = text.slice(0, i += 7); if (i < text.length) setTimeout(step, 5); };
+  step();
+};
+</script>
+</body></html>

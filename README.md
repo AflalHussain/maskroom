@@ -41,6 +41,7 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
   excel.py           Excel pipeline: header/segment detection, column rules, mask & restore
   pdf.py             PDF pipeline: OCR, two-pass detection, spatial redaction
   cli.py             the `maskroom` command
+extension/           Chrome extension for claude.ai (mask the composer, unmask replies on screen)
 webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
                      static/staging.html = LLM staging page; runs and session vaults
                      land in webui/runs/ (ignored)
@@ -422,6 +423,14 @@ downloaded, and is deleted on *end session* or after `SESSION_TTL_HOURS` (defaul
 inactivity. What the staging area cannot do is enforce anything: a user can still type
 directly into the chat app. Pair it with an organisational control (Claude Enterprise
 inference hooks can *deny* prompts containing raw identifiers) if masking must be mandatory.
+
+### Browser extension for claude.ai
+
+[`extension/`](extension/README.md) holds an unpacked Chrome extension that talks to this
+server: a *Mask* button (and a guard on Enter/send) pseudonymizes the composer text in
+place — you still press send yourself — and replies are restored on screen only. It covers
+typed text, not attachments, and is unsupported by Anthropic; see the extension README
+for the install steps and the terms-of-service caveat.
 
 ### JSON API
 

@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Maskroom settings</title>
+<style>
+body{font:13px/1.5 system-ui,sans-serif;margin:0;padding:16px;min-width:340px;background:#141a20;color:#e9e4d8}
+h1{font-size:14px;letter-spacing:.08em;text-transform:uppercase;color:#d9a441;margin:0 0 12px}
+label{display:block;margin:10px 0 4px;color:#8d94a1;font-size:12px}
+input[type=text],input[type=password]{width:100%;box-sizing:border-box;background:#0c1013;border:1px solid #26303a;color:#e9e4d8;padding:7px 9px;border-radius:4px;font:12.5px ui-monospace,Menlo,monospace}
+.row{display:flex;align-items:center;gap:8px;margin-top:10px;color:#e9e4d8}
+.row input{accent-color:#d9a441}
+button{margin-top:14px;background:#d9a441;color:#0c1013;border:0;border-radius:4px;padding:8px 14px;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;border:1px solid #3a4650;color:#e9e4d8;margin-left:8px}
+#status{margin-top:10px;font-size:12px;color:#8d94a1;min-height:1.4em}
+#status.ok{color:#3fb98d} #status.bad{color:#e2574c}
+p.note{color:#5a6270;font-size:11.5px;margin:12px 0 0}
+</style></head>
+<body>
+<h1>Maskroom for Claude</h1>
+<label for="serverUrl">Maskroom server URL</label>
+<input type="text" id="serverUrl" placeholder="http://127.0.0.1:5170">
+<label for="apiKey">API key (if the server sets MASKROOM_API_KEY)</label>
+<input type="password" id="apiKey">
+<div class="row"><input type="checkbox" id="guard"><label for="guard" style="margin:0;color:#e9e4d8">Guard: Enter/send masks unmasked text first</label></div>
+<div class="row"><input type="checkbox" id="unmask"><label for="unmask" style="margin:0;color:#e9e4d8">Show real values in replies (on screen only)</label></div>
+<div class="row"><input type="checkbox" id="preamble"><label for="preamble" style="margin:0;color:#e9e4d8">Prepend the token instruction once per session</label></div>
+<button id="save">Save</button><button class="ghost" id="test">Test connection</button>
+<div id="status"></div>
+<p class="note">Files and attachments are not covered — use the Maskroom staging page for those.
+This extension is not supported by Anthropic and depends on claude.ai's page structure.</p>
+<script src="options.js"></script>
+</body></html>
