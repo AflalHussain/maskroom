@@ -299,11 +299,11 @@ This changes the threat model in two ways and re-orders the list above.
 
 | # | Item | Change |
 |---|---|---|
-| 1 | Response restore: tolerant `depseudonymize_text`, LLM-friendly token surface form, unresolved-token report | new, first — without it the round trip does not exist |
+| 1 | Response restore: tolerant `depseudonymize_text`, LLM-friendly token surface form, unresolved-token report | **done 2026-09-08** (`unmask_text`; token surface form kept as `TOK_…`, the tolerant matcher absorbs the mangling) |
 | 2 | OCR confidence with block-on-poor | up |
 | 3 | Batching → trf default for free text | up (medium → high) |
-| 4 | PDF text-mode output for LLM input | new |
+| 4 | PDF text-mode output for LLM input | **done 2026-09-08** (`pseudonymize_pdf_text`, `pdf_mode=text`) |
 | 5 | Sinhala/Tamil stage 1 | up |
-| 6 | Session vault lifecycle + HMAC + encryption + run TTL | reframed; still before production |
+| 6 | Session vault lifecycle + HMAC + encryption + run TTL | lifecycle + per-session HMAC salt + TTL **done 2026-09-08** (`maskroom/session.py`); vault encryption at rest still open |
 | 7 | Strict profile for quasi-identifiers; structured run reports for audit | new / promoted |
 | 8 | Sinhala/Tamil stage 2 (multilingual NER) | unchanged |

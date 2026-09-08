@@ -52,30 +52,22 @@ class PdfMixin:
         return page.get_textpage_ocr(language="eng", dpi=ocr_dpi, full=True,
                                      tessdata=tessdata)
 
-    def redact_spatial_pdf(self, input_path, output_path):
-        """
-        Redact a PDF in two passes. Pass 1 detects entities over each page's
-        whitespace-normalized text (layouts that break names across lines
-        defeat NER otherwise). Pass 2 blacks out every occurrence of every
-        detected value on every page — so a name NER only caught once is
-        still removed wherever else it appears — and scrubs the underlying
-        character stream. Individual words of detected person names are
-        propagated too, catching partial mentions of the same person.
-        Scanned pages are OCR'd and the matching image pixels are destroyed,
-        not merely covered.
-        """
+    def _open_pages(self, input_path):
+        """Open a PDF and return (doc, pages, textpages, raw_texts). Keep one
+        Page object per page alive for the whole run: an OCR textpage
+        weak-references its page and dies with it otherwise."""
         doc = fitz.open(input_path)
-
-        # Keep one Page object per page alive for the whole run: an OCR
-        # textpage weak-references its page and dies with it otherwise.
         pages = [doc[i] for i in range(len(doc))]
         textpages = [self._textpage_for(page) for page in pages]
-        page_texts = [
-            re.sub(r"\s+", " ", page.get_text("text", textpage=tp))
-            for page, tp in zip(pages, textpages)
-        ]
+        raw_texts = [page.get_text("text", textpage=tp) for page, tp in zip(pages, textpages)]
+        return doc, pages, textpages, raw_texts
 
-        # Pass 1: document-wide detection.
+    def _pdf_snippets(self, page_texts):
+        """
+        Pass 1: document-wide detection over whitespace-normalized page
+        texts. Returns {snippet: entity_type} including propagated name
+        words and expanded capitalized runs; appends to self.report.
+        """
         snippets = {}  # {text: entity_type}
         for page_no, text in enumerate(page_texts, 1):
             for result in self.analyze_text(text):
@@ -116,6 +108,59 @@ class PdfMixin:
                 self.report.append(
                     {"where": "document", "method": "propagated",
                      "entity": entity_type, "score": None, "text": snippet})
+        return snippets
+
+    def pseudonymize_pdf_text(self, input_path, output_path=None):
+        """
+        Text mode for LLM input: extract each page's text (native layer or
+        OCR), detect PII document-wide exactly as the spatial redactor does,
+        and replace every occurrence with a reversible vault token instead
+        of a black box. Returns the masked text (Markdown, one section per
+        page); writes it to output_path when given.
+        """
+        doc, pages, textpages, raw_texts = self._open_pages(input_path)
+        try:
+            snippets = self._pdf_snippets([re.sub(r"\s+", " ", t) for t in raw_texts])
+        finally:
+            doc.close()
+
+        # Longest snippet first so "Nimal Perera" wins over the propagated
+        # "Perera". Whitespace inside a snippet may be a line break in the
+        # raw text; a token's own body (TOK_..._HEX) is never re-matched
+        # because word characters guard both ends.
+        patterns = [
+            (re.compile(r"(?<!\w)" + r"\s+".join(re.escape(w) for w in snippet.split())
+                        + r"(?!\w)"), snippet, entity)
+            for snippet, entity in sorted(snippets.items(), key=lambda kv: -len(kv[0]))
+        ]
+        sections = []
+        for page_no, text in enumerate(raw_texts, 1):
+            for pat, snippet, entity in patterns:
+                text = pat.sub(lambda m, s=snippet, e=entity: self.generate_token(s, e), text)
+            sections.append(f"## Page {page_no}\n\n{text.strip()}\n")
+        masked = "\n".join(sections)
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(masked)
+            print(f"[Success] Masked text saved to: {output_path} "
+                  f"({len(snippets)} distinct values tokenized)")
+        return masked
+
+    def redact_spatial_pdf(self, input_path, output_path):
+        """
+        Redact a PDF in two passes. Pass 1 detects entities over each page's
+        whitespace-normalized text (layouts that break names across lines
+        defeat NER otherwise). Pass 2 blacks out every occurrence of every
+        detected value on every page — so a name NER only caught once is
+        still removed wherever else it appears — and scrubs the underlying
+        character stream. Individual words of detected person names are
+        propagated too, catching partial mentions of the same person.
+        Scanned pages are OCR'd and the matching image pixels are destroyed,
+        not merely covered.
+        """
+        doc, pages, textpages, raw_texts = self._open_pages(input_path)
+        page_texts = [re.sub(r"\s+", " ", t) for t in raw_texts]
+        snippets = self._pdf_snippets(page_texts)
 
         # Pass 2: redact every occurrence of every detected value. Rects
         # come from matching the snippet's tokens against the page's word

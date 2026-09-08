@@ -15,6 +15,20 @@ from .excel import ExcelMixin
 from .pdf import PdfMixin
 
 
+def build_nlp_engine(nlp_model=None, language="en"):
+    """Build (and load) a Presidio spaCy NLP engine for `nlp_model`
+    (None = Presidio's default). Share the result between engines."""
+    from presidio_analyzer.nlp_engine import NlpEngineProvider
+    if nlp_model:
+        provider = NlpEngineProvider(nlp_configuration={
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": language, "model_name": nlp_model}],
+        })
+    else:
+        provider = NlpEngineProvider()
+    return provider.create_engine()
+
+
 class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
     # Generic policy constants (rules.py); the country-specific part is
     # compiled into self.policy from the locale file.
@@ -26,7 +40,7 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
 
     def __init__(self, salt=None, min_score=0.6, entities=None, language="en",
                  nlp_model=None, dates="birth", locations="address", column_rules=True,
-                 locale=DEFAULT_LOCALE):
+                 locale=DEFAULT_LOCALE, nlp_engine=None):
         """
         salt:      secret used for deterministic tokens. Prefer the
                    PII_TOKEN_SALT environment variable over hardcoding.
@@ -50,6 +64,11 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
         locale:    country knowledge — a bundled code ("lk", "in"), a path
                    to a locale YAML, or None/"generic" for no country
                    specifics. Default from PII_LOCALE, else "lk".
+        nlp_engine: an already-built Presidio NLP engine to share between
+                   engine instances (see build_nlp_engine); overrides
+                   nlp_model. Loading spaCy is the expensive part of
+                   construction, so long-running services build one per
+                   model and pass it here.
         """
         if dates not in ("birth", "all", "none"):
             raise ValueError('dates must be "birth", "all", or "none"')
@@ -71,15 +90,9 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
         self._last_findings = []  # findings of the most recent analyze call
         self.analyzer_calls = 0
 
-        if nlp_model:
-            from presidio_analyzer.nlp_engine import NlpEngineProvider
-            provider = NlpEngineProvider(nlp_configuration={
-                "nlp_engine_name": "spacy",
-                "models": [{"lang_code": language, "model_name": nlp_model}],
-            })
-            self.analyzer = AnalyzerEngine(nlp_engine=provider.create_engine())
-        else:
-            self.analyzer = AnalyzerEngine()
+        if nlp_engine is None and nlp_model:
+            nlp_engine = build_nlp_engine(nlp_model, language)
+        self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine) if nlp_engine else AnalyzerEngine()
         self.anonymizer = AnonymizerEngine()
         recognizers.install(self.analyzer.registry, self.policy)
 
@@ -251,8 +264,73 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
         return outcome.text, outcome.text != text
 
     def depseudonymize_text(self, text):
-        """Restore original values for any vault tokens present in `text`."""
-        return rules.TOKEN_RE.sub(lambda m: self.vault.get(m.group(0), m.group(0)), text)
+        """Restore original values for any vault tokens present in `text`.
+        Tolerant of the ways an LLM mangles tokens; see unmask_text."""
+        return self.unmask_text(text)[0]
+
+    @staticmethod
+    def _token_key(token):
+        return re.sub(r"[^A-Z0-9]", "", token.upper())
+
+    def unmask_text(self, text):
+        """
+        Restore vault tokens in text that came back from an LLM.
+
+        Exact tokens are replaced first. Then every loose match (any case,
+        spaces/hyphens/escaped underscores as separators, truncated id) is
+        resolved through a normalized index, and an id that is a prefix of
+        (or extends) exactly one vault id of the same entity type is accepted
+        as a near-match. Whatever still looks like a token afterwards is
+        reported, never guessed.
+
+        Returns (restored_text, report) with report =
+        {"restored": n, "fuzzy": [{"seen", "token"}], "unresolved": [str],
+         "values": [original values restored, longest first]}.
+        """
+        report = {"restored": 0, "fuzzy": [], "unresolved": [], "values": []}
+        if "tok" not in text.casefold():
+            return text, report
+        values = set()
+
+        index = {self._token_key(t): t for t in self.vault}
+        by_entity = {}
+        for tok in self.vault:
+            entity, _, hexid = tok[4:].rpartition("_")
+            by_entity.setdefault(self._token_key(entity), []).append((hexid, tok))
+
+        def exact(m):
+            value = self.vault.get(m.group(0))
+            if value is None:
+                return m.group(0)  # leave it for the tolerant pass
+            report["restored"] += 1
+            values.add(value)
+            return value
+
+        def loose(m):
+            seen = m.group(0)
+            key = self._token_key(seen)
+            token = index.get(key)
+            if token is None:
+                hexid = m.group(1).upper()
+                entity = key[3:len(key) - len(hexid)]
+                if len(hexid) >= rules.MIN_TOKEN_ID_MATCH:
+                    hits = [t for h, t in by_entity.get(entity, [])
+                            if h.startswith(hexid) or hexid.startswith(h)]
+                    if len(hits) == 1:
+                        token = hits[0]
+            if token is None:
+                return seen
+            if seen != token:
+                report["fuzzy"].append({"seen": seen, "token": token})
+            report["restored"] += 1
+            values.add(self.vault[token])
+            return self.vault[token]
+
+        restored = rules.TOKEN_RE.sub(exact, text)
+        restored = rules.LOOSE_TOKEN_RE.sub(loose, restored)
+        report["unresolved"] = [m.group(0) for m in rules.LEFTOVER_TOKEN_RE.finditer(restored)]
+        report["values"] = sorted(values, key=len, reverse=True)
+        return restored, report
 
     # ------------------------------------------------------------- vault
     # Plaintext JSON: store securely (see docs/TECHNICAL_DESIGN.md §5).

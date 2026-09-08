@@ -17,6 +17,7 @@ A pseudonymization and redaction engine for Excel workbooks and PDF documents, b
 1. [How it works](#how-it-works)
 2. [Setup](#setup)
 3. [Usage](#usage)
+4. [LLM staging: masking before Claude / ChatGPT](#llm-staging-masking-before-claude--chatgpt)
 4. [Options reference](#options-reference)
 5. [The vault](#the-vault)
 6. [What gets masked (and what doesn't)](#what-gets-masked-and-what-doesnt)
@@ -40,7 +41,10 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
   excel.py           Excel pipeline: header/segment detection, column rules, mask & restore
   pdf.py             PDF pipeline: OCR, two-pass detection, spatial redaction
   cli.py             the `maskroom` command
-webui/               Flask UI (app.py, static/index.html); uploads land in webui/runs/ (ignored)
+webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
+                     static/staging.html = LLM staging page; runs and session vaults
+                     land in webui/runs/ (ignored)
+  session.py         (in maskroom/) per-conversation vault store used by the API
 tests/               pytest suite; tests/data/ holds the test corpus and the stress answer key
 scripts/             gen_stress.py (regenerate the stress workbook), time_excel.py (timing)
 docs/                technical design and technologies documents
@@ -368,12 +372,86 @@ engine.redact_spatial_pdf("in.pdf", "out.pdf")
 # free-text helpers
 masked, changed = engine.pseudonymize_text("Call Nimal on 077-1234567")
 original = engine.depseudonymize_text(masked)
+# tolerant restore of an LLM reply: case/separator changes and truncated
+# ids are resolved against the vault; anything else is reported, not guessed
+restored, report = engine.unmask_text("as tok person 3f9a1c22 said ...")
+# report == {"restored": 1, "fuzzy": [...], "unresolved": [...], "values": [...]}
+
+# PDF as masked text (reversible) instead of black boxes — for LLM input
+masked_md = engine.pseudonymize_pdf_text("in.pdf", "in_masked.md")
 
 # reverse a workbook later
 engine2 = FinancialPrivacyEngine()
 engine2.load_vault("vault.json")
 engine2.depseudonymize_excel("out.xlsx", "restored.xlsx")
 ```
+
+---
+
+## LLM staging: masking before Claude / ChatGPT
+
+Chat products such as claude.ai, Claude Cowork or ChatGPT offer no supported hook for
+rewriting what a user sends, so the honest architecture is a **staging area**: mask here,
+paste the safe version there, paste the reply back here to restore names. See
+[`docs/LLM_MIDDLEWARE_RESEARCH.md`](docs/LLM_MIDDLEWARE_RESEARCH.md) for why the other
+interception points (browser extension, MCP, gateway, hooks) do or do not work.
+
+```bash
+pii_env/bin/python webui/app.py     # then open http://127.0.0.1:5170/staging
+```
+
+The page has three steps that share one **session vault**:
+
+1. **Mask text** — paste a prompt; every detected name, identifier, contact detail and
+   street address becomes a `TOK_<TYPE>_<ID>` pseudonym. *Copy for Claude* puts the masked
+   text on the clipboard, prefixed (optionally) with a one-line instruction telling the
+   model to treat tokens as opaque labels and repeat them verbatim.
+2. **Mask files** — drop `.xlsx`/`.pdf`. Excel gives a masked workbook plus a Markdown
+   rendering (for chat surfaces without spreadsheet support); PDFs come back as masked
+   **text**, one section per page, instead of black boxes, so the model still sees the
+   content. Everything joins the same vault, so the same person gets the same token in the
+   prompt and in the attachment.
+3. **Unmask the reply** — paste the answer; tokens are restored even when the model
+   lowercased them, swapped underscores for spaces or hyphens, escaped them for Markdown or
+   truncated the id. Near-matches are listed as such and anything unresolved is shown in
+   red, never guessed.
+
+A session lives in `webui/runs/sessions/<id>/vault.json`, is shared by every call that
+carries its id, gets its own token salt (tokens from two sessions never coincide), can be
+downloaded, and is deleted on *end session* or after `SESSION_TTL_HOURS` (default 24) of
+inactivity. What the staging area cannot do is enforce anything: a user can still type
+directly into the chat app. Pair it with an organisational control (Claude Enterprise
+inference hooks can *deny* prompts containing raw identifiers) if masking must be mandatory.
+
+### JSON API
+
+Every route is also usable from scripts, gateways, hooks or an MCP server. Set
+`MASKROOM_API_KEY` to require an `X-API-Key` header (or `?key=`) on all `/api/*` routes.
+
+| Route | Body / form | Returns |
+|---|---|---|
+| `POST /api/session` | – | `{session_id, created, vault_entries}` |
+| `GET /api/session/<id>` | – | session info |
+| `DELETE /api/session/<id>` | – | `{deleted}` |
+| `GET /api/session/<id>/vault` | – | the vault JSON (protect it) |
+| `POST /api/mask` | JSON `{text, session_id?, locale?, dates?, locations?, min_score?, entities?, nlp_model?}` | `{session_id, masked, changed, findings[{entity,score,text,token}], vault_entries, preamble, elapsed_s}` — omit `session_id` to start a session |
+| `POST /api/unmask` | JSON `{text, session_id}` | `{text, restored, fuzzy[{seen,token}], unresolved[], values[]}` |
+| `POST /api/process` | multipart `file` + options; `session_id` or `session=true`; `pdf_mode=text\|redact`; `restore=true` with a `vault` file **or** a `session_id`; `preview=false` to skip previews | run summary with `downloads.output`, `downloads.text` (`masked.md`), `downloads.vault` |
+| `GET /api/download/<run>/<file>` | – | the file |
+| `GET /api/text/<run>/<file>.md` | – | `{text}` (for copy-to-clipboard) |
+| `GET /api/config` | – | `{auth_required, locales, default_locale, session_ttl_hours, preamble}` (never needs a key) |
+
+```bash
+SID=$(curl -s -X POST localhost:5170/api/session | jq -r .session_id)
+curl -s localhost:5170/api/mask -H 'content-type: application/json' \
+  -d "{\"text\":\"Nimal Perera, NIC 853421234V, 077-1234567\",\"session_id\":\"$SID\"}" | jq .masked
+curl -s localhost:5170/api/unmask -H 'content-type: application/json' \
+  -d "{\"text\":\"tok person 8b584ccf is overdue\",\"session_id\":\"$SID\"}" | jq .
+```
+
+Engines are built once per option set and share one spaCy model load; all analysis is
+serialized through one lock (the first request after start-up pays the model load). Text
+bodies are capped at `MAX_TEXT_CHARS` (default 200 000).
 
 ---
 
@@ -405,7 +483,9 @@ cells (so restore preserves cell types).
 
 Tokens are deterministic: the same value + same salt always produces the same token, so
 referential integrity holds across sheets, files, and runs (joins on a masked column still
-work). Changing `PII_TOKEN_SALT` changes all tokens.
+work). Changing `PII_TOKEN_SALT` changes all tokens. Session vaults (see
+[LLM staging](#llm-staging-masking-before-claude--chatgpt)) derive a per-session salt from
+it with HMAC, so tokens are stable within a conversation but differ between conversations.
 
 ---
 

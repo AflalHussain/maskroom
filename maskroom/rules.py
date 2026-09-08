@@ -6,6 +6,28 @@ import re
 # Matches tokens produced by the engine, e.g. TOK_US_SSN_8B584CCF
 TOKEN_RE = re.compile(r"TOK_[A-Z0-9_]+_[0-9A-F]{8,}")
 
+# Tolerant form of TOKEN_RE for text that came back from an LLM. Models
+# lowercase tokens, swap underscores for spaces or hyphens, escape them for
+# markdown (TOK\_PERSON\_8B584CCF) and truncate the hex id. Group 1 is
+# the hex id; the entity words sit between "TOK" and the id.
+LOOSE_TOKEN_RE = re.compile(
+    r"\bTOK(?:[\s_\-\\]{1,3}[A-Z]{2,})+?[\s_\-\\]{1,3}([0-9A-F]{6,})",
+    re.IGNORECASE,
+)
+# Anything that still looks like a token after restore: reported, never guessed.
+LEFTOVER_TOKEN_RE = re.compile(r"\bTOK[\s_\-\\]{1,3}[A-Z]{2,}[\w\\\-]*", re.IGNORECASE)
+# Shortest hex prefix accepted when matching a truncated id to the vault.
+MIN_TOKEN_ID_MATCH = 6
+
+# Instruction placed before masked text sent to an LLM so the tokens survive
+# the round trip (fewer paraphrases, case changes and "corrections").
+LLM_TOKEN_PREAMBLE = (
+    "Note: identifiers written as TOK_<TYPE>_<ID> (for example TOK_PERSON_8B584CCF) "
+    "are pseudonyms standing in for real names, numbers and addresses. Treat each "
+    "one as an opaque label: copy it exactly as written whenever you refer to it, "
+    "keep the same spelling and case, and do not guess what it stands for."
+)
+
 # Bare numbers carry no linguistic signal, so NER entities (PERSON,
 # DATE_TIME, LOCATION, ...) are meaningless for numeric cells. Only
 # pattern/checksum-validated identifier types apply.

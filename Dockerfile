@@ -24,5 +24,6 @@ ENV HOST=0.0.0.0 PORT=8080 PYTHONUNBUFFERED=1
 EXPOSE 8080
 
 # One worker: the spaCy model is loaded once per process (~1 GB RAM each).
-# Threads serve concurrent uploads; a lock in app.py serializes engine use.
+# Threads serve concurrent requests; the session store's engine lock serializes
+# analysis. Set MASKROOM_API_KEY to protect /api and SESSION_TTL_HOURS for vault expiry.
 CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 4 --timeout 300 --bind 0.0.0.0:${PORT} webui.app:app"]

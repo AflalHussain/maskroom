@@ -1,0 +1,126 @@
+"""HTTP API: session lifecycle, text mask/unmask round trip, file runs
+joining a session, PDF text mode, API key gate."""
+import io
+import json
+import os
+
+import openpyxl
+import pytest
+
+
+@pytest.fixture(scope="module")
+def client(tmp_path_factory):
+    os.environ.pop("MASKROOM_API_KEY", None)
+    from webui import app as webapp
+    runs = str(tmp_path_factory.mktemp("runs"))
+    webapp.RUNS = runs
+    webapp.sessions = webapp.SessionStore(os.path.join(runs, "sessions"), ttl=None, base_salt="t")
+    webapp.app.config["TESTING"] = True
+    return webapp.app.test_client()
+
+
+def post_json(client, path, body):
+    r = client.post(path, data=json.dumps(body), content_type="application/json")
+    return r.status_code, r.get_json()
+
+
+def test_session_lifecycle(client):
+    code, s = post_json(client, "/api/session", {})
+    assert code == 200 and s["vault_entries"] == 0
+    sid = s["session_id"]
+    assert client.get(f"/api/session/{sid}").get_json()["session_id"] == sid
+    assert client.get("/api/session/doesnotexist1").status_code == 404
+    assert client.delete(f"/api/session/{sid}").get_json()["deleted"] is True
+    assert client.get(f"/api/session/{sid}").status_code == 404
+
+
+def test_mask_unmask_roundtrip(client):
+    text = "Nimal Perera (NIC 853421234V) called from 077-1234567 about the Galle Road branch."
+    code, d = post_json(client, "/api/mask", {"text": text})
+    assert code == 200 and d["changed"]
+    sid = d["session_id"]
+    assert "Nimal" not in d["masked"] and "853421234V" not in d["masked"]
+    assert any(f["entity"] == "PERSON" and f["token"] for f in d["findings"])
+    assert d["preamble"].startswith("Note:")
+
+    # second turn in the same session reuses the same token for the same value
+    code, d2 = post_json(client, "/api/mask", {"text": "Nimal Perera again", "session_id": sid})
+    tok = next(f["token"] for f in d["findings"] if f["entity"] == "PERSON")
+    assert tok in d2["masked"]
+
+    # a reply with mangled tokens restores
+    reply = "Re " + d["masked"].lower().replace("_", " ")
+    code, u = post_json(client, "/api/unmask", {"text": reply, "session_id": sid})
+    assert code == 200 and "Nimal Perera" in u["text"] and "853421234V" in u["text"]
+    assert u["restored"] >= 3 and not u["unresolved"]
+
+    # another session cannot unmask it
+    code, other = post_json(client, "/api/session", {})
+    code, u2 = post_json(client, "/api/unmask", {"text": d["masked"], "session_id": other["session_id"]})
+    assert u2["restored"] == 0 and u2["unresolved"]
+
+    # vault download
+    r = client.get(f"/api/session/{sid}/vault")
+    assert r.status_code == 200 and tok in json.loads(r.data)["mappings"]
+
+
+def test_unmask_requires_session(client):
+    assert post_json(client, "/api/unmask", {"text": "x"})[0] == 400
+    assert post_json(client, "/api/unmask", {"text": "x", "session_id": "unknown-session"})[0] == 404
+    assert post_json(client, "/api/mask", {"text": 5})[0] == 400
+
+
+def test_excel_run_joins_session(client, tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Name", "NIC", "Salary"])
+    ws.append(["Nimal Perera", "853421234V", 120000])
+    buf = io.BytesIO()
+    wb.save(buf)
+    code, s = post_json(client, "/api/session", {})
+    sid = s["session_id"]
+    r = client.post("/api/process", data={
+        "file": (io.BytesIO(buf.getvalue()), "staff.xlsx"),
+        "session_id": sid, "preview": "false"}, content_type="multipart/form-data")
+    d = r.get_json()
+    assert r.status_code == 200, d
+    assert d["session_id"] == sid and d["vault_entries"] >= 2 and d["downloads"]["text"] == "masked.md"
+    md = client.get(f"/api/text/{d['run_id']}/masked.md").get_json()["text"]
+    assert "TOK_PERSON_" in md and "Nimal" not in md and "120000" in md
+    # the session now unmasks the workbook's tokens
+    code, u = post_json(client, "/api/unmask", {"text": md, "session_id": sid})
+    assert "Nimal Perera" in u["text"] and "853421234V" in u["text"]
+    # and restores the masked workbook without a vault file
+    masked_xlsx = client.get(f"/api/download/{d['run_id']}/masked.xlsx").data
+    r = client.post("/api/process", data={
+        "file": (io.BytesIO(masked_xlsx), "masked.xlsx"), "restore": "true",
+        "session_id": sid, "preview": "false"}, content_type="multipart/form-data")
+    assert r.status_code == 200, r.get_json()
+    restored = openpyxl.load_workbook(io.BytesIO(
+        client.get(f"/api/download/{r.get_json()['run_id']}/restored.xlsx").data)).active
+    assert restored["A2"].value == "Nimal Perera" and restored["B2"].value == "853421234V"
+
+
+def test_pdf_text_mode(client, data_path):
+    pdfs = [f for f in os.listdir(data_path("")) if f.endswith(".pdf")]
+    if not pdfs:
+        pytest.skip("no PDF in the test corpus")
+    with open(data_path(pdfs[0]), "rb") as fh:
+        r = client.post("/api/process", data={
+            "file": (io.BytesIO(fh.read()), pdfs[0]), "pdf_mode": "text",
+            "session": "true", "preview": "false"}, content_type="multipart/form-data")
+    d = r.get_json()
+    assert r.status_code == 200, d
+    assert d["mode"] == "text" and d["downloads"]["output"] == "masked.md"
+    md = client.get(f"/api/text/{d['run_id']}/masked.md").get_json()["text"]
+    assert md.startswith("## Page 1")
+    for f in d["findings"]:
+        assert f["text"] not in md, f
+
+
+def test_api_key_gate(client, monkeypatch):
+    from webui import app as webapp
+    monkeypatch.setattr(webapp, "API_KEY", "secret")
+    assert client.post("/api/session").status_code == 401
+    assert client.get("/api/config").status_code == 200
+    assert client.post("/api/session", headers={"X-API-Key": "secret"}).status_code == 200
