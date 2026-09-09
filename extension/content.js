@@ -8,9 +8,12 @@
      browser, then press Enter again.
    - Restores real values in replies on screen only (the DOM you see); the
      conversation on Anthropic's side keeps the tokens.
-   What it does not do: files/attachments, other tabs, mobile. Use the
-   Maskroom staging page for files. This is unsupported by Anthropic and
-   depends on claude.ai's markup — every selector lives in SEL below. */
+   - "Mask file" sends a .xlsx/.pdf to the server and attaches the masked
+     version (workbook or Markdown text) to the chat; guard mode routes
+     files dropped or picked in claude.ai through the same path.
+   What it does not do: other tabs, mobile, other Claude surfaces. This is
+   unsupported by Anthropic and depends on claude.ai's markup — every
+   selector lives in SEL below. */
 (() => {
   if (window.__maskroomLoaded) return;
   window.__maskroomLoaded = true;
@@ -20,10 +23,15 @@
                'fieldset div[contenteditable="true"]', 'div[contenteditable="true"]'],
     sendButton: ['button[aria-label="Send message"]', 'button[aria-label="Send Message"]',
                  'button[aria-label*="Send" i]', 'button[data-testid="send-button"]'],
+    // claude.ai's own hidden file input (attach button) and the drop zone
+    fileInput: ['input[type="file"][multiple]', 'input[type="file"]'],
+    dropTarget: ['fieldset', 'form'],
   };
+  const FILE_RE = /\.(xlsx|xlsm|pdf)$/i;
+  const MAX_UPLOAD = 25 * 1024 * 1024;
   const T = self.MaskroomTokens;
 
-  let settings = { guard: true, unmask: true, preamble: true };
+  let settings = { guard: true, unmask: true, preamble: true, excelAttach: "xlsx" };
   let sessionId = null;
   let idx = T.buildIndex({});
   let entries = 0;
@@ -86,6 +94,20 @@
     await ensureSession();
     await loadVault();
     toast("New Maskroom session for this chat.");
+  }
+
+  // Adopt a session created elsewhere (the /staging page shows its id), so
+  // files masked there and text masked here share one vault.
+  async function adoptSession(id) {
+    id = (id || "").trim();
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) { toast("That does not look like a session id.", true); return false; }
+    const r = await api(`/api/session/${id}`);
+    if (!r.ok) { toast(r.status === 404 ? "Unknown or expired session id." : r.error, true); return false; }
+    sessionId = id; lastMasked = "";
+    await rememberSession(currentKey, id);
+    await loadVault(); renderBar();
+    toast(`Using session ${id.slice(0, 6)} (${entries} pseudonyms).`);
+    return true;
   }
 
   // ---------------------------------------------------------- composer
@@ -176,6 +198,121 @@
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — click send again."); else if (r.done) resend(); });
   }, true);
 
+  // --------------------------------------------------------------- files
+  const readB64 = (file) => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(",")[1] || "");
+    fr.onerror = () => rej(fr.error || new Error("read failed"));
+    fr.readAsDataURL(file);
+  });
+  const isOurs = (el) => !!(el && el.closest && el.closest("#maskroom-bar, #maskroom-toast"));
+
+  // Hand a File to claude.ai the way a user would: through its hidden file
+  // input if there is one, else a synthetic drop on the composer area. The
+  // page must show the file name within a few seconds to count as accepted.
+  async function attachFile(file) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = [...document.querySelectorAll(SEL.fileInput.join(","))].find((i) => !isOurs(i));
+    const composer = q(SEL.composer);
+    const target = (composer && composer.closest(SEL.dropTarget.join(","))) || composer || document.body;
+    if (input) {
+      try { input.files = dt.files; input.dispatchEvent(new Event("change", { bubbles: true })); } catch (e) { /* fall through */ }
+    }
+    if (!input || !(await fileVisible(file.name, 1200))) {
+      for (const type of ["dragenter", "dragover", "drop"]) {
+        target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      }
+    }
+    return fileVisible(file.name, 3000);
+  }
+  function fileVisible(name, ms) {
+    return new Promise((res) => {
+      const t0 = Date.now();
+      const check = () => {
+        for (const el of document.body.querySelectorAll("*")) {
+          if (isOurs(el) || el.closest('[contenteditable="true"]')) continue;
+          if (el.childElementCount === 0 && (el.textContent || "").includes(name)) return res(true);
+          if (el.value && String(el.value).includes(name) && el.tagName === "INPUT" && el.type === "file") return res(true);
+        }
+        if (Date.now() - t0 > ms) return res(false);
+        setTimeout(check, 150);
+      };
+      check();
+    });
+  }
+
+  async function maskFile(file) {
+    if (!FILE_RE.test(file.name)) { toast(`${file.name}: only .xlsx, .xlsm and .pdf can be masked.`, true); return false; }
+    if (file.size > MAX_UPLOAD) { toast(`${file.name}: larger than 25 MB.`, true); return false; }
+    if (busy) { toast("Still working on the previous file…", true); return false; }
+    busy = true; renderBar();
+    try {
+      await ensureSession();
+      toast(`Masking ${file.name}…`);
+      const b64 = await readB64(file);
+      const fields = { session_id: sessionId, pdf_mode: "text", preview: "false" };
+      let r = await call({ type: "upload", name: file.name, b64, fields });
+      if (!r.ok && r.status === 404) { sessionId = null; await ensureSession(); fields.session_id = sessionId; r = await call({ type: "upload", name: file.name, b64, fields }); }
+      if (!r.ok) throw new Error(r.error);
+      const d = r.data;
+      const isPdf = /\.pdf$/i.test(file.name);
+      const wantMd = isPdf || settings.excelAttach === "md";
+      const artefact = wantMd ? (d.downloads.text || d.downloads.output) : d.downloads.output;
+      const path = `/api/download/${d.run_id}/${artefact}`;
+      const bin = await call({ type: "fetchBinary", path });
+      if (!bin.ok) throw new Error(bin.error);
+      const bytes = Uint8Array.from(atob(bin.b64), (c) => c.charCodeAt(0));
+      const stem = file.name.replace(/\.[^.]+$/, "");
+      const ext = artefact.slice(artefact.lastIndexOf("."));
+      const type = ext === ".md" ? "text/markdown" : (ext === ".xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/octet-stream");
+      const masked = new File([bytes], `${stem}_masked${ext}`, { type });
+      entries = d.vault_entries;
+      const n = d.findings.length;
+      const ok = await attachFile(masked);
+      await loadVault();
+      if (ok) toast(`${file.name}: ${n} value${n === 1 ? "" : "s"} masked · attached as ${masked.name}. Review, then send.`);
+      else {
+        toast(`${file.name} was masked (${n} values) but claude.ai did not accept the attachment. Opening the masked file so you can attach it yourself.`, true);
+        window.open(await downloadUrl(path), "_blank");
+      }
+      return ok;
+    } catch (e) {
+      toast(`${file.name}: ${e.message || e}`, true);
+      return false;
+    } finally { busy = false; renderBar(); }
+  }
+  async function downloadUrl(path) {
+    const s = await call({ type: "settings" });
+    return s.serverUrl.replace(/\/+$/, "") + path + (s.apiKey ? `?key=${encodeURIComponent(s.apiKey)}` : "");
+  }
+  async function maskFiles(files) {
+    for (const f of files) await maskFile(f);
+  }
+
+  // Guard for raw uploads: a real (trusted) drop or file-picker selection in
+  // claude.ai is taken over and routed through maskFile instead.
+  document.addEventListener("drop", (e) => {
+    if (!settings.guard || !e.isTrusted || isOurs(e.target)) return;
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (!files.length) return;
+    const maskable = files.filter((f) => FILE_RE.test(f.name));
+    if (!maskable.length) { toast(`${files.map((f) => f.name).join(", ")}: not a type Maskroom can mask — attached as-is.`, true); return; }
+    e.preventDefault(); e.stopImmediatePropagation();
+    maskFiles(maskable);
+    const rest = files.filter((f) => !FILE_RE.test(f.name));
+    if (rest.length) toast(`${rest.map((f) => f.name).join(", ")}: not maskable, not attached.`, true);
+  }, true);
+  document.addEventListener("change", (e) => {
+    const input = e.target;
+    if (!settings.guard || !e.isTrusted || !input || input.type !== "file" || isOurs(input)) return;
+    const files = [...(input.files || [])];
+    if (!files.some((f) => FILE_RE.test(f.name))) return;
+    e.stopImmediatePropagation();
+    try { input.value = ""; } catch (err) { /* ignore */ }
+    maskFiles(files.filter((f) => FILE_RE.test(f.name)));
+  }, true);
+
   // ------------------------------------------------------- unmask view
   function restoreAll(root) {
     if (!settings.unmask || !entries) return;
@@ -195,17 +332,21 @@
       if (text !== n.nodeValue) { n.nodeValue = text; n.parentElement && n.parentElement.classList.add("maskroom-restored"); }
     }
   }
-  let pending = null;
+  // Mutations are accumulated (not dropped) while a run is pending, so a
+  // reply that streams in during the debounce window is still restored.
+  const pendingRoots = new Set();
+  let pendingTimer = null;
   const observer = new MutationObserver((muts) => {
     if (!settings.unmask || !entries) return;
-    if (pending) return;
-    pending = setTimeout(() => {
-      pending = null;
-      const roots = new Set();
-      for (const m of muts) {
-        if (m.type === "characterData") roots.add(m.target.parentElement || document.body);
-        for (const n of m.addedNodes) roots.add(n.nodeType === 1 ? n : (n.parentElement || document.body));
-      }
+    for (const m of muts) {
+      if (isOurs(m.target)) continue;
+      if (m.type === "characterData") pendingRoots.add(m.target.parentElement || document.body);
+      for (const n of m.addedNodes) pendingRoots.add(n.nodeType === 1 ? n : (n.parentElement || document.body));
+    }
+    if (pendingTimer || !pendingRoots.size) return;
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      const roots = [...pendingRoots]; pendingRoots.clear();
       for (const r of roots) if (r && r.isConnected) restoreAll(r);
     }, 120);
   });
@@ -218,25 +359,37 @@
       bar = document.createElement("div"); bar.id = "maskroom-bar";
       bar.innerHTML = `<span class="mr-brand">MASKROOM</span><span class="mr-meta"></span>
         <button class="mr-primary" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
-        <button data-act="guard" title="Guard: Enter/send first masks unmasked text">guard</button>
+        <button data-act="file" title="Mask a .xlsx/.pdf and attach the masked version">Mask file</button>
+        <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf" multiple hidden>
+        <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first">guard</button>
         <button data-act="unmask" title="Show real values in replies (on screen only)">unmask view</button>
         <button data-act="new" title="Start a new vault for this chat">new session</button>
+        <button data-act="adopt" title="Use a session id from the Maskroom staging page">use id…</button>
         <button data-act="opts" title="Settings">⚙</button>`;
       bar.addEventListener("click", async (e) => {
         const act = e.target.dataset && e.target.dataset.act;
         if (act === "mask") maskComposer();
+        else if (act === "file") bar.querySelector("#maskroom-file").click();
         else if (act === "new") newSession();
+        else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
         else if (act === "guard") { settings.guard = !settings.guard; await chrome.storage.local.set({ guard: settings.guard }); renderBar(); }
         else if (act === "unmask") { settings.unmask = !settings.unmask; await chrome.storage.local.set({ unmask: settings.unmask }); if (settings.unmask) restoreAll(document.body); renderBar(); }
         else if (act === "opts") chrome.runtime.sendMessage({ type: "openOptions" });
+      });
+      bar.querySelector("#maskroom-file").addEventListener("change", (e) => {
+        const files = [...e.target.files]; e.target.value = "";
+        maskFiles(files);
       });
       document.body.appendChild(bar);
     }
     bar.querySelector(".mr-meta").innerHTML = sessionId
       ? `session <b>${sessionId.slice(0, 6)}</b> · <b>${entries}</b> pseudonyms`
       : `no session yet`;
+    bar.dataset.session = sessionId || ""; bar.dataset.entries = String(entries);
+    bar.dataset.vault = String(Object.keys(idx.vault).length);  // state for tests/debugging
     bar.querySelector('[data-act="mask"]').disabled = busy;
     bar.querySelector('[data-act="mask"]').textContent = busy ? "masking…" : "Mask";
+    bar.querySelector('[data-act="file"]').disabled = busy;
     bar.querySelector('[data-act="guard"]').classList.toggle("mr-off", !settings.guard);
     bar.querySelector('[data-act="unmask"]').classList.toggle("mr-off", !settings.unmask);
   }
@@ -261,7 +414,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const k of ["guard", "unmask", "preamble"]) if (k in changes) settings[k] = changes[k].newValue;
+    for (const k of ["guard", "unmask", "preamble", "excelAttach"]) if (k in changes) settings[k] = changes[k].newValue;
     renderBar();
   });
 

@@ -8,6 +8,9 @@
   <fieldset>
     <div contenteditable="true" class="ProseMirror" data-placeholder="Reply to Claude..."><p></p></div>
     <button aria-label="Send message" id="send">Send</button>
+    <button id="attachbtn" aria-label="Attach">Attach</button>
+    <input type="file" id="native-file" multiple style="display:none">
+    <div id="attachments"></div>
   </fieldset>
 </main>
 <script>
@@ -25,6 +28,23 @@ function send() {
 }
 document.getElementById("send").addEventListener("click", send);
 composer.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+// Attachments: claude.ai has a hidden file input behind its attach button
+// and accepts drops on the composer area; both end up as a chip.
+window.attached = [];
+function attach(files) {
+  for (const f of files) {
+    window.attached.push(f);
+    const d = document.createElement("div"); d.className = "attachment"; d.textContent = f.name;
+    document.getElementById("attachments").appendChild(d);
+  }
+}
+const nativeInput = document.getElementById("native-file");
+document.getElementById("attachbtn").addEventListener("click", () => nativeInput.click());
+nativeInput.addEventListener("change", (e) => { attach([...e.target.files]); e.target.value = ""; });
+const zone = document.querySelector("fieldset");
+zone.addEventListener("dragover", (e) => e.preventDefault());
+zone.addEventListener("drop", (e) => { e.preventDefault(); attach([...e.dataTransfer.files]); });
+window.disableFileInput = () => nativeInput.remove();
 window.addReply = (text) => {
   const d = document.createElement("div"); d.className = "msg assistant";
   document.getElementById("messages").appendChild(d);

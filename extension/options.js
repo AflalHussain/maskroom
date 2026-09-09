@@ -1,10 +1,11 @@
-const DEFAULTS = { serverUrl: "http://127.0.0.1:5170", apiKey: "", guard: true, unmask: true, preamble: true };
+const DEFAULTS = { serverUrl: "http://127.0.0.1:5170", apiKey: "", guard: true, unmask: true, preamble: true, excelAttach: "xlsx" };
 const $ = (id) => document.getElementById(id);
 const status = (t, cls = "") => { $("status").textContent = t; $("status").className = cls; };
 
 chrome.storage.local.get(DEFAULTS).then((s) => {
   $("serverUrl").value = s.serverUrl; $("apiKey").value = s.apiKey;
   $("guard").checked = s.guard; $("unmask").checked = s.unmask; $("preamble").checked = s.preamble;
+  $("excelAttach").value = s.excelAttach;
 });
 
 async function ensurePermission(url) {
@@ -20,7 +21,8 @@ $("save").addEventListener("click", async () => {
     const serverUrl = $("serverUrl").value.trim().replace(/\/+$/, "") || DEFAULTS.serverUrl;
     await ensurePermission(serverUrl);
     await chrome.storage.local.set({ serverUrl, apiKey: $("apiKey").value.trim(),
-      guard: $("guard").checked, unmask: $("unmask").checked, preamble: $("preamble").checked });
+      guard: $("guard").checked, unmask: $("unmask").checked, preamble: $("preamble").checked,
+      excelAttach: $("excelAttach").value });
     status("Saved.", "ok");
   } catch (e) { status(e.message, "bad"); }
 });

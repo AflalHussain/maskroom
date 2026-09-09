@@ -79,6 +79,61 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     const meta = await page.locator("#maskroom-bar .mr-meta").innerText();
     assert(/\d+ pseudonyms/.test(meta) && !/no session/.test(meta), "session restored after reload");
 
+    // ---------------------------------------------------------- files
+    const fixture = path.join(__dirname, "fixture.xlsx");
+    const attachments = () => page.evaluate(() => [...document.querySelectorAll(".attachment")].map((a) => a.textContent));
+    const lastAttachedText = () => page.evaluate(async () => { const f = window.attached[window.attached.length - 1]; return { name: f.name, size: f.size, text: await f.text() }; });
+
+    // 7. Mask file through the bar: masked workbook attached via the page's file input.
+    await page.setInputFiles("#maskroom-file", fixture);
+    await page.waitForFunction(() => document.querySelector(".attachment"), null, { timeout: 60000 });
+    let att = await lastAttachedText();
+    assert(att.name === "fixture_masked.xlsx" && att.size > 0, "masked workbook attached with _masked name");
+    assert(!(await attachments()).includes("fixture.xlsx"), "raw workbook never attached");
+    const vault = await sw.evaluate(async (base) => {
+      const { sessions } = await chrome.storage.local.get("sessions");
+      const id = sessions["0a1b2c3d-e2e0-4000-8000-000000000001"];
+      return (await (await fetch(`${base}/api/session/${id}/vault`)).json()).mappings;
+    }, SERVER);
+    const kumariTok = Object.entries(vault).find(([, v]) => v === "Kumari Bandara");
+    assert(kumariTok, "workbook values joined the chat's session vault");
+    await page.evaluate((tok) => window.addReply(`From the sheet: ${tok} earns 98000.`), kumariTok[0]);
+    await page.waitForFunction(() => [...document.querySelectorAll(".msg.assistant")].some((m) => m.textContent.includes("Kumari Bandara")), null, { timeout: 10000 });
+    assert(true, "reply about the file restored on screen from the shared vault");
+
+    // 8. Markdown mode: attached .md holds tokens, not names.
+    await sw.evaluate(() => chrome.storage.local.set({ excelAttach: "md" }));
+    await page.setInputFiles("#maskroom-file", fixture);
+    await page.waitForFunction(() => document.querySelectorAll(".attachment").length === 2, null, { timeout: 60000 });
+    att = await lastAttachedText();
+    assert(att.name === "fixture_masked.md" && att.text.includes("TOK_PERSON_") && !att.text.includes("Nimal") && att.text.includes("120000"), "markdown attachment is masked and keeps the salary");
+
+    // 9. Guard: a file picked through claude.ai's own input is masked before it is attached.
+    await page.setInputFiles("#native-file", fixture);
+    await page.waitForFunction(() => document.querySelectorAll(".attachment").length === 3, null, { timeout: 60000 });
+    att = await lastAttachedText();
+    assert(att.name === "fixture_masked.md" && !(await attachments()).includes("fixture.xlsx"), "guard intercepted the native file picker");
+
+    // 10. Drop path: with no file input on the page the extension drops the file on the composer area.
+    await page.evaluate(() => window.disableFileInput());
+    await page.setInputFiles("#maskroom-file", fixture);
+    await page.waitForFunction(() => document.querySelectorAll(".attachment").length === 4, null, { timeout: 60000 });
+    assert((await lastAttachedText()).name === "fixture_masked.md", "synthetic drop attached the masked file");
+
+    // 11. Adopt a session created elsewhere (the staging page).
+    const other = await sw.evaluate(async (base) => {
+      const s = await (await fetch(`${base}/api/session`, { method: "POST" })).json();
+      const m = await (await fetch(`${base}/api/mask`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Ruwan Jayawardena, NIC 912345678V", session_id: s.session_id }) })).json();
+      return { id: s.session_id, token: m.findings.find((f) => f.entity === "PERSON").token };
+    }, SERVER);
+    page.once("dialog", (d) => d.accept(other.id));
+    await page.click('#maskroom-bar [data-act="adopt"]');
+    await page.waitForFunction((p) => document.querySelector("#maskroom-bar .mr-meta").textContent.includes(p), other.id.slice(0, 6), { timeout: 10000 });
+    await page.evaluate((tok) => window.addReply(`Adopted: ${tok} is the borrower.`), other.token);
+    await page.waitForFunction(() => [...document.querySelectorAll(".msg.assistant")].some((m) => m.textContent.includes("Ruwan Jayawardena")), null, { timeout: 10000 });
+    assert(true, "adopted session's tokens restore on screen");
+
     console.log("\nALL EXTENSION E2E CHECKS PASSED");
   } finally {
     await ctx.close();

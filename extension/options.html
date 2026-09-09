@@ -21,10 +21,15 @@ p.note{color:#5a6270;font-size:11.5px;margin:12px 0 0}
 <input type="password" id="apiKey">
 <div class="row"><input type="checkbox" id="guard"><label for="guard" style="margin:0;color:#e9e4d8">Guard: Enter/send masks unmasked text first</label></div>
 <div class="row"><input type="checkbox" id="unmask"><label for="unmask" style="margin:0;color:#e9e4d8">Show real values in replies (on screen only)</label></div>
+<label for="excelAttach">Attach masked Excel as</label>
+<select id="excelAttach" style="width:100%;background:#0c1013;border:1px solid #26303a;color:#e9e4d8;padding:7px 9px;border-radius:4px">
+  <option value="xlsx">masked workbook (.xlsx) — claude.ai needs analysis enabled to read it</option>
+  <option value="md">Markdown tables (.md) — readable by any chat surface</option>
+</select>
 <div class="row"><input type="checkbox" id="preamble"><label for="preamble" style="margin:0;color:#e9e4d8">Prepend the token instruction once per session</label></div>
 <button id="save">Save</button><button class="ghost" id="test">Test connection</button>
 <div id="status"></div>
-<p class="note">Files and attachments are not covered — use the Maskroom staging page for those.
-This extension is not supported by Anthropic and depends on claude.ai's page structure.</p>
+<p class="note">Use <b>Mask file</b> on the bar for .xlsx/.pdf attachments; with guard on, files dropped or picked in
+claude.ai go through Maskroom too. Not supported by Anthropic; depends on claude.ai's page structure.</p>
 <script src="options.js"></script>
 </body></html>

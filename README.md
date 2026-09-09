@@ -428,9 +428,10 @@ inference hooks can *deny* prompts containing raw identifiers) if masking must b
 
 [`extension/`](extension/README.md) holds an unpacked Chrome extension that talks to this
 server: a *Mask* button (and a guard on Enter/send) pseudonymizes the composer text in
-place — you still press send yourself — and replies are restored on screen only. It covers
-typed text, not attachments, and is unsupported by Anthropic; see the extension README
-for the install steps and the terms-of-service caveat.
+place — you still press send yourself — *Mask file* attaches the masked version of a
+workbook or PDF instead of the original (guard also catches files dropped on claude.ai),
+and replies are restored on screen only. It is unsupported by Anthropic; see the extension
+README for the install steps and the terms-of-service caveat.
 
 ### JSON API
 

@@ -126,7 +126,7 @@ details{font-size:13px;color:var(--dim)} summary{cursor:pointer;font-family:var(
   <nav class="nav"><a href="/">file studio →</a></nav>
   <div class="session">
     <span class="keyrow" id="keyrow"><span>api key</span><input type="password" id="apikey" placeholder="X-API-Key"></span>
-    <span>session <span class="id" id="sid">—</span></span>
+    <span>session <span class="id" id="sid" title="click to copy (paste into the browser extension's “use id…”)" style="cursor:pointer">—</span></span>
     <span><span class="n" id="entries">0</span> pseudonyms</span>
     <a id="vaultdl" href="#" download>vault ⬇</a>
     <button id="newsess" title="Start a new conversation vault">new session</button>
@@ -247,6 +247,7 @@ async function ensureSession(){
   if(stored){try{showSession(await api(`/api/session/${stored}`,{headers:headers()}));return session}catch(e){}}
   await newSession();return session;
 }
+$("#sid").addEventListener("click",async()=>{if(!session)return;try{await navigator.clipboard.writeText(session);}catch(e){}const el=$("#sid");const old=el.textContent;el.textContent="copied ✓";setTimeout(()=>{el.textContent=old},1200);});
 $("#newsess").addEventListener("click",async()=>{await newSession();$("#masked").innerHTML="";$("#restored").innerHTML="";$("#maskchips").innerHTML="";$("#unmaskchips").innerHTML="";$("#unmasklist").innerHTML="";$("#filelog").innerHTML="";});
 $("#endsess").addEventListener("click",async()=>{
   if(!session)return;
