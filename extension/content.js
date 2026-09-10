@@ -133,10 +133,10 @@
 
   async function maskComposer() {
     const el = q(SEL.composer);
-    if (!el) { toast("Composer not found — claude.ai may have changed; see SEL in content.js.", true); return false; }
+    if (!el) { toast("Composer not found — claude.ai may have changed; see SEL in content.js.", true); return { done: false, changed: false }; }
     const text = composerText(el);
-    if (!text.trim()) return false;
-    if (busy) return false;
+    if (!text.trim()) return { done: false, changed: false };
+    if (busy) { toast("Still masking the previous text…"); return { done: false, changed: false }; }
     busy = true; renderBar();
     try {
       await ensureSession();

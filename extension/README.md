@@ -11,7 +11,7 @@ markup, blind to files, and never the control you rely on.**
 | | |
 |---|---|
 | **Mask** | Replaces the text in the composer with pseudonymized text from your Maskroom server (`TOK_<TYPE>_<ID>` tokens). Button on the floating bar, or `Ctrl/Cmd+Shift+M`. **You still press send.** |
-| **Guard** (default on) | Pressing Enter or the send button while the composer holds text that has not been checked yet runs it through Maskroom first. If anything was masked the send is *stopped* so you can read what will leave the browser, then press Enter again. If nothing needed masking, your send goes through as typed (the extension replays the click you made). |
+| **Guard** (default on) | Pressing Enter or the send button while the composer holds text that has not been checked yet runs it through Maskroom first. If anything was masked the send is *stopped* so you can read what will leave the browser, then press Enter again. If nothing needed masking, your send goes through as typed (the extension replays the click you made). Shift+Enter is a newline and is never intercepted. The guard fails closed: if the server is unreachable the send is held and a red toast says why — switch the guard off to send anyway. |
 | **Unmask view** (default on) | Restores the real values in replies **on screen only** — the DOM you see. The conversation stored by Anthropic keeps the tokens. Tolerates lowercased, spaced, hyphenated, markdown-escaped or truncated tokens; unknown tokens are left as they are. Restored elements get a dotted underline. Switching the view off puts the tokens back on screen without a reload; on restores again. |
 | **Mask file** | Pick a `.xlsx`/`.xlsm`/`.pdf`; it goes to your Maskroom server and the **masked version is attached** to the chat in your place: Excel as a masked workbook (or Markdown tables, see settings), PDF as masked Markdown text. The raw file never reaches claude.ai. With guard on, a file you drop on claude.ai or pick with its attach button is taken over and goes through the same path. If claude.ai does not accept the attachment, the masked file opens in a new tab so you can attach it by hand. |
 | **use id…** | Adopt a session id from the staging page (click the id there to copy it), so files masked on the page and text masked here share one vault and replies about either are restored. |
@@ -61,7 +61,8 @@ gets sent, streamed replies are restored on screen with unknown tokens left alon
 clean text is sent after the check, the same value gets the same token later in the
 session, the session survives a reload, a workbook is masked and attached (file-input and
 drop paths, `.xlsx` and `.md`), the guard intercepts claude.ai's own file picker, and an
-adopted session's tokens restore.
+adopted session's tokens restore. The guard is exercised both ways: Shift+Enter, the send
+button, editing after a mask, and switching the guard off and on for text and for files.
 
 ## Terms and risk
 
