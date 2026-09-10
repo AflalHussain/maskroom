@@ -23,8 +23,18 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     let [sw] = ctx.serviceWorkers();
     if (!sw) sw = await ctx.waitForEvent("serviceworker");
     await sw.evaluate((url) => chrome.storage.local.set({ serverUrl: url, sessions: {} }), SERVER);
+    // The first mask on a fresh server loads the NLP model (can exceed 30 s); warm it up
+    // outside the timed checks.
+    const warm = await sw.evaluate(async (base) => {
+      const r = await fetch(`${base}/api/mask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "warm up" }) });
+      return r.status;
+    }, SERVER);
+    assert(warm === 200, `server reachable at ${SERVER} and warmed up`);
 
     const page = await ctx.newPage();
+    page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") console.log("  [page console]", m.text()); });
+    page.on("pageerror", (e) => console.log("  [page error]", e.message));
+    sw.on("console", (m) => console.log("  [worker console]", m.text()));
     await page.route("https://claude.ai/**", (route) => route.fulfill({ status: 200, contentType: "text/html", body: HARNESS }));
     await page.goto("https://claude.ai/chat/0a1b2c3d-e2e0-4000-8000-000000000001");
     await page.waitForSelector("#maskroom-bar", { timeout: 15000 });
@@ -56,6 +66,14 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     const reply = await page.locator(".msg.assistant").innerText();
     assert(reply.includes("Nimal Perera") && reply.includes("TOK_PERSON_99999999"), "reply restored on screen, unknown token left alone");
     assert(await page.locator(".msg.assistant.maskroom-restored").count() === 1, "restored element marked");
+
+    // 3b. Unmask view is two-way: off puts the tokens back, on restores again.
+    await page.click('#maskroom-bar [data-act="unmask"]');
+    await page.waitForFunction((tok) => document.querySelector(".msg.assistant").textContent.includes(tok), personTok.toLowerCase().replace(/_/g, " "));
+    assert(await page.locator(".msg.assistant.maskroom-restored").count() === 0, "unmask view off: tokens back on screen, marker removed");
+    await page.click('#maskroom-bar [data-act="unmask"]');
+    await page.waitForFunction(() => document.querySelector(".msg.assistant").textContent.includes("Nimal Perera"));
+    assert(await page.locator(".msg.assistant.maskroom-restored").count() === 1, "unmask view on again: restored");
 
     // 4. Text with nothing to mask: the guard checks it, then replays the send.
     await composer.click();

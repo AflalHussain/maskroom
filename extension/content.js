@@ -314,6 +314,9 @@
   }, true);
 
   // ------------------------------------------------------- unmask view
+  // Original token text per restored node, so the view can be switched
+  // back to tokens without a reload.
+  const restoredNodes = new Map();  // text node -> { original, restored }
   function restoreAll(root) {
     if (!settings.unmask || !entries) return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -329,8 +332,28 @@
     for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
     for (const n of nodes) {
       const { text } = T.restore(n.nodeValue, idx);
-      if (text !== n.nodeValue) { n.nodeValue = text; n.parentElement && n.parentElement.classList.add("maskroom-restored"); }
+      if (text === n.nodeValue) continue;
+      const prev = restoredNodes.get(n);
+      restoredNodes.set(n, { original: prev ? prev.original : n.nodeValue, restored: text });
+      n.nodeValue = text;
+      n.parentElement && n.parentElement.classList.add("maskroom-restored");
     }
+  }
+  function revertAll() {
+    for (const [n, { original, restored }] of restoredNodes) {
+      // Skip nodes the page has since replaced or rewritten.
+      if (n.isConnected && n.nodeValue === restored) {
+        n.nodeValue = original;
+        const p = n.parentElement;
+        if (p && ![...p.childNodes].some((c) => c !== n && restoredNodes.has(c))) p.classList.remove("maskroom-restored");
+      }
+    }
+    restoredNodes.clear();
+  }
+  function setUnmask(on) {
+    settings.unmask = on;
+    if (on) restoreAll(document.body); else revertAll();
+    renderBar();
   }
   // Mutations are accumulated (not dropped) while a run is pending, so a
   // reply that streams in during the debounce window is still restored.
@@ -373,7 +396,7 @@
         else if (act === "new") newSession();
         else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
         else if (act === "guard") { settings.guard = !settings.guard; await chrome.storage.local.set({ guard: settings.guard }); renderBar(); }
-        else if (act === "unmask") { settings.unmask = !settings.unmask; await chrome.storage.local.set({ unmask: settings.unmask }); if (settings.unmask) restoreAll(document.body); renderBar(); }
+        else if (act === "unmask") { setUnmask(!settings.unmask); await chrome.storage.local.set({ unmask: settings.unmask }); }
         else if (act === "opts") chrome.runtime.sendMessage({ type: "openOptions" });
       });
       bar.querySelector("#maskroom-file").addEventListener("change", (e) => {
@@ -414,7 +437,8 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const k of ["guard", "unmask", "preamble", "excelAttach"]) if (k in changes) settings[k] = changes[k].newValue;
+    for (const k of ["guard", "preamble", "excelAttach"]) if (k in changes) settings[k] = changes[k].newValue;
+    if ("unmask" in changes && changes.unmask.newValue !== settings.unmask) setUnmask(!!changes.unmask.newValue);
     renderBar();
   });
 
