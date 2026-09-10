@@ -42,6 +42,7 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
   pdf.py             PDF pipeline: OCR, two-pass detection, spatial redaction
   cli.py             the `maskroom` command
 extension/           Chrome extension for claude.ai (mask the composer, unmask replies on screen)
+samples/             demo/test prompt sets with generated workbooks and a PDF (samples/README.md)
 webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
                      static/staging.html = LLM staging page; runs and session vaults
                      land in webui/runs/ (ignored)
@@ -416,6 +417,9 @@ The page has three steps that share one **session vault**:
    lowercased them, swapped underscores for spaces or hyphens, escaped them for Markdown or
    truncated the id. Near-matches are listed as such and anything unresolved is shown in
    red, never guessed.
+
+Ready-made prompt sets and files for testing or demoing this workflow are in
+[`samples/README.md`](samples/README.md).
 
 A session lives in `webui/runs/sessions/<id>/vault.json`, is shared by every call that
 carries its id, gets its own token salt (tokens from two sessions never coincide), can be
