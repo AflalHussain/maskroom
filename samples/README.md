@@ -17,6 +17,7 @@ pii_env/bin/python samples/generate_samples.py
 | [3](#set-3--wallet-support-desk) | Wallet support desk | [`paygo_support_tickets_sep2026.xlsx`](paygo_support_tickets_sep2026.xlsx) | repeat tickets, passports, cards, free-text notes with phones and names, SLA reasoning over dates |
 | [4](#set-4--insurance-claim-pdf) | Insurance claim (PDF) | [`insurance_motor_claim_report.pdf`](insurance_motor_claim_report.pdf) | PDF text mode, several people in prose, vehicle and case numbers that must survive |
 | [5](#set-5--unmask-robustness) | Unmask robustness | – | lowercased, spaced, escaped and truncated tokens; unknown tokens |
+| [6](#set-6--generated-file-round-trip) | Generated file round trip | uses Set 3's file | a spreadsheet and a Markdown report Claude produces, restored on download |
 
 **How a set runs.** Message 1 is typed text: paste it into the composer and mask it (the
 extension's *Mask* button or guard, or step 1 on the staging page and *copy for Claude*).
@@ -229,6 +230,28 @@ near-matches with the token they resolved to); the never-issued token is listed 
 
 ---
 
+## Set 6 — generated file round trip
+
+Run after Set 3 (same chat, same session). Ask Claude to *produce files*:
+
+```
+From the ticket log you have, create two downloadable files:
+1. An Excel workbook "sla_breaches.xlsx" with one row per open ticket: ticket ID, customer name, mobile, email, category, days open, SLA target, breached (yes/no).
+2. A Markdown report "weekly_support_summary.md" with a short narrative, a table of repeat complainants (customer name, wallet account, ticket IDs), and the agent workload.
+Keep every identifier exactly as it appears in the sheet.
+```
+
+**Expect:** with the extension's download intercept on, each download lands as
+`sla_breaches_restored.xlsx` and `weekly_support_summary_restored.md` with the real names,
+numbers and emails; a toast gives the restored count. Open the workbook: the *Maskroom
+notes* sheet appears only if a token could not be resolved. Without the extension, download
+the files and drop them into step 4 on the staging page.
+
+**Known miss to point out:** the agent name that was never masked (Set 3) is simply present
+as plain text in the output — it was never a token, so nothing is "restored" for it.
+
+---
+
 ## Suggested demo order (about ten minutes)
 
 1. **Set 0** on the staging page: mask, show the token list, copy for Claude, paste the
@@ -242,3 +265,5 @@ near-matches with the token they resolved to); the never-issued token is listed 
    enforcement layer.
 4. **Set 4**: a PDF, to show black boxes are not what an LLM needs.
 5. **Set 5**: paste the mangled reply to show tolerant restore and the unresolved report.
+6. **Set 6**: ask for a spreadsheet, click its download, show the `_restored` file opening
+   with real names.

@@ -28,10 +28,11 @@
     dropTarget: ['fieldset', 'form'],
   };
   const FILE_RE = /\.(xlsx|xlsm|pdf)$/i;
+  const RESTORE_RE = /\.(md|txt|csv|tsv|json|html?|xml|ya?ml|xlsx|xlsm|docx|pptx)$/i;
   const MAX_UPLOAD = 25 * 1024 * 1024;
   const T = self.MaskroomTokens;
 
-  let settings = { guard: true, unmask: true, preamble: true, excelAttach: "xlsx" };
+  let settings = { guard: true, unmask: true, preamble: true, excelAttach: "xlsx", interceptDownloads: true };
   let sessionId = null;
   let idx = T.buildIndex({});
   let entries = 0;
@@ -245,7 +246,7 @@
   async function maskFile(file) {
     if (!FILE_RE.test(file.name)) { toast(`${file.name}: only .xlsx, .xlsm and .pdf can be masked.`, true); return false; }
     if (file.size > MAX_UPLOAD) { toast(`${file.name}: larger than 25 MB.`, true); return false; }
-    if (busy) { toast("Still working on the previous file…", true); return false; }
+    while (busy) await new Promise((r) => setTimeout(r, 150));  // a text mask may be running
     busy = true; renderBar();
     try {
       await ensureSession();
@@ -286,9 +287,72 @@
     const s = await call({ type: "settings" });
     return s.serverUrl.replace(/\/+$/, "") + path + (s.apiKey ? `?key=${encodeURIComponent(s.apiKey)}` : "");
   }
-  async function maskFiles(files) {
-    for (const f of files) await maskFile(f);
+  // Files are queued, not dropped, when one is already in flight.
+  let fileQueue = Promise.resolve();
+  function maskFiles(files) {
+    for (const f of files) fileQueue = fileQueue.then(() => maskFile(f)).catch(() => {});
+    return fileQueue;
   }
+
+  // ------------------------------------------------ restore downloads
+  function bufToB64(buf) {
+    const bytes = new Uint8Array(buf); let str = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) str += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(str);
+  }
+  // A download link on claude.ai usually points at a blob: URL that the page
+  // revokes right after the click. Start reading it at click time so the
+  // worker can still get the bytes when the download shows up.
+  const blobStore = new Map();  // url -> Promise<b64|null>
+  document.addEventListener("click", (e) => {
+    if (!settings.interceptDownloads) return;
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!a || isOurs(a) || !(a.href.startsWith("blob:") || a.hasAttribute("download"))) return;
+    if (!RESTORE_RE.test(a.getAttribute("download") || a.href.split("?")[0])) return;
+    const p = fetch(a.href).then((r) => r.arrayBuffer()).then(bufToB64).catch(() => null);
+    blobStore.set(a.href, { p, name: a.getAttribute("download") || a.href.split("?")[0].split("/").pop() });
+    setTimeout(() => blobStore.delete(a.href), 60000);
+  }, true);
+
+  async function unmaskFile(file) {
+    if (!RESTORE_RE.test(file.name)) { toast(`${file.name}: not a type Maskroom can restore.`, true); return false; }
+    if (file.size > MAX_UPLOAD) { toast(`${file.name}: larger than 25 MB.`, true); return false; }
+    while (busy) await new Promise((r) => setTimeout(r, 150));  // a text mask may be running
+    busy = true; renderBar();
+    try {
+      await ensureSession();
+      toast(`Restoring ${file.name}…`);
+      const r = await call({ type: "restoreFile", name: file.name, b64: await readB64(file), sessionId });
+      if (!r.ok) throw new Error(r.error);
+      await call({ type: "saveFile", name: r.name, b64: r.b64 });
+      const n = r.report.unresolved.length;
+      toast(`${file.name}: ${r.report.restored} value${r.report.restored === 1 ? "" : "s"} restored → ${r.name}`
+        + (n ? ` · ${n} token${n === 1 ? "" : "s"} not in this session's vault (listed inside the file)` : ""), n > 0);
+      return true;
+    } catch (e) {
+      toast(`${file.name}: ${e.message || e}`, true);
+      return false;
+    } finally { busy = false; renderBar(); }
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg) return false;
+    if (msg.type === "fetchBytes") {
+      (async () => {
+        const entry = blobStore.get(msg.url);
+        let b64 = entry ? await entry.p : null;
+        if (!b64) { try { b64 = bufToB64(await (await fetch(msg.url, { credentials: "include" })).arrayBuffer()); } catch (e) { b64 = null; } }
+        sendResponse(b64 ? { ok: true, b64, name: entry ? entry.name : undefined } : { ok: false });
+      })();
+      return true;
+    }
+    if (msg.type === "sessionId") {
+      ensureSession().then((id) => sendResponse({ ok: !!id, sessionId: id })).catch(() => sendResponse({ ok: false }));
+      return true;
+    }
+    if (msg.type === "toast") { toast(msg.text, !!msg.bad); sendResponse({ ok: true }); return false; }
+    return false;
+  });
 
   // Guard for raw uploads: a real (trusted) drop or file-picker selection in
   // claude.ai is taken over and routed through maskFile instead.
@@ -384,6 +448,8 @@
         <button class="mr-primary" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
         <button data-act="file" title="Mask a .xlsx/.pdf and attach the masked version">Mask file</button>
         <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf" multiple hidden>
+        <button data-act="unmaskfile" title="Restore the real values inside a file Claude produced (saved as *_restored)">Unmask file</button>
+        <input type="file" id="maskroom-unmask-file" accept=".md,.txt,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.xlsx,.xlsm,.docx,.pptx" multiple hidden>
         <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first">guard</button>
         <button data-act="unmask" title="Show real values in replies (on screen only)">unmask view</button>
         <button data-act="new" title="Start a new vault for this chat">new session</button>
@@ -393,6 +459,7 @@
         const act = e.target.dataset && e.target.dataset.act;
         if (act === "mask") maskComposer();
         else if (act === "file") bar.querySelector("#maskroom-file").click();
+        else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
         else if (act === "new") newSession();
         else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
         else if (act === "guard") { settings.guard = !settings.guard; await chrome.storage.local.set({ guard: settings.guard }); renderBar(); }
@@ -402,6 +469,10 @@
       bar.querySelector("#maskroom-file").addEventListener("change", (e) => {
         const files = [...e.target.files]; e.target.value = "";
         maskFiles(files);
+      });
+      bar.querySelector("#maskroom-unmask-file").addEventListener("change", (e) => {
+        const files = [...e.target.files]; e.target.value = "";
+        for (const f of files) fileQueue = fileQueue.then(() => unmaskFile(f)).catch(() => {});
       });
       document.body.appendChild(bar);
     }
@@ -413,6 +484,7 @@
     bar.querySelector('[data-act="mask"]').disabled = busy;
     bar.querySelector('[data-act="mask"]').textContent = busy ? "masking…" : "Mask";
     bar.querySelector('[data-act="file"]').disabled = busy;
+    bar.querySelector('[data-act="unmaskfile"]').disabled = busy;
     bar.querySelector('[data-act="guard"]').classList.toggle("mr-off", !settings.guard);
     bar.querySelector('[data-act="unmask"]').classList.toggle("mr-off", !settings.unmask);
   }
@@ -437,7 +509,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const k of ["guard", "preamble", "excelAttach"]) if (k in changes) settings[k] = changes[k].newValue;
+    for (const k of ["guard", "preamble", "excelAttach", "interceptDownloads"]) if (k in changes) settings[k] = changes[k].newValue;
     if ("unmask" in changes && changes.unmask.newValue !== settings.unmask) setUnmask(!!changes.unmask.newValue);
     renderBar();
   });

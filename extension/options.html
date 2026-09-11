@@ -26,6 +26,7 @@ p.note{color:#5a6270;font-size:11.5px;margin:12px 0 0}
   <option value="xlsx">masked workbook (.xlsx) — claude.ai needs analysis enabled to read it</option>
   <option value="md">Markdown tables (.md) — readable by any chat surface</option>
 </select>
+<div class="row"><input type="checkbox" id="interceptDownloads"><label for="interceptDownloads" style="margin:0;color:#e9e4d8">Restore files downloaded from claude.ai automatically (saved as *_restored)</label></div>
 <div class="row"><input type="checkbox" id="preamble"><label for="preamble" style="margin:0;color:#e9e4d8">Prepend the token instruction once per session</label></div>
 <button id="save">Save</button><button class="ghost" id="test">Test connection</button>
 <div id="status"></div>

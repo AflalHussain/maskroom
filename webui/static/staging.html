@@ -199,6 +199,19 @@ details{font-size:13px;color:var(--dim)} summary{cursor:pointer;font-family:var(
     </div>
     <div class="err" id="unmaskerr"></div>
   </section>
+
+  <section class="card">
+    <h2><span class="step">4</span>Unmask a file Claude made</h2>
+    <p class="hint">Drop a spreadsheet, Word or PowerPoint file, Markdown, CSV or text that Claude produced.
+      Tokens inside are restored from this session's vault; anything unresolved is listed and, for
+      workbooks and Markdown, noted inside the file. PDFs are not supported.</p>
+    <label class="drop" id="restoredrop">
+      <input type="file" id="restorefile" multiple>
+      <div class="fn">drop .xlsx / .docx / .pptx / .md / .csv here or click</div>
+    </label>
+    <div class="filelog" id="restorelog"></div>
+    <div class="err" id="restoreerr"></div>
+  </section>
 </div>
 </main>
 
@@ -261,6 +274,7 @@ $("#endsess").addEventListener("click",async()=>{
   try{cfg=await api("/api/config");}catch(e){}
   $("#ttl").textContent=cfg.session_ttl_hours||24;
   if(cfg.auth_required)$("#keyrow").style.display="inline-flex";
+  if(cfg.restore_exts)$("#restorefile").accept=cfg.restore_exts.join(",");
   const s=$("#locale");
   for(const [code,name] of Object.entries(cfg.locales||{})){const o=document.createElement("option");o.value=code;o.textContent=`${name} (${code})`;s.appendChild(o);}
   const g=document.createElement("option");g.value="generic";g.textContent="Generic";s.appendChild(g);
@@ -340,6 +354,39 @@ async function processFile(f){
   }catch(e){
     card.querySelector(".meta").textContent="failed";
     $("#fileerr").textContent=`${f.name}: ${e.message}`;
+  }
+}
+
+// ---------- unmask file ----------
+const rdrop=$("#restoredrop"),rinput=$("#restorefile");
+["dragenter","dragover"].forEach(ev=>rdrop.addEventListener(ev,e=>{e.preventDefault();rdrop.classList.add("over")}));
+["dragleave","drop"].forEach(ev=>rdrop.addEventListener(ev,e=>{e.preventDefault();rdrop.classList.remove("over")}));
+rdrop.addEventListener("drop",e=>{queueRestore(e.dataTransfer.files)});
+rinput.addEventListener("change",()=>{queueRestore(rinput.files);rinput.value=""});
+let restoreQueue=Promise.resolve();
+function queueRestore(files){for(const f of files)restoreQueue=restoreQueue.then(()=>restoreFile(f));}
+async function restoreFile(f){
+  $("#restoreerr").textContent="";
+  const card=document.createElement("div");card.className="filecard";
+  card.innerHTML=`<div class="name">${esc(f.name)}</div><div class="meta"><span class="spin"><i></i><i></i><i></i></span> restoring…</div>`;
+  $("#restorelog").prepend(card);
+  try{
+    await ensureSession();
+    const fd=new FormData();fd.append("file",f);fd.append("session_id",session);
+    const d=await api("/api/unmask-file",{method:"POST",headers:headers(),body:fd});
+    const q=$("#apikey").value?"?key="+encodeURIComponent($("#apikey").value):"";
+    const chips=[`<span class="chip ok">restored <span class="n">${d.restored}</span></span>`];
+    if(d.fuzzy.length)chips.push(`<span class="chip warn">near-match <span class="n">${d.fuzzy.length}</span></span>`);
+    if(d.unresolved.length)chips.push(`<span class="chip bad">unresolved <span class="n">${d.unresolved.length}</span></span>`);
+    const stem=f.name.replace(/\.[^.]+$/,""),ext=d.downloads.output.slice(d.downloads.output.lastIndexOf("."));
+    card.innerHTML=`<div class="name">${esc(f.name)}</div>
+      <div class="meta">${d.kind} · ${d.elapsed_s}s</div>
+      <div class="chips">${chips.join("")}</div>
+      ${d.unresolved.length?`<div class="list">${d.unresolved.map(u=>`<div><span class="k" style="color:var(--bad)">✕</span> ${esc(u)}</div>`).join("")}</div>`:""}
+      <div class="dl"><a href="/api/download/${d.run_id}/${d.downloads.output}${q}" download="${esc(stem)}_restored${ext}">⬇ ${esc(stem)}_restored${ext}</a></div>`;
+  }catch(e){
+    card.querySelector(".meta").textContent="failed";
+    $("#restoreerr").textContent=`${f.name}: ${e.message}`;
   }
 }
 

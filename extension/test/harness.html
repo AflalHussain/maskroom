@@ -12,6 +12,10 @@
     <input type="file" id="native-file" multiple style="display:none">
     <div id="attachments"></div>
   </fieldset>
+  <p>
+    <button id="dlreport">Download report</button>
+    <a id="dlxlsx" href="https://claude.ai/files/report.xlsx" download="report.xlsx">report.xlsx</a>
+  </p>
 </main>
 <script>
 // A stand-in for claude.ai: Enter or the send button "sends" the composer
@@ -45,6 +49,15 @@ const zone = document.querySelector("fieldset");
 zone.addEventListener("dragover", (e) => e.preventDefault());
 zone.addEventListener("drop", (e) => { e.preventDefault(); attach([...e.dataTransfer.files]); });
 window.disableFileInput = () => nativeInput.remove();
+// Generated-file download the way claude.ai does it: a Blob behind a
+// temporary <a download> that is revoked right after the click.
+window.reportText = "# Report\n\n(no data)\n";
+document.getElementById("dlreport").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([window.reportText], { type: "text/markdown" }));
+  const a = document.createElement("a"); a.href = url; a.download = "report.md";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+});
 window.addReply = (text) => {
   const d = document.createElement("div"); d.className = "msg assistant";
   document.getElementById("messages").appendChild(d);

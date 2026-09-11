@@ -157,9 +157,11 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     // ---------------------------------------------------------- files
     const fixture = path.join(__dirname, "fixture.xlsx");
     const attachments = () => page.evaluate(() => [...document.querySelectorAll(".attachment")].map((a) => a.textContent));
+    const idle = () => page.waitForFunction(() => !document.querySelector('#maskroom-bar [data-act="mask"]').disabled, null, { timeout: 60000 });
     const lastAttachedText = () => page.evaluate(async () => { const f = window.attached[window.attached.length - 1]; return { name: f.name, size: f.size, text: await f.text() }; });
 
     // 7. Mask file through the bar: masked workbook attached via the page's file input.
+    await idle();
     await page.setInputFiles("#maskroom-file", fixture);
     await page.waitForFunction(() => document.querySelector(".attachment"), null, { timeout: 60000 });
     let att = await lastAttachedText();
@@ -178,12 +180,14 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
 
     // 8. Markdown mode: attached .md holds tokens, not names.
     await sw.evaluate(() => chrome.storage.local.set({ excelAttach: "md" }));
+    await idle();
     await page.setInputFiles("#maskroom-file", fixture);
     await page.waitForFunction(() => document.querySelectorAll(".attachment").length === 2, null, { timeout: 60000 });
     att = await lastAttachedText();
     assert(att.name === "fixture_masked.md" && att.text.includes("TOK_PERSON_") && !att.text.includes("Nimal") && att.text.includes("120000"), "markdown attachment is masked and keeps the salary");
 
     // 9. Guard: a file picked through claude.ai's own input is masked before it is attached.
+    await idle();
     await page.setInputFiles("#native-file", fixture);
     await page.waitForFunction(() => document.querySelectorAll(".attachment").length === 3, null, { timeout: 60000 });
     att = await lastAttachedText();
@@ -193,24 +197,28 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     await bar("guard");
     await page.waitForFunction(() => document.querySelector('#maskroom-bar [data-act="guard"]').classList.contains("mr-off"));
     let nAtt = (await attachments()).length;
+    await idle();
     await page.setInputFiles("#native-file", fixture);
     await page.waitForFunction((n) => document.querySelectorAll(".attachment").length === n + 1, nAtt);
     assert((await lastAttachedText()).name === "fixture.xlsx", "guard off: native picker attaches the raw file, as configured");
     await bar("guard");
     await page.waitForFunction(() => !document.querySelector('#maskroom-bar [data-act="guard"]').classList.contains("mr-off"));
     nAtt = (await attachments()).length;
+    await idle();
     await page.setInputFiles("#native-file", fixture);
     await page.waitForFunction((n) => document.querySelectorAll(".attachment").length === n + 1, nAtt, { timeout: 60000 });
     assert((await lastAttachedText()).name === "fixture_masked.md", "guard on again: native picker goes through masking");
 
     // 10. Drop path: with no file input on the page the extension drops the file on the composer area.
     await page.evaluate(() => window.disableFileInput());
+    await idle();
     await page.setInputFiles("#maskroom-file", fixture);
     nAtt = (await attachments()).length;
     await page.waitForFunction((n) => document.querySelectorAll(".attachment").length === n + 1, nAtt, { timeout: 60000 });
     assert((await lastAttachedText()).name === "fixture_masked.md", "synthetic drop attached the masked file");
 
     // 11. Adopt a session created elsewhere (the staging page).
+    const chatSession = await page.evaluate(() => document.querySelector("#maskroom-bar").dataset.session);
     const other = await sw.evaluate(async (base) => {
       const s = await (await fetch(`${base}/api/session`, { method: "POST" })).json();
       const m = await (await fetch(`${base}/api/mask`, { method: "POST", headers: { "Content-Type": "application/json" },
@@ -223,6 +231,62 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     await page.evaluate((tok) => window.addReply(`Adopted: ${tok} is the borrower.`), other.token);
     await page.waitForFunction(() => [...document.querySelectorAll(".msg.assistant")].some((m) => m.textContent.includes("Ruwan Jayawardena")), null, { timeout: 10000 });
     assert(true, "adopted session's tokens restore on screen");
+    // back to the chat's own session for the file round trips below
+    page.once("dialog", (d) => d.accept(chatSession));
+    await page.click('#maskroom-bar [data-act="adopt"]');
+    await page.waitForFunction((id) => document.querySelector("#maskroom-bar").dataset.session === id, chatSession, { timeout: 10000 });
+
+    // ------------------------------------------------ generated files
+    const saved = () => sw.evaluate(() => self.__savedFiles.map((f) => ({ name: f.name, text: atob(f.b64) })));
+    const waitSaved = (n) => sw.evaluate(async (n) => { for (let i = 0; i < 300 && self.__savedFiles.length < n; i++) await new Promise((r) => setTimeout(r, 200)); return self.__savedFiles.length; }, n).then((len) => assert(len >= n, `worker saved file #${n}`));
+    const tokensOf = Object.keys(vault);
+    const nimalTok = Object.entries(vault).find(([, v]) => v === "Nimal Perera")[0];
+
+    // 12. Unmask file from the bar: the masked Markdown attached earlier comes back with names.
+    const mdDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "mr-md-"));
+    const mdPath = path.join(mdDir, "fixture_masked.md");
+    fs.writeFileSync(mdPath, await page.evaluate(async () => { const f = window.attached.find((a) => a.name.endsWith(".md")); return f.text(); }));
+    let nSaved = (await saved()).length;
+    await idle();
+    await page.setInputFiles("#maskroom-unmask-file", mdPath);
+    await waitSaved(nSaved + 1);
+    let last = (await saved()).pop();
+    assert(last.name === "fixture_masked_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("Kumari Bandara") && !/TOK_/.test(last.text), `Unmask file restored the Markdown and saved it as *_restored.md (got ${last.name}: ${last.text.slice(0, 80)})`);
+
+    // 13. Download intercept (blob): a generated report is saved restored; the token version is cancelled.
+    nSaved = (await saved()).length;
+    await page.evaluate((tok) => { window.reportText = `# Overdue\n\n| customer | note |\n|---|---|\n| ${tok.toLowerCase().replace(/_/g, " ")} | late |\n| TOK_PERSON_00000000 | unknown |\n`; }, nimalTok);
+    const [dl] = await Promise.all([page.waitForEvent("download"), page.click("#dlreport")]);
+    await waitSaved(nSaved + 1);
+    last = (await saved()).pop();
+    assert(last.name === "report_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("TOK_PERSON_00000000") && last.text.includes("<!-- maskroom:"), "intercepted blob download restored, unresolved token kept and noted");
+    const fail = await dl.failure();
+    assert(fail === "canceled" || (await dl.path()) !== null, `original download was cancelled or (tiny file) had already completed: ${fail}`);
+
+    // 14. Download intercept (https link served by claude.ai): a masked workbook comes back restored.
+    const maskedXlsx = await page.evaluate(async () => { const f = window.attached.find((a) => a.name.endsWith(".xlsx")); return Array.from(new Uint8Array(await f.arrayBuffer())); });
+    await page.route("https://claude.ai/files/report.xlsx", (r) => r.fulfill({ status: 200, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: Buffer.from(maskedXlsx) }));
+    nSaved = (await saved()).length;
+    await Promise.all([page.waitForEvent("download").catch(() => null), page.click("#dlxlsx")]);
+    await waitSaved(nSaved + 1);
+    last = (await saved()).pop();
+    assert(last.name === "report_restored.xlsx", "intercepted https download saved as report_restored.xlsx");
+    const xlsxPath = path.join(require("os").tmpdir(), `mr-restored-${Date.now()}.xlsx`);
+    fs.writeFileSync(xlsxPath, Buffer.from(last.text, "binary"));
+    const py = process.env.MASKROOM_PY || path.resolve(__dirname, "../../pii_env/bin/python");
+    const cells = require("child_process").execFileSync(py, ["-c", `import openpyxl,sys;ws=openpyxl.load_workbook(sys.argv[1]).active;print([c.value for c in ws[2]])`, xlsxPath]).toString();
+    assert(cells.includes("Nimal Perera") && cells.includes("853421234V") && !cells.includes("TOK_"), "restored workbook holds the original values");
+
+    // 15. Intercept off: the download arrives untouched, with tokens.
+    await sw.evaluate(() => chrome.storage.local.set({ interceptDownloads: false }));
+    await page.waitForTimeout(300);
+    nSaved = (await saved()).length;
+    const [raw] = await Promise.all([page.waitForEvent("download"), page.click("#dlreport")]);
+    const rawText = fs.readFileSync(await raw.path(), "utf8");
+    assert(raw.suggestedFilename() === "report.md" && rawText.includes(nimalTok.toLowerCase().replace(/_/g, " ")), "intercept off: original token file downloaded as-is");
+    await page.waitForTimeout(800);
+    assert((await saved()).length === nSaved, "intercept off: nothing extra saved");
+    await sw.evaluate(() => chrome.storage.local.set({ interceptDownloads: true }));
 
     console.log("\nALL EXTENSION E2E CHECKS PASSED");
   } finally {

@@ -417,6 +417,9 @@ The page has three steps that share one **session vault**:
    lowercased them, swapped underscores for spaces or hyphens, escaped them for Markdown or
    truncated the id. Near-matches are listed as such and anything unresolved is shown in
    red, never guessed.
+4. **Unmask a file Claude made** — drop a spreadsheet, Word/PowerPoint file, Markdown or
+   CSV that Claude generated; it comes back with the real values, and anything unresolved is
+   listed (and noted inside workbooks and Markdown). PDFs are not supported.
 
 Ready-made prompt sets and files for testing or demoing this workflow are in
 [`samples/README.md`](samples/README.md).
@@ -450,6 +453,7 @@ Every route is also usable from scripts, gateways, hooks or an MCP server. Set
 | `GET /api/session/<id>/vault` | – | the vault JSON (protect it) |
 | `POST /api/mask` | JSON `{text, session_id?, locale?, dates?, locations?, min_score?, entities?, nlp_model?}` | `{session_id, masked, changed, findings[{entity,score,text,token}], vault_entries, preamble, elapsed_s}` — omit `session_id` to start a session |
 | `POST /api/unmask` | JSON `{text, session_id}` | `{text, restored, fuzzy[{seen,token}], unresolved[], values[]}` |
+| `POST /api/unmask-file` | multipart `file` + `session_id` | restores tokens inside a file the LLM produced (`.xlsx/.xlsm`, `.docx/.pptx`, `.md/.txt/.csv/.tsv/.json/.html/.xml/.yaml`) → `{restored, fuzzy, unresolved, downloads.output}`; unresolved tokens are also noted inside workbooks (sheet *Maskroom notes*) and Markdown/HTML (trailing comment); PDFs → 415 |
 | `POST /api/process` | multipart `file` + options; `session_id` or `session=true`; `pdf_mode=text\|redact`; `restore=true` with a `vault` file **or** a `session_id`; `preview=false` to skip previews | run summary with `downloads.output`, `downloads.text` (`masked.md`), `downloads.vault` |
 | `GET /api/download/<run>/<file>` | – | the file |
 | `GET /api/text/<run>/<file>.md` | – | `{text}` (for copy-to-clipboard) |

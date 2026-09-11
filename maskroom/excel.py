@@ -274,8 +274,9 @@ class ExcelMixin:
         for ws in wb.worksheets:
             for row in ws.iter_rows():
                 for cell in row:
-                    if not isinstance(cell.value, str) or not rules.TOKEN_RE.search(cell.value):
-                        continue
+                    if not isinstance(cell.value, str) or not (
+                            rules.TOKEN_RE.search(cell.value) or rules.LOOSE_TOKEN_RE.search(cell.value)):
+                        continue  # no token, exact or LLM-mangled
                     # Per-cell record wins (the same value can be a number in
                     # one sheet and text in another); per-token is the
                     # fallback when the vault came from a different workbook.

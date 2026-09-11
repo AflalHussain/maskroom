@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from maskroom import FinancialPrivacyEngine, SessionStore, build_nlp_engine
 from maskroom import rules
 from maskroom.locale import DEFAULT_LOCALE, available_locales
+from maskroom.restore import SUPPORTED_EXTS as RESTORE_EXTS, unmask_file
 
 try:
     import pymupdf as fitz
@@ -130,7 +131,8 @@ def staging():
 def config():
     return jsonify({"auth_required": bool(API_KEY), "default_locale": DEFAULT_LOCALE,
                     "locales": available_locales(), "session_ttl_hours": TTL_HOURS,
-                    "preamble": rules.LLM_TOKEN_PREAMBLE, "max_text_chars": MAX_TEXT_CHARS})
+                    "preamble": rules.LLM_TOKEN_PREAMBLE, "max_text_chars": MAX_TEXT_CHARS,
+                    "restore_exts": list(RESTORE_EXTS)})
 
 
 @app.get("/api/locales")
@@ -408,6 +410,43 @@ def process():
 
     with open(os.path.join(run_dir, "result.json"), "w") as fh:
         json.dump({k: v for k, v in resp.items() if k not in ("before", "after")}, fh)
+    return jsonify(resp)
+
+
+@app.post("/api/unmask-file")
+def unmask_file_route():
+    """Multipart: file + session_id. Restores tokens inside a file the LLM
+    produced (Excel, Word, PowerPoint, Markdown/CSV/text) using the session
+    vault. Returns the report and a download name; never changes the vault."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file uploaded."}), 400
+    name = os.path.basename(f.filename)
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in RESTORE_EXTS:
+        return jsonify({"error": f"Unsupported file type {ext!r} — supported: "
+                                 f"{', '.join(RESTORE_EXTS)}."}), 415
+    sess, err = _session_or_error(request.form.get("session_id"))
+    if err:
+        return err
+    engine = get_engine(engine_options({}))
+    run_id = uuid.uuid4().hex[:12]
+    run_dir = os.path.join(RUNS, run_id)
+    os.makedirs(run_dir)
+    in_path = os.path.join(run_dir, "input" + ext)
+    f.save(in_path)
+    out_name = "restored" + ext
+    t0 = time.time()
+    try:
+        with sessions.bind(engine, sess):
+            report = unmask_file(engine, in_path, os.path.join(run_dir, out_name))
+    except Exception as e:
+        return jsonify({"error": f"Restore failed: {e}"}), 500
+    resp = {"run_id": run_id, "session_id": sess.id, "filename": name,
+            "elapsed_s": round(time.time() - t0, 2), **report,
+            "downloads": {"output": out_name}}
+    with open(os.path.join(run_dir, "result.json"), "w") as fh:
+        json.dump(resp, fh)
     return jsonify(resp)
 
 

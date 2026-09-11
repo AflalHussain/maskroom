@@ -124,3 +124,23 @@ def test_api_key_gate(client, monkeypatch):
     assert client.post("/api/session").status_code == 401
     assert client.get("/api/config").status_code == 200
     assert client.post("/api/session", headers={"X-API-Key": "secret"}).status_code == 200
+
+
+def test_unmask_file_endpoint(client, tmp_path):
+    code, s = post_json(client, "/api/session", {})
+    sid = s["session_id"]
+    code, m = post_json(client, "/api/mask", {"text": "Nimal Perera, NIC 853421234V", "session_id": sid})
+    tok = next(f["token"] for f in m["findings"] if f["entity"] == "PERSON")
+    body = f"# Summary\n\n{tok.lower().replace('_', ' ')} owes money. Unknown TOK_PERSON_00000000.\n"
+    r = client.post("/api/unmask-file", data={"file": (io.BytesIO(body.encode()), "summary.md"), "session_id": sid},
+                    content_type="multipart/form-data")
+    d = r.get_json()
+    assert r.status_code == 200, d
+    assert d["restored"] == 1 and d["unresolved"] == ["TOK_PERSON_00000000"] and d["downloads"]["output"] == "restored.md"
+    text = client.get(f"/api/download/{d['run_id']}/restored.md").data.decode()
+    assert "Nimal Perera owes money" in text and "<!-- maskroom:" in text
+    # errors
+    r = client.post("/api/unmask-file", data={"file": (io.BytesIO(b"x"), "a.md"), "session_id": "nope-nope-nope"}, content_type="multipart/form-data")
+    assert r.status_code == 404
+    r = client.post("/api/unmask-file", data={"file": (io.BytesIO(b"%PDF"), "a.pdf"), "session_id": sid}, content_type="multipart/form-data")
+    assert r.status_code == 415

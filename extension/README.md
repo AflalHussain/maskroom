@@ -14,6 +14,8 @@ markup, blind to files, and never the control you rely on.**
 | **Guard** (default on) | Pressing Enter or the send button while the composer holds text that has not been checked yet runs it through Maskroom first. If anything was masked the send is *stopped* so you can read what will leave the browser, then press Enter again. If nothing needed masking, your send goes through as typed (the extension replays the click you made). Shift+Enter is a newline and is never intercepted. The guard fails closed: if the server is unreachable the send is held and a red toast says why — switch the guard off to send anyway. |
 | **Unmask view** (default on) | Restores the real values in replies **on screen only** — the DOM you see. The conversation stored by Anthropic keeps the tokens. Tolerates lowercased, spaced, hyphenated, markdown-escaped or truncated tokens; unknown tokens are left as they are. Restored elements get a dotted underline. Switching the view off puts the tokens back on screen without a reload; on restores again. |
 | **Mask file** | Pick a `.xlsx`/`.xlsm`/`.pdf`; it goes to your Maskroom server and the **masked version is attached** to the chat in your place: Excel as a masked workbook (or Markdown tables, see settings), PDF as masked Markdown text. The raw file never reaches claude.ai. With guard on, a file you drop on claude.ai or pick with its attach button is taken over and goes through the same path. If claude.ai does not accept the attachment, the masked file opens in a new tab so you can attach it by hand. |
+| **Unmask file** | Pick a file Claude produced (`.xlsx/.xlsm`, `.docx/.pptx`, `.md/.txt/.csv/.tsv/.json/.html/.xml/.yaml`); it is restored through the server with this chat's vault and saved as `<name>_restored.<ext>`. Unresolved tokens are listed inside workbooks (sheet *Maskroom notes*) and Markdown/HTML (trailing comment). PDFs are not supported. |
+| **Download intercept** (default on) | A download started on claude.ai (artifact, code-tool output, export) of a supported type is restored before it lands: the content is read first, the token version is cancelled only once the bytes are in hand, the restored file is saved as `*_restored`, and a toast reports the counts. If reading fails the original download proceeds untouched; if restoring fails the original bytes are saved under the original name. A tiny file can finish before it is cancelled — then both files exist and the toast says so. Word/PowerPoint caveat: a token split across formatting runs stays unresolved. |
 | **use id…** | Adopt a session id from the staging page (click the id there to copy it), so files masked on the page and text masked here share one vault and replies about either are restored. |
 | **Preamble** | The first masked message of a session is prefixed with a one-line instruction telling the model to repeat tokens verbatim. |
 | **Sessions** | One Maskroom session (vault) per claude.ai chat, remembered across reloads. *New session* starts a fresh vault for the current chat. |
@@ -36,7 +38,8 @@ input or drop zone (`SEL.fileInput` / `SEL.dropTarget`).
 ## How it is built
 
 - `background.js` — the only code that talks to the server (so the page needs no CORS
-  and the API key never enters the page); uploads files and fetches masked ones as base64.
+  and the API key never enters the page); uploads files and fetches masked ones as base64;
+  owns the download intercept (`chrome.downloads`).
 - `content.js` — the bar, guard, composer replacement, session bookkeeping, and the
   MutationObserver that restores tokens in rendered text. All claude.ai selectors are in
   the `SEL` object at the top: **when claude.ai changes its markup, fix them there.**
@@ -61,7 +64,8 @@ gets sent, streamed replies are restored on screen with unknown tokens left alon
 clean text is sent after the check, the same value gets the same token later in the
 session, the session survives a reload, a workbook is masked and attached (file-input and
 drop paths, `.xlsx` and `.md`), the guard intercepts claude.ai's own file picker, and an
-adopted session's tokens restore. The guard is exercised both ways: Shift+Enter, the send
+adopted session's tokens restore; *Unmask file* and the download intercept (blob and
+https downloads, intercept off) round-trip generated Markdown and a workbook. The guard is exercised both ways: Shift+Enter, the send
 button, editing after a mask, and switching the guard off and on for text and for files.
 
 ## Terms and risk
