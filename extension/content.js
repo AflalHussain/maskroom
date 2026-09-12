@@ -222,11 +222,12 @@
   }
   const inComposer = (el, target) => !!el && (el === target || el.contains(target) || (target && target.isContentEditable));
   document.addEventListener("keydown", (e) => {
-    if (!settings.guard || e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
     const el = q(SEL.composer);
     const relevant = inComposer(el, e.target);
-    if (relevant) guardLog("Enter", { composer: !!el, inComposer: relevant, needsMask: needsMask() });
-    if (!el || !relevant || !needsMask()) return;
+    guardLog("Enter", { guard: settings.guard, composer: !!el, inComposer: relevant,
+                        target: (e.target && e.target.tagName) || "", ce: !!(e.target && e.target.isContentEditable) });
+    if (!settings.guard || !el || !relevant || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — press Enter again to send."); else if (r.done) resend(); });
   }, true);
@@ -611,6 +612,7 @@
     settings = Object.assign(settings, await call({ type: "settings" }));
     if (!isTop) { await refreshFrameVault(); return; }  // preview subframe: restore only
     renderBar();
+    guardLog("loaded", { host: location.host, path: location.pathname.slice(0, 40), composer: !!q(SEL.composer), send: !!q(SEL.sendButton) });
     const sessions = await storedSessions();
     sessionId = sessions[currentKey] || null;
     await loadVault();

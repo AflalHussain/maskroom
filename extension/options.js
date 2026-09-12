@@ -68,7 +68,12 @@ chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "pre
 async function renderGuard() {
   const { guardLog = [] } = await chrome.storage.local.get("guardLog");
   $("guard").textContent = guardLog.length
-    ? guardLog.slice().reverse().map((g) => `${g.time.replace("T"," ").slice(11,19)} ${g.event} · composer=${g.composer!==undefined?g.composer:"-"} inComposer=${g.inComposer!==undefined?g.inComposer:(g.matchedSend!==undefined?"send:"+g.matchedSend:"-")} needsMask=${g.needsMask}`).join("\n")
+    ? guardLog.slice().reverse().map((g) => {
+        const parts = [g.time.replace("T"," ").slice(11,19), g.event];
+        for (const k of ["host","composer","inComposer","target","ce","matchedSend","needsMask","guard","send"])
+          if (g[k] !== undefined) parts.push(`${k}=${g[k]}`);
+        return parts.join(" · ");
+      }).join("\n")
     : "no guard events yet — focus the claude.ai composer and press Enter with unmasked text";
 }
 renderGuard();
