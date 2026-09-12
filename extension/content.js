@@ -32,7 +32,7 @@
   const MAX_UPLOAD = 25 * 1024 * 1024;
   const T = self.MaskroomTokens;
 
-  let settings = { guard: true, unmask: true, preamble: true, excelAttach: "xlsx", interceptDownloads: true };
+  let settings = { guard: true, unmask: true, preamble: true, excelAttach: "xlsx", interceptDownloads: true, keepMasked: false };
   let sessionId = null;
   let idx = T.buildIndex({});
   let entries = 0;
@@ -509,7 +509,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const k of ["guard", "preamble", "excelAttach", "interceptDownloads"]) if (k in changes) settings[k] = changes[k].newValue;
+    for (const k of ["guard", "preamble", "excelAttach", "interceptDownloads", "keepMasked"]) if (k in changes) settings[k] = changes[k].newValue;
     if ("unmask" in changes && changes.unmask.newValue !== settings.unmask) setUnmask(!!changes.unmask.newValue);
     renderBar();
   });

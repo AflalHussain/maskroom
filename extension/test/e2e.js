@@ -262,6 +262,26 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     assert(last.name === "report_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("TOK_PERSON_00000000") && last.text.includes("<!-- maskroom:"), "intercepted blob download restored, unresolved token kept and noted");
     const fail = await dl.failure();
     assert(fail === "canceled" || (await dl.path()) !== null, `original download was cancelled or (tiny file) had already completed: ${fail}`);
+    // Default mode: the token copy must not survive on disk.
+    // Downloads the page started (the token copy) have no byExtensionId; the files
+    // this extension saves (restored) do. That is the reliable signal — under
+    // Playwright the on-disk names are opaque GUIDs.
+    const claudeDownloads = () => sw.evaluate(async () => (await chrome.downloads.search({}))
+      .filter((d) => !d.byExtensionId && (String(d.url).startsWith("blob:https://claude") || String(d.url).startsWith("https://claude")))
+      .map((d) => ({ exists: d.exists, url: String(d.url).slice(0, 25) })));
+    const liveTokenCopies = async () => (await claudeDownloads()).filter((d) => d.exists);
+    assert((await liveTokenCopies()).length === 0, "default mode: masked token copy removed from disk");
+
+    // 13b. keepMasked (demo) on: the token copy is kept beside the restored one.
+    await sw.evaluate(() => chrome.storage.local.set({ keepMasked: true }));
+    await page.waitForTimeout(200);
+    nSaved = (await saved()).length;
+    await Promise.all([page.waitForEvent("download").catch(() => null), page.click("#dlreport")]);
+    await waitSaved(nSaved + 1);
+    assert((await saved()).pop().name === "report_restored.md", "keepMasked: restored file still saved");
+    assert((await liveTokenCopies()).length >= 1, "keepMasked: token copy kept on disk");
+    await sw.evaluate(() => chrome.storage.local.set({ keepMasked: false }));
+    await page.waitForTimeout(200);
 
     // 14. Download intercept (https link served by claude.ai): a masked workbook comes back restored.
     const maskedXlsx = await page.evaluate(async () => { const f = window.attached.find((a) => a.name.endsWith(".xlsx")); return Array.from(new Uint8Array(await f.arrayBuffer())); });

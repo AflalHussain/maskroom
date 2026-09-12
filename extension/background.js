@@ -1,7 +1,8 @@
 /* Service worker: the only place that talks to the Maskroom server, so the
    content script needs no CORS and the API key never enters the page. */
 const DEFAULTS = { serverUrl: "http://127.0.0.1:5170", apiKey: "", guard: true,
-                   unmask: true, preamble: true, excelAttach: "xlsx", interceptDownloads: true };
+                   unmask: true, preamble: true, excelAttach: "xlsx", interceptDownloads: true,
+                   keepMasked: false };
 const MAX_UPLOAD = 25 * 1024 * 1024;
 // File types the server can restore (mirrors maskroom/restore.py SUPPORTED_EXTS).
 const RESTORE_EXTS = [".md", ".txt", ".csv", ".tsv", ".json", ".html", ".htm", ".xml", ".yaml", ".yml",
@@ -111,11 +112,11 @@ function fromClaude(item) {
   const u = item.url || "", r = item.referrer || "";
   return u.startsWith("blob:https://claude.ai/") || u.startsWith("https://claude.ai/") || r.startsWith("https://claude.ai/");
 }
-function summarize(report, savedAs, alreadyDone) {
+function summarize(report, savedAs, maskedNote) {
   const n = report.unresolved.length;
   return `${report.filename}: ${report.restored} value${report.restored === 1 ? "" : "s"} restored → ${savedAs}`
     + (n ? ` · ${n} token${n === 1 ? "" : "s"} not in this session's vault (listed inside the file)` : "")
-    + (alreadyDone ? ". The token version had already finished downloading and was kept." : "");
+    + (maskedNote || "");
 }
 
 // Bytes first, cancel second: a download from claude.ai is only cancelled
@@ -170,21 +171,37 @@ async function intercept(item) {
     toastTab(tabId, `${name}: could not read the download, so it was saved with tokens. Use "Unmask file" on the bar.`, true);
     return;
   }
-  try { await chrome.downloads.cancel(item.id); } catch (e) { /* may have finished */ }
-  const [cur] = await chrome.downloads.search({ id: item.id });
-  const alreadyDone = !!(cur && cur.state === "complete");
-  if (!alreadyDone) { try { await chrome.downloads.erase({ id: item.id }); } catch (e) { /* ignore */ } }
+  // keepMasked (demo mode): leave the original download to land untouched and add the
+  // restored file beside it. Default: cancel the original; if it finished before the
+  // cancel took effect (small files), delete that token file once the restore is safe.
+  const keepMasked = !!s.keepMasked;
+  let alreadyDone = false;
+  if (!keepMasked) {
+    try { await chrome.downloads.cancel(item.id); } catch (e) { /* may have finished */ }
+    const [cur] = await chrome.downloads.search({ id: item.id });
+    alreadyDone = !!(cur && cur.state === "complete");
+    if (!alreadyDone) { try { await chrome.downloads.erase({ id: item.id }); } catch (e) { /* ignore */ } }
+  }
   try {
     const sr = await askTabs({ type: "sessionId" }, tabId);
     if (!sr || !sr.sessionId) throw new Error("no Maskroom session in the claude.ai tab");
     const r = await restoreFile(name, b64, sr.sessionId);
     if (!r.ok) throw new Error(r.error);
     await saveFile(r.name, r.b64);
-    await logEvent({ ...where, name, outcome: "restored", session: sr.sessionId, detail: `${r.report.restored} restored, ${r.report.unresolved.length} unresolved -> ${r.name}${alreadyDone ? " (token copy had already completed)" : ""}` });
-    toastTab(tabId, summarize(r.report, r.name, alreadyDone), r.report.unresolved.length > 0);
+    let maskedNote = "";
+    if (keepMasked) {
+      maskedNote = ". The masked copy was kept too.";
+    } else if (alreadyDone) {
+      // The token copy reached disk before cancel; remove it now that the restore is saved.
+      try { await chrome.downloads.removeFile(item.id); } catch (e) { /* already gone */ }
+      try { await chrome.downloads.erase({ id: item.id }); } catch (e) { /* ignore */ }
+    }
+    await logEvent({ ...where, name, outcome: "restored", session: sr.sessionId, detail: `${r.report.restored} restored, ${r.report.unresolved.length} unresolved -> ${r.name}${keepMasked ? " (masked copy kept)" : alreadyDone ? " (token copy removed)" : ""}` });
+    toastTab(tabId, summarize(r.report, r.name, maskedNote), r.report.unresolved.length > 0);
   } catch (e) {
-    if (!alreadyDone) await saveFile(name, b64);  // hand the original back untouched
-    await logEvent({ ...where, name, outcome: "failed", detail: `${e.message || e}; original saved back with tokens${alreadyDone ? " (already complete)" : ""}` });
+    // Make sure the user still has the file: re-save only when nothing else landed.
+    if (!keepMasked && !alreadyDone) await saveFile(name, b64);
+    await logEvent({ ...where, name, outcome: "failed", detail: `${e.message || e}; ${keepMasked || alreadyDone ? "token version is on disk" : "original saved back with tokens"}` });
     toastTab(tabId, `${name}: restore failed (${e.message || e}) — saved with tokens.`, true);
   }
 }

@@ -27,6 +27,7 @@ p.note{color:#5a6270;font-size:11.5px;margin:12px 0 0}
   <option value="md">Markdown tables (.md) — readable by any chat surface</option>
 </select>
 <div class="row"><input type="checkbox" id="interceptDownloads"><label for="interceptDownloads" style="margin:0;color:#e9e4d8">Restore files downloaded from claude.ai automatically (saved as *_restored)</label></div>
+<div class="row" style="padding-left:24px"><input type="checkbox" id="keepMasked"><label for="keepMasked" style="margin:0;color:#8d94a1">Also keep the masked (token) copy next to the restored file — useful for demos</label></div>
 <div class="row"><input type="checkbox" id="preamble"><label for="preamble" style="margin:0;color:#e9e4d8">Prepend the token instruction once per session</label></div>
 <button id="save">Save</button><button class="ghost" id="test">Test connection</button>
 <div id="status"></div>
