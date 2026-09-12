@@ -21,7 +21,7 @@ markup, blind to files, and never the control you rely on.**
 | **Preamble** | The first masked message of a session is prefixed with a one-line instruction telling the model to repeat tokens verbatim. |
 | **Sessions** | One Maskroom session (vault) per claude.ai chat, remembered across reloads. *New session* starts a fresh vault for the current chat. |
 
-**On-site previews.** The unmask view also restores previews rendered as text in the page, and in same-origin/srcdoc preview frames (the extension runs in all frames and syncs the chat's vault down to them). Two kinds are *not* covered: a preview served in a **cross-origin** sandbox frame (the extension is not injected there — its origin would have to be added to the manifest), and a preview drawn to a **canvas or PDF viewer** (no text to rewrite). For those, download the file and let *Unmask file* or the download intercept restore it.
+**On-site previews.** The unmask view also restores previews rendered as text in the page, and in same-origin/srcdoc preview frames (the extension runs in all frames and syncs the chat's vault down to them). Claude's artifact previews (spreadsheets, documents) render in the `www.claudeusercontent.com` frame, which the manifest now includes, so those restore too. The one kind *not* covered is a preview drawn to a **canvas or PDF viewer** (no text to rewrite). For those, download the file and let *Unmask file* or the download intercept restore it.
 
 Not covered: images and file types Maskroom cannot mask (they are attached as-is with a
 warning), other Claude surfaces (Cowork, desktop, mobile, Claude in Chrome), and anything

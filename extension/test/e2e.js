@@ -102,6 +102,29 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     }, null, { timeout: 8000 });
     await page.evaluate(() => document.querySelector("#preview").remove());
 
+    // 3d. Cross-origin preview frame (the real artifact case: claudeusercontent.com).
+    // The extension is now injected there and restores it, using the vault synced
+    // from the top frame. Playwright can read cross-origin frame content.
+    await page.route("https://www.claudeusercontent.com/**", (route) => {
+      const tok = new URL(route.request().url()).searchParams.get("tok") || "";
+      route.fulfill({ status: 200, contentType: "text/html",
+        body: `<!doctype html><body><p id="pv">Preview: ${tok} owes money. Unknown TOK_PERSON_00000000.</p></body>` });
+    });
+    await page.evaluate((tok) => {
+      const f = document.createElement("iframe"); f.id = "xpreview";
+      f.src = "https://www.claudeusercontent.com/artifact?tok=" + encodeURIComponent(tok);
+      document.body.appendChild(f);
+    }, personTok);
+    let xframe;
+    for (let i = 0; i < 60 && !xframe; i++) { xframe = page.frames().find((fr) => fr.url().includes("claudeusercontent")); if (!xframe) await page.waitForTimeout(250); }
+    assert(!!xframe, "cross-origin preview frame attached");
+    await xframe.locator("#pv").waitFor({ timeout: 15000 });
+    let xpv = "";
+    for (let i = 0; i < 40; i++) { xpv = await xframe.locator("#pv").innerText(); if (xpv.includes("Nimal Perera")) break; await page.waitForTimeout(250); }
+    assert(xpv.includes("Nimal Perera") && !xpv.includes(personTok) && xpv.includes("TOK_PERSON_00000000"),
+      "cross-origin (claudeusercontent.com) preview frame restored");
+    await page.evaluate(() => document.querySelector("#xpreview").remove());
+
     // 4. Text with nothing to mask: the guard checks it, then replays the send.
     await composer.click();
     await page.keyboard.type(`Thanks, what about ${personTok}?`);

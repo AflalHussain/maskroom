@@ -10,7 +10,8 @@
   "host_permissions": [
     "https://claude.ai/*",
     "http://127.0.0.1/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "https://*.claudeusercontent.com/*"
   ],
   "optional_host_permissions": [
     "http://*/*",
@@ -22,7 +23,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://claude.ai/*"
+        "https://claude.ai/*",
+        "https://*.claudeusercontent.com/*"
       ],
       "js": [
         "tokens.js",
