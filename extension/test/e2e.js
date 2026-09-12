@@ -253,16 +253,6 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     let last = (await saved()).pop();
     assert(last.name === "fixture_masked_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("Kumari Bandara") && !/TOK_/.test(last.text), `Unmask file restored the Markdown and saved it as *_restored.md (got ${last.name}: ${last.text.slice(0, 80)})`);
 
-    // 13. Download intercept (blob): a generated report is saved restored; the token version is cancelled.
-    nSaved = (await saved()).length;
-    await page.evaluate((tok) => { window.reportText = `# Overdue\n\n| customer | note |\n|---|---|\n| ${tok.toLowerCase().replace(/_/g, " ")} | late |\n| TOK_PERSON_00000000 | unknown |\n`; }, nimalTok);
-    const [dl] = await Promise.all([page.waitForEvent("download"), page.click("#dlreport")]);
-    await waitSaved(nSaved + 1);
-    last = (await saved()).pop();
-    assert(last.name === "report_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("TOK_PERSON_00000000") && last.text.includes("<!-- maskroom:"), "intercepted blob download restored, unresolved token kept and noted");
-    const fail = await dl.failure();
-    assert(fail === "canceled" || (await dl.path()) !== null, `original download was cancelled or (tiny file) had already completed: ${fail}`);
-    // Default mode: the token copy must not survive on disk.
     // Downloads the page started (the token copy) have no byExtensionId; the files
     // this extension saves (restored) do. That is the reliable signal — under
     // Playwright the on-disk names are opaque GUIDs.
@@ -270,7 +260,19 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
       .filter((d) => !d.byExtensionId && (String(d.url).startsWith("blob:https://claude") || String(d.url).startsWith("https://claude")))
       .map((d) => ({ exists: d.exists, url: String(d.url).slice(0, 25) })));
     const liveTokenCopies = async () => (await claudeDownloads()).filter((d) => d.exists);
-    assert((await liveTokenCopies()).length === 0, "default mode: masked token copy removed from disk");
+
+    // 13. Fast path (blob, default mode): the browser download is blocked at the
+    // click and the restored file saved directly — no token copy ever starts.
+    const claudeDlCount = async () => (await claudeDownloads()).length;
+    const beforeDl = await claudeDlCount();
+    nSaved = (await saved()).length;
+    await page.evaluate((tok) => { window.reportText = `# Overdue\n\n| customer | note |\n|---|---|\n| ${tok.toLowerCase().replace(/_/g, " ")} | late |\n| TOK_PERSON_00000000 | unknown |\n`; }, nimalTok);
+    await page.click("#dlreport");
+    await waitSaved(nSaved + 1);
+    last = (await saved()).pop();
+    assert(last.name === "report_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("TOK_PERSON_00000000") && last.text.includes("<!-- maskroom:"), "fast path restored the blob download");
+    assert((await claudeDlCount()) === beforeDl, "fast path: the browser never started a token download");
+    assert((await liveTokenCopies()).length === 0, "fast path: no token copy on disk");
 
     // 13b. keepMasked (demo) on: the token copy is kept beside the restored one.
     await sw.evaluate(() => chrome.storage.local.set({ keepMasked: true }));

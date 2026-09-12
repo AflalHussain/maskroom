@@ -303,16 +303,46 @@
   // A download link on claude.ai usually points at a blob: URL that the page
   // revokes right after the click. Start reading it at click time so the
   // worker can still get the bytes when the download shows up.
-  const blobStore = new Map();  // url -> Promise<b64|null>
+  const blobStore = new Map();  // url -> {p: Promise<b64|null>, name}
   document.addEventListener("click", (e) => {
     if (!settings.interceptDownloads) return;
     const a = e.target.closest && e.target.closest("a[href]");
     if (!a || isOurs(a) || !(a.href.startsWith("blob:") || a.hasAttribute("download"))) return;
-    if (!RESTORE_RE.test(a.getAttribute("download") || a.href.split("?")[0])) return;
+    const name = a.getAttribute("download") || a.href.split("?")[0].split("/").pop();
+    if (!RESTORE_RE.test(name)) return;
     const p = fetch(a.href).then((r) => r.arrayBuffer()).then(bufToB64).catch(() => null);
-    blobStore.set(a.href, { p, name: a.getAttribute("download") || a.href.split("?")[0].split("/").pop() });
+    blobStore.set(a.href, { p, name });
     setTimeout(() => blobStore.delete(a.href), 60000);
+
+    // Fast path: for a plain-click blob download in default mode, block the
+    // browser download and restore it ourselves, so the token copy never
+    // touches disk. Everything else (demo mode, https links, modified or
+    // programmatic clicks) falls through to the worker's downloads intercept.
+    if (settings.keepMasked || !a.href.startsWith("blob:")) return;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    fastRestoreDownload(name, p);
   }, true);
+
+  async function fastRestoreDownload(name, bytesPromise) {
+    while (busy) await new Promise((r) => setTimeout(r, 150));
+    busy = true; renderBar();
+    try {
+      await ensureSession();
+      const b64 = await bytesPromise;
+      if (!b64) throw new Error("could not read the download");
+      const r = await call({ type: "restoreFile", name, b64, sessionId });
+      if (!r.ok) throw new Error(r.error);
+      await call({ type: "saveFile", name: r.name, b64: r.b64 });
+      const n = r.report.unresolved.length;
+      toast(`${name}: ${r.report.restored} value${r.report.restored === 1 ? "" : "s"} restored → ${r.name}`
+        + (n ? ` · ${n} token${n === 1 ? "" : "s"} not in this session's vault (listed inside the file)` : ""), n > 0);
+    } catch (e) {
+      // We blocked the browser's download; hand the file back so nothing is lost.
+      try { const b64 = await bytesPromise; if (b64) await call({ type: "saveFile", name, b64 }); } catch (_) { /* ignore */ }
+      toast(`${name}: ${e.message || e} — saved with tokens.`, true);
+    } finally { busy = false; renderBar(); }
+  }
 
   async function unmaskFile(file) {
     if (!RESTORE_RE.test(file.name)) { toast(`${file.name}: not a type Maskroom can restore.`, true); return false; }
