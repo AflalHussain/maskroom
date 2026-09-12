@@ -62,3 +62,14 @@ async function renderFrames() {
 }
 renderFrames();
 chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "previewFrames" in c) renderFrames(); });
+
+
+// ---------- guard activity ----------
+async function renderGuard() {
+  const { guardLog = [] } = await chrome.storage.local.get("guardLog");
+  $("guard").textContent = guardLog.length
+    ? guardLog.slice().reverse().map((g) => `${g.time.replace("T"," ").slice(11,19)} ${g.event} · composer=${g.composer!==undefined?g.composer:"-"} inComposer=${g.inComposer!==undefined?g.inComposer:(g.matchedSend!==undefined?"send:"+g.matchedSend:"-")} needsMask=${g.needsMask}`).join("\n")
+    : "no guard events yet — focus the claude.ai composer and press Enter with unmasked text";
+}
+renderGuard();
+chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "guardLog" in c) renderGuard(); });

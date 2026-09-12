@@ -21,9 +21,11 @@
 
   const SEL = {
     composer: ['div[contenteditable="true"].ProseMirror', 'div[contenteditable="true"][data-placeholder]',
-               'fieldset div[contenteditable="true"]', 'div[contenteditable="true"]'],
+               'fieldset div[contenteditable="true"]', 'div[contenteditable="true"]',
+               'textarea[data-testid], textarea[placeholder], textarea'],
     sendButton: ['button[aria-label="Send message"]', 'button[aria-label="Send Message"]',
-                 'button[aria-label*="Send" i]', 'button[data-testid="send-button"]'],
+                 'button[aria-label*="Send" i]', 'button[data-testid="send-button"]',
+                 'button[type="submit"]', 'button:has(svg[aria-label*="Send" i])'],
     // claude.ai's own hidden file input (attach button) and the drop zone
     fileInput: ['input[type="file"][multiple]', 'input[type="file"]'],
     dropTarget: ['fieldset', 'form'],
@@ -44,6 +46,17 @@
   const q = (list, root = document) => { for (const s of list) { const el = root.querySelector(s); if (el) return el; } return null; };
   const call = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
   const api = (path, method, body) => call({ type: "api", path, method, body });
+
+  // Guard diagnostics: last 20 guard decisions, shown in the options popup so
+  // a guard that misses claude.ai's composer/send button can be diagnosed.
+  async function guardLog(event, info) {
+    if (!isTop) return;
+    try {
+      const { guardLog: log = [] } = await chrome.storage.local.get("guardLog");
+      log.push({ time: new Date().toISOString(), event, ...info });
+      await chrome.storage.local.set({ guardLog: log.slice(-20) });
+    } catch (e) { /* never break the guard */ }
+  }
 
   let toastTimer = null;
   function toast(text, bad = false) {
@@ -125,10 +138,20 @@
   }
 
   // ---------------------------------------------------------- composer
-  function composerText(el) { return (el.innerText || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n"); }
+  const isTextarea = (el) => el && el.tagName === "TEXTAREA";
+  function composerText(el) {
+    if (isTextarea(el)) return (el.value || "").replace(/\n{3,}/g, "\n\n");
+    return (el.innerText || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n");
+  }
 
   function setComposerText(el, text) {
     el.focus();
+    if (isTextarea(el)) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, text);  // React-friendly value set
+      el.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      return;
+    }
     const sel = window.getSelection();
     const range = document.createRange(); range.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(range);
     let ok = false;
@@ -197,17 +220,22 @@
     const t = composerText(el).trim();
     return !!t && t !== lastMasked.trim();
   }
+  const inComposer = (el, target) => !!el && (el === target || el.contains(target) || (target && target.isContentEditable));
   document.addEventListener("keydown", (e) => {
     if (!settings.guard || e.key !== "Enter" || e.shiftKey || e.isComposing) return;
     const el = q(SEL.composer);
-    if (!el || !el.contains(e.target) || !needsMask()) return;
+    const relevant = inComposer(el, e.target);
+    if (relevant) guardLog("Enter", { composer: !!el, inComposer: relevant, needsMask: needsMask() });
+    if (!el || !relevant || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — press Enter again to send."); else if (r.done) resend(); });
   }, true);
   document.addEventListener("click", (e) => {
     if (!settings.guard) return;
     const btn = e.target.closest && e.target.closest("button");
-    if (!btn || !SEL.sendButton.some((s) => btn.matches(s)) || !needsMask()) return;
+    const isSend = btn && SEL.sendButton.some((sel) => { try { return btn.matches(sel); } catch (x) { return false; } });
+    if (btn) guardLog("send-click", { matchedSend: !!isSend, needsMask: needsMask() });
+    if (!isSend || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — click send again."); else if (r.done) resend(); });
   }, true);
