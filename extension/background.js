@@ -138,19 +138,38 @@ async function resolveName(item, got) {
   return name || "download";
 }
 
+// Persistent diagnostics: the last 20 download events, shown in the options
+// popup, so a failed restore can be explained without opening DevTools.
+async function logEvent(entry) {
+  try {
+    const { interceptLog = [] } = await chrome.storage.local.get("interceptLog");
+    interceptLog.push({ time: new Date().toISOString(), ...entry });
+    await chrome.storage.local.set({ interceptLog: interceptLog.slice(-20) });
+  } catch (e) { /* logging must never break the intercept */ }
+}
+const originOf = (u) => { try { return (u || "").startsWith("blob:") ? "blob:" + new URL(u.slice(5)).origin : new URL(u).origin; } catch (e) { return (u || "").slice(0, 40); } };
+
 async function intercept(item) {
   const s = await settings();
-  if (!s.interceptDownloads || !fromClaude(item)) return;
+  const where = { url: originOf(item.url), referrer: originOf(item.referrer), mime: item.mime || "" };
+  if (!s.interceptDownloads) return;
+  if (!fromClaude(item)) { await logEvent({ ...where, name: base(item.filename), outcome: "ignored", detail: "not from claude.ai (url and referrer both off-site)" }); return; }
   const got = await askTabs({ type: "fetchBytes", url: item.url });
   const name = await resolveName(item, got);
   const ext = extOf(name);
   console.debug("maskroom: download", item.id, item.url.slice(0, 60), name, got ? "bytes from tab" : "no bytes from tab");
-  if (!RESTORE_EXTS.includes(ext)) return;
+  if (!RESTORE_EXTS.includes(ext)) { await logEvent({ ...where, name, outcome: "ignored", detail: `type ${ext || "(none)"} is not restorable (PDF/image are not supported)` }); return; }
   let b64 = got && got.b64, tabId = got ? got.tabId : null;
+  let readErr = got ? (got.b64 ? "" : "tab responded but had no bytes") : "no claude.ai tab answered (content script not loaded?)";
   if (!b64 && !item.url.startsWith("blob:")) {
-    try { const res = await fetch(item.url, { credentials: "include" }); if (res.ok) b64 = bytesToB64(await res.arrayBuffer()); } catch (e) { /* below */ }
+    try { const res = await fetch(item.url, { credentials: "include" }); if (res.ok) b64 = bytesToB64(await res.arrayBuffer()); else readErr += `; worker fetch HTTP ${res.status}`; }
+    catch (e) { readErr += `; worker fetch failed (${e.message})`; }
   }
-  if (!b64) { toastTab(tabId, `${name}: could not read the download, so it was saved with tokens. Use "Unmask file" on the bar.`, true); return; }
+  if (!b64) {
+    await logEvent({ ...where, name, outcome: "left as-is", detail: `could not read the download: ${readErr}` });
+    toastTab(tabId, `${name}: could not read the download, so it was saved with tokens. Use "Unmask file" on the bar.`, true);
+    return;
+  }
   try { await chrome.downloads.cancel(item.id); } catch (e) { /* may have finished */ }
   const [cur] = await chrome.downloads.search({ id: item.id });
   const alreadyDone = !!(cur && cur.state === "complete");
@@ -161,9 +180,11 @@ async function intercept(item) {
     const r = await restoreFile(name, b64, sr.sessionId);
     if (!r.ok) throw new Error(r.error);
     await saveFile(r.name, r.b64);
+    await logEvent({ ...where, name, outcome: "restored", session: sr.sessionId, detail: `${r.report.restored} restored, ${r.report.unresolved.length} unresolved -> ${r.name}${alreadyDone ? " (token copy had already completed)" : ""}` });
     toastTab(tabId, summarize(r.report, r.name, alreadyDone), r.report.unresolved.length > 0);
   } catch (e) {
     if (!alreadyDone) await saveFile(name, b64);  // hand the original back untouched
+    await logEvent({ ...where, name, outcome: "failed", detail: `${e.message || e}; original saved back with tokens${alreadyDone ? " (already complete)" : ""}` });
     toastTab(tabId, `${name}: restore failed (${e.message || e}) — saved with tokens.`, true);
   }
 }

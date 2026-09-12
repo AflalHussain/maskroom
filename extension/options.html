@@ -30,6 +30,9 @@ p.note{color:#5a6270;font-size:11.5px;margin:12px 0 0}
 <div class="row"><input type="checkbox" id="preamble"><label for="preamble" style="margin:0;color:#e9e4d8">Prepend the token instruction once per session</label></div>
 <button id="save">Save</button><button class="ghost" id="test">Test connection</button>
 <div id="status"></div>
+<h1 style="margin-top:18px">Recent downloads</h1>
+<div id="log" style="font:11.5px ui-monospace,Menlo,monospace;color:#8d94a1;max-height:180px;overflow:auto;white-space:pre-wrap"></div>
+<button class="ghost" id="copylog" style="margin-top:8px">Copy log</button><button class="ghost" id="clearlog" style="margin-top:8px">Clear</button>
 <p class="note">Use <b>Mask file</b> on the bar for .xlsx/.pdf attachments; with guard on, files dropped or picked in
 claude.ai go through Maskroom too. Not supported by Anthropic; depends on claude.ai's page structure.</p>
 <script src="options.js"></script>

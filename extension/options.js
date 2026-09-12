@@ -33,3 +33,19 @@ $("test").addEventListener("click", async () => {
   if (r && r.ok) status(`Connected · locale ${r.data.default_locale} · auth ${r.data.auth_required ? "required" : "off"}`, "ok");
   else status((r && r.error) || "No response", "bad");
 });
+
+
+// ---------- download diagnostics ----------
+const COLOR = { restored: "#3fb98d", failed: "#e2574c", "left as-is": "#e0a83a", ignored: "#5a6270" };
+async function renderLog() {
+  const { interceptLog = [] } = await chrome.storage.local.get("interceptLog");
+  const el = $("log");
+  el.innerHTML = interceptLog.length ? interceptLog.slice().reverse().map((e) =>
+    `<div><span style="color:${COLOR[e.outcome] || "#8d94a1"}">${e.outcome}</span> · ${e.time.replace("T", " ").slice(0, 19)} · ${e.name || "?"} · ${e.url}${e.referrer ? " ← " + e.referrer : ""}<br>&nbsp;&nbsp;${(e.detail || "").replace(/</g, "&lt;")}</div>`
+  ).join("") : "no downloads seen yet";
+  el.dataset.text = interceptLog.map((e) => `${e.time} ${e.outcome} ${e.name} ${e.url} ${e.referrer || ""} ${e.mime || ""} — ${e.detail || ""}`).join("\n");
+}
+renderLog();
+chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "interceptLog" in c) renderLog(); });
+$("copylog").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("log").dataset.text || ""); status("Log copied.", "ok"); } catch (e) { status("Copy failed", "bad"); } });
+$("clearlog").addEventListener("click", () => chrome.storage.local.set({ interceptLog: [] }));
