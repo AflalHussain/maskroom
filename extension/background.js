@@ -229,6 +229,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       sendResponse({ ok: true }); return false;
     case "getTabVault": sendResponse({ ok: true, vault: (sender.tab && tabVaults[sender.tab.id]) || {} }); return false;
+    case "framesSeen":
+      (async () => {
+        const { previewFrames = [] } = await chrome.storage.local.get("previewFrames");
+        const now = new Date().toISOString();
+        for (const o of (msg.origins || [])) if (!previewFrames.some((f) => f.origin === o)) previewFrames.push({ origin: o, time: now });
+        await chrome.storage.local.set({ previewFrames: previewFrames.slice(-20) });
+      })();
+      sendResponse({ ok: true }); return false;
     case "openOptions": chrome.runtime.openOptionsPage(); return false;
     default: return false;
   }

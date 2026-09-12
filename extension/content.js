@@ -539,6 +539,24 @@
   });
 
   // ------------------------------------------------------- navigation
+  // Diagnostic: report the origins of any preview iframes on the page, so we
+  // know which origin to inject the restorer into for artifact/spreadsheet
+  // previews. Cross-origin frames can't be read into, but their src origin can.
+  if (isTop) {
+    const seenFrames = new Set();
+    const scanFrames = () => {
+      const origins = [];
+      for (const f of document.querySelectorAll("iframe")) {
+        let o = "";
+        try { o = f.src ? new URL(f.src, location.href).origin : (f.srcdoc ? "srcdoc" : ""); } catch (e) { o = ""; }
+        if (o && o !== location.origin && o !== "srcdoc" && !seenFrames.has(o)) { seenFrames.add(o); origins.push(o); }
+      }
+      if (origins.length) call({ type: "framesSeen", origins });
+    };
+    scanFrames();
+    setInterval(scanFrames, 3000);
+  }
+
   if (isTop) setInterval(async () => {
     const key = convKey();
     if (key === currentKey) return;

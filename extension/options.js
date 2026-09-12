@@ -51,3 +51,14 @@ renderLog();
 chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "interceptLog" in c) renderLog(); });
 $("copylog").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("log").dataset.text || ""); status("Log copied.", "ok"); } catch (e) { status("Copy failed", "bad"); } });
 $("clearlog").addEventListener("click", () => chrome.storage.local.set({ interceptLog: [] }));
+
+
+// ---------- preview frames ----------
+async function renderFrames() {
+  const { previewFrames = [] } = await chrome.storage.local.get("previewFrames");
+  $("frames").textContent = previewFrames.length
+    ? previewFrames.map((f) => `${f.origin}   (${f.time.replace("T", " ").slice(0, 19)})`).join("\n")
+    : "no cross-origin preview frames seen yet — open an artifact/file preview on claude.ai";
+}
+renderFrames();
+chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "previewFrames" in c) renderFrames(); });
