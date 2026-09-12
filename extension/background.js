@@ -17,6 +17,7 @@ const MIME = { ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
 const extOf = (name) => { const m = /\.[a-z0-9]+$/i.exec(name || ""); return m ? m[0].toLowerCase() : ""; };
 const ownDownloads = new Set();
 self.__savedFiles = [];  // {name, b64} of every file this worker saved (inspected by tests)
+const tabVaults = {};  // tabId -> {token: original}; pushed by the top frame, read by preview subframes
 
 async function settings() {
   const s = await chrome.storage.local.get(DEFAULTS);
@@ -100,13 +101,13 @@ async function askTabs(msg, preferTab) {
   const tabs = await claudeTabs();
   if (preferTab != null) tabs.sort((a, b) => (a.id === preferTab ? -1 : b.id === preferTab ? 1 : 0));
   for (const t of tabs) {
-    try { const r = await chrome.tabs.sendMessage(t.id, msg); if (r && r.ok) return { ...r, tabId: t.id }; } catch (e) { /* tab without our script */ }
+    try { const r = await chrome.tabs.sendMessage(t.id, msg, { frameId: 0 }); if (r && r.ok) return { ...r, tabId: t.id }; } catch (e) { /* tab without our script */ }
   }
   return null;
 }
 async function toastTab(tabId, text, bad) {
   if (tabId == null) { const [t] = await claudeTabs(); if (!t) return; tabId = t.id; }
-  try { await chrome.tabs.sendMessage(tabId, { type: "toast", text, bad: !!bad }); } catch (e) { /* ignore */ }
+  try { await chrome.tabs.sendMessage(tabId, { type: "toast", text, bad: !!bad }, { frameId: 0 }); } catch (e) { /* ignore */ }
 }
 function fromClaude(item) {
   const u = item.url || "", r = item.referrer || "";
@@ -210,6 +211,8 @@ chrome.downloads.onCreated.addListener((item) => {
   intercept(item).catch((e) => console.warn("maskroom intercept", e));
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => { delete tabVaults[tabId]; });
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return false;
   switch (msg.type) {
@@ -219,6 +222,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "restoreFile": restoreFile(msg.name, msg.b64, msg.sessionId).then(sendResponse); return true;
     case "saveFile": saveFile(msg.name, msg.b64, msg.mime).then(sendResponse); return true;
     case "settings": settings().then(sendResponse); return true;
+    case "setTabVault":
+      if (sender.tab) {
+        tabVaults[sender.tab.id] = msg.vault || {};
+        chrome.tabs.sendMessage(sender.tab.id, { type: "tabVaultUpdated" }).catch(() => {});  // wake preview frames
+      }
+      sendResponse({ ok: true }); return false;
+    case "getTabVault": sendResponse({ ok: true, vault: (sender.tab && tabVaults[sender.tab.id]) || {} }); return false;
     case "openOptions": chrome.runtime.openOptionsPage(); return false;
     default: return false;
   }

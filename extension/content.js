@@ -17,6 +17,7 @@
 (() => {
   if (window.__maskroomLoaded) return;
   window.__maskroomLoaded = true;
+  const isTop = window.top === window.self;  // only the top frame draws UI / owns the session
 
   const SEL = {
     composer: ['div[contenteditable="true"].ProseMirror', 'div[contenteditable="true"][data-placeholder]',
@@ -46,6 +47,7 @@
 
   let toastTimer = null;
   function toast(text, bad = false) {
+    if (!isTop) return;
     let el = document.getElementById("maskroom-toast");
     if (!el) { el = document.createElement("div"); el.id = "maskroom-toast"; document.body.appendChild(el); }
     el.textContent = text; el.classList.toggle("mr-bad", bad); el.classList.add("mr-show");
@@ -70,11 +72,22 @@
     if (!r.ok) { if (r.status === 404) { sessionId = null; idx = T.buildIndex({}); entries = 0; } return; }
     const mappings = (r.data && r.data.mappings) || {};
     idx = T.buildIndex(mappings); entries = Object.keys(mappings).length;
+    call({ type: "setTabVault", vault: mappings });  // let preview subframes restore too
     if (settings.unmask) restoreAll(document.body);
     renderBar();
   }
 
+  // Subframes (artifact / file previews) restore only: they fetch the chat's
+  // vault from the top frame via the worker, and never touch the session.
+  async function refreshFrameVault() {
+    const r = await call({ type: "getTabVault" });
+    const mappings = (r && r.vault) || {};
+    idx = T.buildIndex(mappings); entries = Object.keys(mappings).length;
+    if (settings.unmask) restoreAll(document.body);
+  }
+
   async function ensureSession() {
+    if (!isTop) return sessionId;  // subframes never create or own a session
     if (sessionId) return sessionId;
     const sessions = await storedSessions();
     const known = sessions[currentKey];
@@ -305,7 +318,7 @@
   // worker can still get the bytes when the download shows up.
   const blobStore = new Map();  // url -> {p: Promise<b64|null>, name}
   document.addEventListener("click", (e) => {
-    if (!settings.interceptDownloads) return;
+    if (!isTop || !settings.interceptDownloads) return;
     const a = e.target.closest && e.target.closest("a[href]");
     if (!a || isOurs(a) || !(a.href.startsWith("blob:") || a.hasAttribute("download"))) return;
     const name = a.getAttribute("download") || a.href.split("?")[0].split("/").pop();
@@ -377,9 +390,11 @@
       return true;
     }
     if (msg.type === "sessionId") {
+      if (!isTop) { sendResponse({ ok: false }); return false; }
       ensureSession().then((id) => sendResponse({ ok: !!id, sessionId: id })).catch(() => sendResponse({ ok: false }));
       return true;
     }
+    if (msg.type === "tabVaultUpdated") { if (!isTop) refreshFrameVault(); sendResponse({ ok: true }); return false; }
     if (msg.type === "toast") { toast(msg.text, !!msg.bad); sendResponse({ ok: true }); return false; }
     return false;
   });
@@ -471,6 +486,7 @@
 
   // --------------------------------------------------------------- bar
   function renderBar() {
+    if (!isTop) return;
     let bar = document.getElementById("maskroom-bar");
     if (!bar) {
       bar = document.createElement("div"); bar.id = "maskroom-bar";
@@ -523,7 +539,7 @@
   });
 
   // ------------------------------------------------------- navigation
-  setInterval(async () => {
+  if (isTop) setInterval(async () => {
     const key = convKey();
     if (key === currentKey) return;
     const sessions = await storedSessions();
@@ -547,6 +563,7 @@
   // ---------------------------------------------------------------- boot
   (async () => {
     settings = Object.assign(settings, await call({ type: "settings" }));
+    if (!isTop) { await refreshFrameVault(); return; }  // preview subframe: restore only
     renderBar();
     const sessions = await storedSessions();
     sessionId = sessions[currentKey] || null;

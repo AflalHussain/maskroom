@@ -75,6 +75,33 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     await page.waitForFunction(() => document.querySelector(".msg.assistant").textContent.includes("Nimal Perera"));
     assert(await page.locator(".msg.assistant.maskroom-restored").count() === 1, "unmask view on again: restored");
 
+    // 3c. Preview subframe: a same-origin iframe (artifact / file preview) restores too,
+    // and follows the unmask-view toggle. Known tokens are replaced; unknown ones stay.
+    await page.evaluate((tok) => {
+      const f = document.createElement("iframe"); f.id = "preview";
+      f.srcdoc = `<!doctype html><body><p id="pv">Preview: ${tok} owes money. Unknown TOK_PERSON_00000000.</p></body>`;
+      document.body.appendChild(f);
+    }, personTok);
+    await page.waitForFunction(() => {
+      const fr = document.querySelector("#preview");
+      return fr && fr.contentDocument && fr.contentDocument.body && /Nimal Perera/.test(fr.contentDocument.body.textContent);
+    }, null, { timeout: 15000 });
+    let pv = await page.frameLocator("#preview").locator("#pv").innerText();
+    assert(pv.includes("Nimal Perera") && !pv.includes(personTok) && pv.includes("TOK_PERSON_00000000"),
+      "iframe preview restored (known token replaced, unknown left)");
+    await page.click('#maskroom-bar [data-act="unmask"]');  // off
+    await page.waitForFunction((tok) => {
+      const fr = document.querySelector("#preview");
+      return fr && fr.contentDocument && fr.contentDocument.body && fr.contentDocument.body.textContent.includes(tok);
+    }, personTok, { timeout: 8000 });
+    assert(true, "iframe preview reverts to tokens when the view is turned off");
+    await page.click('#maskroom-bar [data-act="unmask"]');  // on again
+    await page.waitForFunction(() => {
+      const fr = document.querySelector("#preview");
+      return fr && fr.contentDocument && fr.contentDocument.body && /Nimal Perera/.test(fr.contentDocument.body.textContent);
+    }, null, { timeout: 8000 });
+    await page.evaluate(() => document.querySelector("#preview").remove());
+
     // 4. Text with nothing to mask: the guard checks it, then replays the send.
     await composer.click();
     await page.keyboard.type(`Thanks, what about ${personTok}?`);
