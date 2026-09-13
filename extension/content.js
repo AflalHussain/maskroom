@@ -553,7 +553,8 @@
         <button data-act="adopt" title="Use a session id from the Maskroom staging page">use id…</button>
         <button data-act="opts" title="Settings">⚙</button>`;
       bar.addEventListener("click", async (e) => {
-        const act = e.target.dataset && e.target.dataset.act;
+        const act = (e.target.closest && e.target.closest("[data-act]") || {}).dataset ? (e.target.closest("[data-act]")).dataset.act : (e.target.dataset && e.target.dataset.act);
+        try { console.log("[maskroom] bar click act=" + act + " contextDead=" + contextDead); } catch (x) {}
         if (contextDead) { renderBar(); return; }
         try {
           if (act === "mask") maskComposer();
@@ -561,7 +562,7 @@
           else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
           else if (act === "new") newSession();
           else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
-          else if (act === "guard") { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); }
+          else if (act === "guard") { settings.guard = !settings.guard; try { console.log("[maskroom] guard toggled ->", settings.guard); } catch (x) {} await safeSet({ guard: settings.guard }); renderBar(); }
           else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
           else if (act === "opts") call({ type: "openOptions" });
         } catch (err) { contextDead = true; renderBar(); }
