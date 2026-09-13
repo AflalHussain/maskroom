@@ -44,13 +44,26 @@
 
   // ------------------------------------------------------------ helpers
   const q = (list, root = document) => { for (const s of list) { const el = root.querySelector(s); if (el) return el; } return null; };
-  const call = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+  // Tolerate an invalidated extension context (happens to the old content
+  // script in an open tab after the extension is reloaded): fail quietly
+  // instead of throwing "Extension context invalidated" on every call.
+  let contextDead = false;
+  const call = (msg) => new Promise((res) => {
+    if (contextDead) return res(undefined);
+    try {
+      chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r); });
+    } catch (e) {
+      contextDead = true;
+      if (isTop) { try { const el = document.getElementById("maskroom-bar"); if (el) { const m = el.querySelector(".mr-meta"); if (m) m.textContent = "reload this tab (extension was updated)"; } } catch (_) {} }
+      res(undefined);
+    }
+  });
   const api = (path, method, body) => call({ type: "api", path, method, body });
 
   // Guard diagnostics: last 20 guard decisions, shown in the options popup so
   // a guard that misses claude.ai's composer/send button can be diagnosed.
   async function guardLog(event, info) {
-    if (!isTop) return;
+    if (!isTop || contextDead) return;
     try {
       const { guardLog: log = [] } = await chrome.storage.local.get("guardLog");
       log.push({ time: new Date().toISOString(), event, ...info });
