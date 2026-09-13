@@ -221,7 +221,7 @@
     return !!t && t !== lastMasked.trim();
   }
   const inComposer = (el, target) => !!el && (el === target || el.contains(target) || (target && target.isContentEditable));
-  document.addEventListener("keydown", (e) => {
+  const onEnter = (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
     const el = q(SEL.composer);
     const relevant = inComposer(el, e.target);
@@ -230,8 +230,8 @@
     if (!settings.guard || !el || !relevant || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — press Enter again to send."); else if (r.done) resend(); });
-  }, true);
-  document.addEventListener("click", (e) => {
+  };
+  const onSendClick = (e) => {
     if (!settings.guard) return;
     const btn = e.target.closest && e.target.closest("button");
     const isSend = btn && SEL.sendButton.some((sel) => { try { return btn.matches(sel); } catch (x) { return false; } });
@@ -239,7 +239,11 @@
     if (!isSend || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — click send again."); else if (r.done) resend(); });
-  }, true);
+  };
+  // Register on window in the capture phase (the earliest point in dispatch) so the
+  // guard sees Enter / the send click before claude.ai's own handlers can submit.
+  window.addEventListener("keydown", onEnter, true);
+  window.addEventListener("click", onSendClick, true);
 
   // --------------------------------------------------------------- files
   const readB64 = (file) => new Promise((res, rej) => {
