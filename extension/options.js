@@ -67,7 +67,7 @@ chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "pre
 // ---------- guard activity ----------
 async function renderGuard() {
   const { guardLog = [] } = await chrome.storage.local.get("guardLog");
-  $("guard").textContent = guardLog.length
+  $("guardlog").textContent = guardLog.length
     ? guardLog.slice().reverse().map((g) => {
         const parts = [g.time.replace("T"," ").slice(11,19), g.event];
         for (const k of ["host","composer","inComposer","target","ce","matchedSend","needsMask","guard","send"])

@@ -18,6 +18,7 @@
   if (window.__maskroomLoaded) return;
   window.__maskroomLoaded = true;
   const isTop = window.top === window.self;  // only the top frame draws UI / owns the session
+  try { console.log("[maskroom] content script loaded; isTop=" + isTop + "; url=" + location.href); } catch (e) {}
 
   const SEL = {
     composer: ['div[contenteditable="true"].ProseMirror', 'div[contenteditable="true"][data-placeholder]',
@@ -238,6 +239,7 @@
   const inComposer = (el, target) => !!el && (el === target || el.contains(target) || (target && target.isContentEditable));
   const onEnter = (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    try { console.log("[maskroom] Enter keydown; guard=" + settings.guard + "; composer=" + !!q(SEL.composer) + "; target=" + (e.target && e.target.tagName)); } catch (x) {}
     const el = q(SEL.composer);
     const relevant = inComposer(el, e.target);
     guardLog("Enter", { guard: settings.guard, composer: !!el, inComposer: relevant,
