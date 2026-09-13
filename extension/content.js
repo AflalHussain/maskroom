@@ -59,6 +59,8 @@
     }
   });
   const api = (path, method, body) => call({ type: "api", path, method, body });
+  const safeSet = async (obj) => { try { await chrome.storage.local.set(obj); } catch (e) { contextDead = true; renderBar(); } };
+  const safeGet = async (def) => { try { return await chrome.storage.local.get(def); } catch (e) { contextDead = true; return def; } };
 
   // Guard diagnostics: last 20 guard decisions, shown in the options popup so
   // a guard that misses claude.ai's composer/send button can be diagnosed.
@@ -85,11 +87,11 @@
   const convKey = () => (location.pathname.match(/\/chat\/([0-9a-f-]{8,})/i) || [])[1] || "new";
   let currentKey = convKey();
 
-  async function storedSessions() { return (await chrome.storage.local.get({ sessions: {} })).sessions; }
+  async function storedSessions() { return (await safeGet({ sessions: {} })).sessions; }
   async function rememberSession(key, id) {
     const sessions = await storedSessions();
     sessions[key] = id;
-    await chrome.storage.local.set({ sessions });
+    await safeSet({ sessions });
   }
 
   async function loadVault() {
@@ -534,6 +536,7 @@
   function renderBar() {
     if (!isTop) return;
     let bar = document.getElementById("maskroom-bar");
+    if (contextDead && bar) { const m = bar.querySelector(".mr-meta"); if (m) m.textContent = "reload this tab — extension was updated"; return; }
     if (!bar) {
       bar = document.createElement("div"); bar.id = "maskroom-bar";
       bar.innerHTML = `<span class="mr-brand">MASKROOM</span><span class="mr-meta"></span>
@@ -549,14 +552,17 @@
         <button data-act="opts" title="Settings">⚙</button>`;
       bar.addEventListener("click", async (e) => {
         const act = e.target.dataset && e.target.dataset.act;
-        if (act === "mask") maskComposer();
-        else if (act === "file") bar.querySelector("#maskroom-file").click();
-        else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
-        else if (act === "new") newSession();
-        else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
-        else if (act === "guard") { settings.guard = !settings.guard; await chrome.storage.local.set({ guard: settings.guard }); renderBar(); }
-        else if (act === "unmask") { setUnmask(!settings.unmask); await chrome.storage.local.set({ unmask: settings.unmask }); }
-        else if (act === "opts") chrome.runtime.sendMessage({ type: "openOptions" });
+        if (contextDead) { renderBar(); return; }
+        try {
+          if (act === "mask") maskComposer();
+          else if (act === "file") bar.querySelector("#maskroom-file").click();
+          else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
+          else if (act === "new") newSession();
+          else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
+          else if (act === "guard") { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); }
+          else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
+          else if (act === "opts") call({ type: "openOptions" });
+        } catch (err) { contextDead = true; renderBar(); }
       });
       bar.querySelector("#maskroom-file").addEventListener("change", (e) => {
         const files = [...e.target.files]; e.target.value = "";
