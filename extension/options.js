@@ -9,6 +9,18 @@ chrome.storage.local.get(DEFAULTS).then((s) => {
   $("keepMasked").checked = s.keepMasked;
 });
 
+// Admin lock: when guardLocked is set by managed policy, force the Guard checkbox on,
+// disable it, and say so. Managed storage is read-only, so the user cannot change it.
+chrome.storage.managed.get({ guardLocked: false }).then((m) => {
+  if (!m || !m.guardLocked) return;
+  const cb = $("guard"); cb.checked = true; cb.disabled = true;
+  const note = document.createElement("span");
+  note.textContent = " 🔒 locked by your administrator";
+  note.style.cssText = "color:#d9a441;font-size:11.5px";
+  const label = document.querySelector('label[for="guard"]');
+  if (label) label.appendChild(note);
+}).catch(() => {});
+
 async function ensurePermission(url) {
   let origin;
   try { origin = new URL(url).origin + "/*"; } catch (e) { throw new Error("Invalid server URL"); }

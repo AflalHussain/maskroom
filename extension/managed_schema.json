@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "guardLocked": {
+      "type": "boolean",
+      "title": "Lock the composer guard on",
+      "description": "When true, the Maskroom guard is always on and the user cannot turn it off (bar toggle and options checkbox become inert). Set by administrators via managed policy; read-only to the user."
+    }
+  }
+}

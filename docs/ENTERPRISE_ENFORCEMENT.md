@@ -33,7 +33,8 @@ with managed-browser policy, and what must the extension implement?
    extension code* must read that value, force the guard on, and make its own
    toggle/options inert. Managed storage is read-only to the extension and to the user,
    so a user cannot change the value — but the enforcement lives in our code, not in
-   Chrome. Our extension does **not** do this today; §B and §D say what to add.
+   Chrome. **This is now implemented** (extension `guardLocked` managed key); §B and §D
+   describe the mechanism and the admin policy to set.
 
 3. **What the extension must implement:** a `storage.managed_schema`, a read of
    `chrome.storage.managed` on startup **and** on `chrome.storage.onChanged` for the
@@ -442,7 +443,19 @@ managed machine at `chrome://policy` (Reload policies), where the extension and
      ([`content.js`](../extension/content.js) ~598) to also handle the `"managed"` area
      so a later policy flip re-locks/unlocks without reinstall.
 
-   This document does **not** modify code; these are the changes to make separately.
+   **Status: implemented.** The extension now ships
+   [`managed_schema.json`](../extension/managed_schema.json) with a `guardLocked` boolean,
+   [`manifest.json`](../extension/manifest.json) declares
+   `"storage": { "managed_schema": "managed_schema.json" }`,
+   [`content.js`](../extension/content.js) reads `chrome.storage.managed` on boot
+   (`loadManaged`), forces the guard on and makes the bar toggle inert with a "guard: on 🔒"
+   label when locked, re-applies the lock on any local write, and handles the `"managed"`
+   `onChanged` area so a policy flip re-locks/unlocks live;
+   [`options.js`](../extension/options.js) checks and disables the Guard checkbox and marks
+   it "locked by your administrator". Admins only need the policy in D.2/D.3 — no code
+   changes remain. Automated tests cover the unlocked path; the locked path needs a real
+   managed policy (a fixed extension id via a manifest `key`, plus the platform policy
+   file) to exercise end to end.
 
 With D.1 (force-install, non-removable, pinned, incognito disabled) plus D.2+D.3
 (managed `guardLocked` honoured by the extension), a user on a managed browser cannot

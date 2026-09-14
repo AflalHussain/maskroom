@@ -41,6 +41,7 @@
   let entries = 0;
   let lastMasked = "";      // composer text as we left it after masking
   let busy = false;
+  let guardLocked = false;  // set true by admin managed policy (chrome.storage.managed)
 
   // ------------------------------------------------------------ helpers
   const q = (list, root = document) => { for (const s of list) { const el = root.querySelector(s); if (el) return el; } return null; };
@@ -61,6 +62,15 @@
   const api = (path, method, body) => call({ type: "api", path, method, body });
   const safeSet = async (obj) => { try { await chrome.storage.local.set(obj); } catch (e) { contextDead = true; renderBar(); } };
   const safeGet = async (def) => { try { return await chrome.storage.local.get(def); } catch (e) { contextDead = true; return def; } };
+  // Admin lock: chrome.storage.managed is read-only and set only by enterprise policy.
+  // When guardLocked is set there, force the guard on and make the toggle inert.
+  async function loadManaged() {
+    try {
+      const m = await chrome.storage.managed.get({ guardLocked: false });
+      guardLocked = !!(m && m.guardLocked);
+    } catch (e) { guardLocked = false; }  // no managed policy / not supported
+    if (guardLocked) settings.guard = true;
+  }
 
   let toastTimer = null;
   function toast(text, bad = false) {
@@ -545,7 +555,7 @@
           else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
           else if (act === "new") newSession();
           else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
-          else if (act === "guard") { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); }
+          else if (act === "guard") { if (guardLocked) { toast("Guard is locked on by your administrator.", true); } else { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); } }
           else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
           else if (act === "opts") call({ type: "openOptions" });
         } catch (err) { contextDead = true; renderBar(); }
@@ -570,8 +580,9 @@
     bar.querySelector('[data-act="file"]').disabled = busy;
     bar.querySelector('[data-act="unmaskfile"]').disabled = busy;
     const gb = bar.querySelector('[data-act="guard"]');
-    gb.textContent = "guard: " + (settings.guard ? "on" : "off");
-    gb.classList.toggle("mr-off", !settings.guard);
+    gb.textContent = guardLocked ? "guard: on 🔒" : "guard: " + (settings.guard ? "on" : "off");
+    gb.title = guardLocked ? "Guard is locked on by your administrator" : "Guard: Enter/send and file drops go through Maskroom first — click to turn on/off";
+    gb.classList.toggle("mr-off", !settings.guard && !guardLocked);
     const ub = bar.querySelector('[data-act="unmask"]');
     ub.textContent = "unmask: " + (settings.unmask ? "on" : "off");
     ub.classList.toggle("mr-off", !settings.unmask);
@@ -596,8 +607,13 @@
   }, 1000);
 
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "managed") {
+      if ("guardLocked" in changes) { guardLocked = !!changes.guardLocked.newValue; if (guardLocked) settings.guard = true; renderBar(); }
+      return;
+    }
     if (area !== "local") return;
     for (const k of ["guard", "preamble", "excelAttach", "interceptDownloads", "keepMasked"]) if (k in changes) settings[k] = changes[k].newValue;
+    if (guardLocked) settings.guard = true;  // managed policy always wins over a local write
     if ("unmask" in changes && changes.unmask.newValue !== settings.unmask) setUnmask(!!changes.unmask.newValue);
     renderBar();
   });
@@ -606,6 +622,7 @@
   (async () => {
     settings = Object.assign(settings, await call({ type: "settings" }));
     if (!isTop) { await refreshFrameVault(); return; }  // preview subframe: restore only
+    await loadManaged();
     renderBar();
     const sessions = await storedSessions();
     sessionId = sessions[currentKey] || null;
