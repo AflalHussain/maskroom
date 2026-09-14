@@ -51,30 +51,3 @@ renderLog();
 chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "interceptLog" in c) renderLog(); });
 $("copylog").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("log").dataset.text || ""); status("Log copied.", "ok"); } catch (e) { status("Copy failed", "bad"); } });
 $("clearlog").addEventListener("click", () => chrome.storage.local.set({ interceptLog: [] }));
-
-
-// ---------- preview frames ----------
-async function renderFrames() {
-  const { previewFrames = [] } = await chrome.storage.local.get("previewFrames");
-  $("frames").textContent = previewFrames.length
-    ? previewFrames.map((f) => `${f.origin}   (${f.time.replace("T", " ").slice(0, 19)})`).join("\n")
-    : "no cross-origin preview frames seen yet — open an artifact/file preview on claude.ai";
-}
-renderFrames();
-chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "previewFrames" in c) renderFrames(); });
-
-
-// ---------- guard activity ----------
-async function renderGuard() {
-  const { guardLog = [] } = await chrome.storage.local.get("guardLog");
-  $("guardlog").textContent = guardLog.length
-    ? guardLog.slice().reverse().map((g) => {
-        const parts = [g.time.replace("T"," ").slice(11,19), g.event];
-        for (const k of ["host","composer","inComposer","target","ce","matchedSend","needsMask","guard","send"])
-          if (g[k] !== undefined) parts.push(`${k}=${g[k]}`);
-        return parts.join(" · ");
-      }).join("\n")
-    : "no guard events yet — focus the claude.ai composer and press Enter with unmasked text";
-}
-renderGuard();
-chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && "guardLog" in c) renderGuard(); });

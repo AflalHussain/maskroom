@@ -18,7 +18,6 @@
   if (window.__maskroomLoaded) return;
   window.__maskroomLoaded = true;
   const isTop = window.top === window.self;  // only the top frame draws UI / owns the session
-  try { console.log("[maskroom] content script loaded; isTop=" + isTop + "; url=" + location.href); } catch (e) {}
 
   const SEL = {
     composer: ['div[contenteditable="true"].ProseMirror', 'div[contenteditable="true"][data-placeholder]',
@@ -62,17 +61,6 @@
   const api = (path, method, body) => call({ type: "api", path, method, body });
   const safeSet = async (obj) => { try { await chrome.storage.local.set(obj); } catch (e) { contextDead = true; renderBar(); } };
   const safeGet = async (def) => { try { return await chrome.storage.local.get(def); } catch (e) { contextDead = true; return def; } };
-
-  // Guard diagnostics: last 20 guard decisions, shown in the options popup so
-  // a guard that misses claude.ai's composer/send button can be diagnosed.
-  async function guardLog(event, info) {
-    if (!isTop || contextDead) return;
-    try {
-      const { guardLog: log = [] } = await chrome.storage.local.get("guardLog");
-      log.push({ time: new Date().toISOString(), event, ...info });
-      await chrome.storage.local.set({ guardLog: log.slice(-20) });
-    } catch (e) { /* never break the guard */ }
-  }
 
   let toastTimer = null;
   function toast(text, bad = false) {
@@ -238,13 +226,9 @@
   }
   const inComposer = (el, target) => !!el && (el === target || el.contains(target) || (target && target.isContentEditable));
   const onEnter = (e) => {
-    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
-    try { console.log("[maskroom] Enter keydown; guard=" + settings.guard + "; composer=" + !!q(SEL.composer) + "; target=" + (e.target && e.target.tagName)); } catch (x) {}
+    if (!settings.guard || e.key !== "Enter" || e.shiftKey || e.isComposing) return;
     const el = q(SEL.composer);
-    const relevant = inComposer(el, e.target);
-    guardLog("Enter", { guard: settings.guard, composer: !!el, inComposer: relevant,
-                        target: (e.target && e.target.tagName) || "", ce: !!(e.target && e.target.isContentEditable) });
-    if (!settings.guard || !el || !relevant || !needsMask()) return;
+    if (!el || !inComposer(el, e.target) || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — press Enter again to send."); else if (r.done) resend(); });
   };
@@ -252,7 +236,6 @@
     if (!settings.guard) return;
     const btn = e.target.closest && e.target.closest("button");
     const isSend = btn && SEL.sendButton.some((sel) => { try { return btn.matches(sel); } catch (x) { return false; } });
-    if (btn) guardLog("send-click", { matchedSend: !!isSend, needsMask: needsMask() });
     if (!isSend || !needsMask()) return;
     e.preventDefault(); e.stopImmediatePropagation();
     maskComposer().then((r) => { if (r.done && r.changed) toast("Masked — click send again."); else if (r.done) resend(); });
@@ -547,14 +530,14 @@
         <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf" multiple hidden>
         <button data-act="unmaskfile" title="Restore the real values inside a file Claude produced (saved as *_restored)">Unmask file</button>
         <input type="file" id="maskroom-unmask-file" accept=".md,.txt,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.xlsx,.xlsm,.docx,.pptx" multiple hidden>
-        <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first">guard</button>
-        <button data-act="unmask" title="Show real values in replies (on screen only)">unmask view</button>
+        <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first — click to turn on/off">guard: on</button>
+        <button data-act="unmask" title="Show real values in replies (on screen only) — click to turn on/off">unmask: on</button>
         <button data-act="new" title="Start a new vault for this chat">new session</button>
         <button data-act="adopt" title="Use a session id from the Maskroom staging page">use id…</button>
         <button data-act="opts" title="Settings">⚙</button>`;
       bar.addEventListener("click", async (e) => {
-        const act = (e.target.closest && e.target.closest("[data-act]") || {}).dataset ? (e.target.closest("[data-act]")).dataset.act : (e.target.dataset && e.target.dataset.act);
-        try { console.log("[maskroom] bar click act=" + act + " contextDead=" + contextDead); } catch (x) {}
+        const hit = e.target.closest && e.target.closest("[data-act]");
+        const act = hit && hit.dataset.act;
         if (contextDead) { renderBar(); return; }
         try {
           if (act === "mask") maskComposer();
@@ -562,7 +545,7 @@
           else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
           else if (act === "new") newSession();
           else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
-          else if (act === "guard") { settings.guard = !settings.guard; try { console.log("[maskroom] guard toggled ->", settings.guard); } catch (x) {} await safeSet({ guard: settings.guard }); renderBar(); }
+          else if (act === "guard") { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); }
           else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
           else if (act === "opts") call({ type: "openOptions" });
         } catch (err) { contextDead = true; renderBar(); }
@@ -586,32 +569,18 @@
     bar.querySelector('[data-act="mask"]').textContent = busy ? "masking…" : "Mask";
     bar.querySelector('[data-act="file"]').disabled = busy;
     bar.querySelector('[data-act="unmaskfile"]').disabled = busy;
-    bar.querySelector('[data-act="guard"]').classList.toggle("mr-off", !settings.guard);
-    bar.querySelector('[data-act="unmask"]').classList.toggle("mr-off", !settings.unmask);
+    const gb = bar.querySelector('[data-act="guard"]');
+    gb.textContent = "guard: " + (settings.guard ? "on" : "off");
+    gb.classList.toggle("mr-off", !settings.guard);
+    const ub = bar.querySelector('[data-act="unmask"]');
+    ub.textContent = "unmask: " + (settings.unmask ? "on" : "off");
+    ub.classList.toggle("mr-off", !settings.unmask);
   }
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "m") { e.preventDefault(); maskComposer(); }
   });
 
   // ------------------------------------------------------- navigation
-  // Diagnostic: report the origins of any preview iframes on the page, so we
-  // know which origin to inject the restorer into for artifact/spreadsheet
-  // previews. Cross-origin frames can't be read into, but their src origin can.
-  if (isTop) {
-    const seenFrames = new Set();
-    const scanFrames = () => {
-      const origins = [];
-      for (const f of document.querySelectorAll("iframe")) {
-        let o = "";
-        try { o = f.src ? new URL(f.src, location.href).origin : (f.srcdoc ? "srcdoc" : ""); } catch (e) { o = ""; }
-        if (o && o !== location.origin && o !== "srcdoc" && !seenFrames.has(o)) { seenFrames.add(o); origins.push(o); }
-      }
-      if (origins.length) call({ type: "framesSeen", origins });
-    };
-    scanFrames();
-    setInterval(scanFrames, 3000);
-  }
-
   if (isTop) setInterval(async () => {
     const key = convKey();
     if (key === currentKey) return;
@@ -638,7 +607,6 @@
     settings = Object.assign(settings, await call({ type: "settings" }));
     if (!isTop) { await refreshFrameVault(); return; }  // preview subframe: restore only
     renderBar();
-    guardLog("loaded", { host: location.host, path: location.pathname.slice(0, 40), composer: !!q(SEL.composer), send: !!q(SEL.sendButton) });
     const sessions = await storedSessions();
     sessionId = sessions[currentKey] || null;
     await loadVault();
