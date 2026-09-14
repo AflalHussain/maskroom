@@ -5,6 +5,16 @@
       "type": "boolean",
       "title": "Lock the composer guard on",
       "description": "When true, the Maskroom guard is always on and the user cannot turn it off (bar toggle and options checkbox become inert). Set by administrators via managed policy; read-only to the user."
+    },
+    "userId": {
+      "type": "string",
+      "title": "Org user id for the audit trail",
+      "description": "Identifier (e.g. work email or employee id) sent with each request as X-Maskroom-User so the admin dashboard can attribute masking activity to this user. Set by administrators via managed policy."
+    },
+    "orgId": {
+      "type": "string",
+      "title": "Organization id",
+      "description": "Optional organization/tenant identifier sent as X-Maskroom-Org."
     }
   }
 }

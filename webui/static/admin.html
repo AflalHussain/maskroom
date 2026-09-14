@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskroom · Admin audit</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='6' width='14' height='4' fill='%23D9A441'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ink:#0c1013; --panel:#141a20; --panel-2:#1a222a; --line:#26303a;
+  --bone:#e9e4d8; --dim:#8d94a1; --faint:#5a6270;
+  --brass:#d9a441; --brass-dim:#8a6a2c; --accent-text:#d9a441; --on-accent:#0c1013;
+  --ok:#3fb98d; --bad:#e2574c; --warn:#e0a83a;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace; --sans:"Archivo",system-ui,sans-serif;
+}
+html[data-theme="light"]{
+  --ink:#f1efe8; --panel:#fbfaf6; --panel-2:#e6e1d3; --line:#cfc9b9;
+  --bone:#1c2129; --dim:#3d4550; --faint:#646c78;
+  --brass:#c8912e; --brass-dim:#96762f; --accent-text:#7d5a0f; --on-accent:#16130b;
+  --ok:#147a53; --bad:#c03328; --warn:#9a6a10;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--ink);color:var(--bone);font-family:var(--sans);font-size:14px;line-height:1.5;min-height:100vh}
+a{color:var(--accent-text)}
+.top{display:flex;align-items:center;gap:16px;padding:16px 24px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand h1{font-weight:800;font-size:20px;letter-spacing:.5px}
+.brand .sub{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.12em;text-transform:uppercase;margin-left:8px}
+.top .right{margin-left:auto;display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.top .right input{background:var(--panel);border:1px solid var(--line);color:var(--bone);font:12px var(--mono);padding:6px 9px;border-radius:4px;width:200px}
+button{background:var(--brass);color:var(--on-accent);border:0;border-radius:4px;font:600 13px var(--sans);padding:7px 13px;cursor:pointer}
+button.ghost{background:transparent;border:1px solid var(--brass-dim);color:var(--accent-text);font:500 12px var(--mono)}
+.wrap{padding:20px 24px;display:flex;flex-direction:column;gap:18px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.tile .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.tile .v{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--accent-text)}
+.tile .sub{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:4px;white-space:pre-wrap}
+.filters{display:flex;gap:10px;flex-wrap:wrap;align-items:end;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.filters label{display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.filters input,.filters select{background:var(--ink);border:1px solid var(--line);color:var(--bone);font:12.5px var(--mono);padding:6px 9px;border-radius:4px}
+.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:12.5px}
+thead th{position:sticky;top:0;background:var(--panel-2);color:var(--dim);text-align:left;font-weight:500;padding:9px 12px;letter-spacing:.05em;text-transform:uppercase;font-size:10px;border-bottom:1px solid var(--line)}
+tbody td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+tbody tr{cursor:pointer} tbody tr:hover{background:#d9a44110}
+.act{color:var(--accent-text)} .muted{color:var(--faint)}
+.chip{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:99px;padding:1px 8px;margin:1px;color:var(--dim)}
+.pager{display:flex;gap:10px;align-items:center;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.err{color:var(--bad);font-family:var(--mono);font-size:12.5px}
+/* detail drawer */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none}
+.scrim.on{display:block}
+.drawer{position:fixed;top:0;right:0;height:100%;width:min(760px,94vw);background:var(--panel);border-left:1px solid var(--line);
+  transform:translateX(100%);transition:transform .18s;overflow:auto;padding:20px 22px;display:flex;flex-direction:column;gap:14px}
+.drawer.on{transform:translateX(0)}
+.drawer h2{font-family:var(--mono);font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-family:var(--mono);font-size:12.5px}
+.kv .k{color:var(--faint)}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:680px){.duo{grid-template-columns:1fr}}
+.pane .cap{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+.pane .cap.out{color:var(--accent-text)}
+.box{background:var(--ink);border:1px solid var(--line);border-radius:6px;padding:10px;font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto}
+mark{background:#d9a44126;color:var(--accent-text);border-radius:3px;padding:0 2px}
+.dl a{display:inline-block;font-family:var(--mono);font-size:12.5px;color:var(--accent-text);text-decoration:none;border:1px solid var(--brass-dim);border-radius:4px;padding:7px 12px;margin-right:8px}
+.gate{max-width:420px;margin:80px auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:22px;display:flex;flex-direction:column;gap:12px}
+.gate h2{font-size:16px} .gate input{background:var(--ink);border:1px solid var(--line);color:var(--bone);font:13px var(--mono);padding:9px 11px;border-radius:4px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span style="font-weight:800;font-size:20px">MASKROOM</span><span class="sub">admin audit</span></div>
+  <div class="right">
+    <span id="who"></span>
+    <button class="ghost" id="refresh">refresh</button>
+    <button class="ghost" id="signout">sign out</button>
+  </div>
+</header>
+
+<div id="gate" class="gate hide">
+  <h2>Admin sign-in</h2>
+  <p class="muted" style="font-size:13px">Enter the admin key (server <code>MASKROOM_ADMIN_KEY</code>) to view the audit trail.</p>
+  <input type="password" id="adminkey" placeholder="admin key" autocomplete="off">
+  <button id="signin">Sign in</button>
+  <div class="err" id="gateerr"></div>
+</div>
+
+<main id="app" class="wrap hide">
+  <div class="tiles" id="tiles"></div>
+
+  <div class="filters">
+    <label>user <input type="text" id="f-user" placeholder="email / id"></label>
+    <label>action <select id="f-action">
+      <option value="">any</option><option value="mask">mask</option><option value="unmask">unmask</option>
+      <option value="process">process (file)</option><option value="unmask-file">unmask-file</option>
+      <option value="restore-file">restore-file</option></select></label>
+    <label>from <input type="date" id="f-since"></label>
+    <label>to <input type="date" id="f-until"></label>
+    <label>search <input type="text" id="f-q" placeholder="user / file / session"></label>
+    <button id="apply">Apply</button>
+    <button class="ghost" id="clear">Clear</button>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Kind</th><th>Masked / restored</th><th>Entities</th><th>File</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <button class="ghost" id="prev">‹ prev</button>
+    <span id="pageinfo"></span>
+    <button class="ghost" id="next">next ›</button>
+  </div>
+  <div class="err" id="listerr"></div>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer"></aside>
+
+<script>
+const $=s=>document.querySelector(s);
+const TOKEN_RE=/TOK_[A-Z0-9_]+_[0-9A-F]{8,}/g;
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hl=s=>esc(s).replace(TOKEN_RE,m=>`<mark>${m}</mark>`);
+let KEY=""; try{KEY=localStorage.getItem("maskroom-admin-key")||""}catch(e){}
+let cfg={admin_auth_required:true};
+let offset=0, limit=50, total=0;
+
+async function api(path){
+  const h={}; if(KEY)h["X-Admin-Key"]=KEY;
+  const r=await fetch(path,{headers:h});
+  if(r.status===401)throw {code:401,message:"Admin key required or invalid."};
+  let d=null; try{d=await r.json()}catch(e){}
+  if(!r.ok)throw {code:r.status,message:(d&&d.error)||r.statusText};
+  return d;
+}
+
+function showGate(msg){ $("#gate").classList.remove("hide"); $("#app").classList.add("hide"); if(msg)$("#gateerr").textContent=msg; }
+function showApp(){ $("#gate").classList.add("hide"); $("#app").classList.remove("hide"); }
+
+async function boot(){
+  try{ cfg=await (await fetch("/api/config")).json(); }catch(e){}
+  if(cfg.admin_auth_required && !KEY){ showGate(""); return; }
+  try{ await loadAll(); showApp(); }
+  catch(e){ if(e.code===401){ KEY=""; showGate("Invalid admin key."); } else showGate(e.message||"Error"); }
+}
+
+async function loadAll(){ await Promise.all([loadStats(), loadList()]); }
+
+async function loadStats(){
+  const s=await api("/api/audit/stats");
+  const acts=Object.entries(s.by_action||{}).map(([k,v])=>`${k}: ${v}`).join("\n")||"—";
+  const users=Object.keys(s.by_user||{}).length;
+  $("#tiles").innerHTML=`
+    <div class="tile"><div class="k">total records</div><div class="v">${s.total}</div></div>
+    <div class="tile"><div class="k">distinct users</div><div class="v">${users}</div></div>
+    <div class="tile"><div class="k">by action</div><div class="sub">${esc(acts)}</div></div>
+    <div class="tile"><div class="k">retention</div><div class="v">${s.ttl_days? s.ttl_days : "∞"}</div><div class="sub">${s.ttl_days?"days, then deleted":"kept forever"}</div></div>`;
+  $("#who").textContent=`${s.total} records`;
+}
+
+function dayEpoch(id,end){ const v=$(id).value; if(!v)return ""; const d=new Date(v+"T00:00:00Z"); if(end)d.setUTCDate(d.getUTCDate()+1); return Math.floor(d.getTime()/1000); }
+
+async function loadList(){
+  const p=new URLSearchParams();
+  const u=$("#f-user").value.trim(); if(u)p.set("user",u);
+  const a=$("#f-action").value; if(a)p.set("action",a);
+  const q=$("#f-q").value.trim(); if(q)p.set("q",q);
+  const since=dayEpoch("#f-since",false); if(since)p.set("since",since);
+  const until=dayEpoch("#f-until",true); if(until)p.set("until",until);
+  p.set("limit",limit); p.set("offset",offset);
+  const d=await api("/api/audit?"+p.toString());
+  total=d.total;
+  $("#rows").innerHTML=d.records.map(r=>{
+    const chips=Object.entries(r.by_entity||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="chip">${esc(k)} ${v}</span>`).join("")||`<span class="muted">${r.entity_total||0}</span>`;
+    const file=r.has_input_file?`<span class="muted">${esc(r.filename||"file")}</span>`:'<span class="muted">—</span>';
+    return `<tr data-id="${r.id}">
+      <td>${esc(r.iso.replace("T"," ").slice(0,19))}</td>
+      <td>${esc(r.user)}</td>
+      <td class="act">${esc(r.action)}</td>
+      <td>${esc(r.kind||"text")}</td>
+      <td>${r.entity_total||0}</td>
+      <td>${chips}</td>
+      <td>${file}</td></tr>`;
+  }).join("")||`<tr><td colspan="7" class="muted" style="padding:18px">No records match.</td></tr>`;
+  const from=total?offset+1:0, to=Math.min(offset+limit,total);
+  $("#pageinfo").textContent=`${from}–${to} of ${total}`;
+  $("#prev").disabled=offset<=0; $("#next").disabled=offset+limit>=total;
+  document.querySelectorAll("#rows tr[data-id]").forEach(tr=>tr.addEventListener("click",()=>openDetail(tr.dataset.id)));
+  $("#listerr").textContent="";
+}
+
+async function openDetail(id){
+  let r; try{ r=await api("/api/audit/"+id); }catch(e){ $("#listerr").textContent=e.message; return; }
+  const q=KEY?"?admin_key="+encodeURIComponent(KEY):"";
+  const hasFiles=r.input_file||r.output_file;
+  const textBlock=(r.input_text!=null||r.output_text!=null)?`
+    <div class="duo">
+      <div class="pane"><div class="cap">input (original)</div><div class="box">${esc(r.input_text)}</div></div>
+      <div class="pane"><div class="cap out">output (${r.action==="unmask"||r.action==="unmask-file"||r.action==="restore-file"?"restored":"masked"})</div><div class="box">${hl(r.output_text)}</div></div>
+    </div>`:"";
+  const fileBlock=hasFiles?`<div class="dl">
+      ${r.input_file?`<a href="/api/audit/${id}/file/input${q}" download>⬇ original file</a>`:""}
+      ${r.output_file?`<a href="/api/audit/${id}/file/output${q}" download>⬇ masked file</a>`:""}
+    </div>`:"";
+  const chips=Object.entries(r.by_entity||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="chip">${esc(k)} ${v}</span>`).join("");
+  const unres=(r.unresolved&&r.unresolved.length)?`<div class="pane"><div class="cap">unresolved tokens</div><div class="box">${r.unresolved.map(esc).join("\n")}</div></div>`:"";
+  $("#drawer").innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px"><h2 style="flex:1">Record ${esc(id)}</h2><button class="ghost" id="close">close</button></div>
+    <div class="kv">
+      <div class="k">time (UTC)</div><div>${esc(r.iso.replace("T"," ").slice(0,19))}</div>
+      <div class="k">user</div><div>${esc(r.user)}</div>
+      <div class="k">action</div><div class="act">${esc(r.action)}</div>
+      <div class="k">kind</div><div>${esc(r.kind||"text")}</div>
+      <div class="k">session</div><div>${esc(r.session_id||"—")}</div>
+      <div class="k">ip</div><div>${esc(r.ip||"—")}</div>
+      ${r.filename?`<div class="k">filename</div><div>${esc(r.filename)}</div>`:""}
+      <div class="k">entities</div><div>${chips||("total "+(r.entity_total||0))}</div>
+    </div>
+    ${fileBlock}
+    ${textBlock}
+    ${unres}`;
+  $("#close").addEventListener("click",closeDetail);
+  $("#drawer").classList.add("on"); $("#scrim").classList.add("on");
+}
+function closeDetail(){ $("#drawer").classList.remove("on"); $("#scrim").classList.remove("on"); }
+
+// events
+$("#signin").addEventListener("click",()=>{ KEY=$("#adminkey").value.trim(); try{localStorage.setItem("maskroom-admin-key",KEY)}catch(e){} boot(); });
+$("#adminkey").addEventListener("keydown",e=>{ if(e.key==="Enter")$("#signin").click(); });
+$("#signout").addEventListener("click",()=>{ KEY=""; try{localStorage.removeItem("maskroom-admin-key")}catch(e){} showGate(""); });
+$("#refresh").addEventListener("click",()=>loadAll().catch(e=>$("#listerr").textContent=e.message));
+$("#apply").addEventListener("click",()=>{ offset=0; loadList().catch(e=>$("#listerr").textContent=e.message); });
+$("#clear").addEventListener("click",()=>{ ["#f-user","#f-q","#f-since","#f-until"].forEach(i=>$(i).value=""); $("#f-action").value=""; offset=0; loadList(); });
+$("#f-q").addEventListener("keydown",e=>{ if(e.key==="Enter")$("#apply").click(); });
+$("#f-user").addEventListener("keydown",e=>{ if(e.key==="Enter")$("#apply").click(); });
+$("#prev").addEventListener("click",()=>{ offset=Math.max(0,offset-limit); loadList(); });
+$("#next").addEventListener("click",()=>{ offset+=limit; loadList(); });
+$("#scrim").addEventListener("click",closeDetail);
+document.addEventListener("keydown",e=>{ if(e.key==="Escape")closeDetail(); });
+
+boot();
+</script>
+</body>
+</html>

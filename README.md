@@ -440,6 +440,24 @@ workbook or PDF instead of the original (guard also catches files dropped on cla
 and replies are restored on screen only. It is unsupported by Anthropic; see the extension
 README for the install steps and the terms-of-service caveat.
 
+### Admin audit dashboard
+
+Every mask, unmask and file operation is recorded to an on-disk audit trail so an
+administrator can review, at [`/admin`](http://127.0.0.1:5170/admin), exactly what each user
+sent and the masked version that resulted. Each record keeps the **original input and the
+masked output** (and the original/masked files for file operations), attributed to the org
+user id the extension sends as `X-Maskroom-User` (set via managed policy — see
+[`docs/ENTERPRISE_ENFORCEMENT.md`](docs/ENTERPRISE_ENFORCEMENT.md)).
+
+> **The audit store contains real PII** (the original inputs). It is gated by a **separate
+> admin key** (`MASKROOM_ADMIN_KEY`, distinct from the per-user `MASKROOM_API_KEY`) and
+> auto-deleted after `AUDIT_TTL_DAYS` (default 90; `0` keeps forever). Keep it on protected
+> storage; retention bounds exposure but is not encryption.
+
+The dashboard shows stat tiles, a filterable table (user, action, date range, search) and a
+per-record view with the original beside the masked version and file downloads. Set
+`MASKROOM_ADMIN_KEY` to require sign-in; without it the audit API is open (local demo only).
+
 ### JSON API
 
 Every route is also usable from scripts, gateways, hooks or an MCP server. Set
@@ -457,7 +475,11 @@ Every route is also usable from scripts, gateways, hooks or an MCP server. Set
 | `POST /api/process` | multipart `file` + options; `session_id` or `session=true`; `pdf_mode=text\|redact`; `restore=true` with a `vault` file **or** a `session_id`; `preview=false` to skip previews | run summary with `downloads.output`, `downloads.text` (`masked.md`), `downloads.vault` |
 | `GET /api/download/<run>/<file>` | – | the file |
 | `GET /api/text/<run>/<file>.md` | – | `{text}` (for copy-to-clipboard) |
-| `GET /api/config` | – | `{auth_required, locales, default_locale, session_ttl_hours, preamble}` (never needs a key) |
+| `GET /api/config` | – | `{auth_required, locales, default_locale, session_ttl_hours, preamble, admin_auth_required, audit_ttl_days}` (never needs a key) |
+| `GET /api/audit` | `?user=&action=&since=&until=&q=&limit=&offset=` | audit records (metadata) — **admin key only** |
+| `GET /api/audit/<id>` | – | one record with original input + masked output — admin key only |
+| `GET /api/audit/<id>/file/<input\|output>` | – | the stored original or masked file — admin key only |
+| `GET /api/audit/stats` | – | totals by action/user + retention — admin key only |
 
 ```bash
 SID=$(curl -s -X POST localhost:5170/api/session | jq -r .session_id)

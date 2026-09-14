@@ -15,6 +15,9 @@ def client(tmp_path_factory):
     runs = str(tmp_path_factory.mktemp("runs"))
     webapp.RUNS = runs
     webapp.sessions = webapp.SessionStore(os.path.join(runs, "sessions"), ttl=None, base_salt="t")
+    from webui.audit import AuditLog
+    webapp.audit = AuditLog(os.path.join(runs, "audit"), ttl_days=0)
+    webapp.ADMIN_KEY = None
     webapp.app.config["TESTING"] = True
     return webapp.app.test_client()
 
@@ -144,3 +147,52 @@ def test_unmask_file_endpoint(client, tmp_path):
     assert r.status_code == 404
     r = client.post("/api/unmask-file", data={"file": (io.BytesIO(b"%PDF"), "a.pdf"), "session_id": sid}, content_type="multipart/form-data")
     assert r.status_code == 415
+
+
+def test_audit_records_mask_and_admin_access(client):
+    from webui import app as webapp
+    webapp.ADMIN_KEY = None  # audit API open when no admin key configured
+    r = client.post("/api/mask", data=json.dumps({"text": "Nimal Perera, NIC 853421234V"}),
+                    content_type="application/json", headers={"X-Maskroom-User": "alice@corp.lk"})
+    assert r.status_code == 200
+    lst = client.get("/api/audit").get_json()
+    assert lst["total"] >= 1
+    rec_meta = next(r for r in lst["records"] if r["action"] == "mask")
+    assert rec_meta["user"] == "alice@corp.lk" and rec_meta["entity_total"] >= 2
+    full = client.get(f"/api/audit/{rec_meta['id']}").get_json()
+    assert "Nimal Perera" in full["input_text"] and "TOK_PERSON_" in full["output_text"]
+    assert "853421234V" not in full["output_text"]
+
+
+def test_audit_admin_key_gate(client):
+    from webui import app as webapp
+    webapp.ADMIN_KEY = "s3cret"
+    try:
+        assert client.get("/api/audit").status_code == 401
+        assert client.get("/api/audit", headers={"X-Admin-Key": "wrong"}).status_code == 401
+        ok = client.get("/api/audit", headers={"X-Admin-Key": "s3cret"})
+        assert ok.status_code == 200
+        # user API key must NOT open the audit API
+        assert client.get("/api/audit", headers={"X-API-Key": "s3cret"}).status_code == 401
+    finally:
+        webapp.ADMIN_KEY = None
+
+
+def test_audit_records_file_process_with_downloads(client):
+    from webui import app as webapp
+    webapp.ADMIN_KEY = None
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Name", "NIC"]); ws.append(["Nimal Perera", "853421234V"])
+    buf = io.BytesIO(); wb.save(buf)
+    r = client.post("/api/process", data={"file": (io.BytesIO(buf.getvalue()), "staff.xlsx"),
+                    "session": "true", "preview": "false"},
+                    content_type="multipart/form-data", headers={"X-Maskroom-User": "bob@corp.lk"})
+    assert r.status_code == 200, r.get_json()
+    rec = next(x for x in client.get("/api/audit?action=process").get_json()["records"] if x["filename"] == "staff.xlsx")
+    assert rec["user"] == "bob@corp.lk" and rec["has_input_file"] and rec["has_output_file"]
+    # original download holds the real name; masked download does not
+    orig = client.get(f"/api/audit/{rec['id']}/file/input")
+    assert orig.status_code == 200
+    masked_wb = openpyxl.load_workbook(io.BytesIO(client.get(f"/api/audit/{rec['id']}/file/output").data))
+    cells = [c.value for row in masked_wb.active.iter_rows() for c in row]
+    assert "Nimal Perera" not in cells and any(str(c).startswith("TOK_PERSON_") for c in cells if c)

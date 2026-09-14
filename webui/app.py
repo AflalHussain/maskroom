@@ -29,6 +29,7 @@ from maskroom import FinancialPrivacyEngine, SessionStore, build_nlp_engine
 from maskroom import rules
 from maskroom.locale import DEFAULT_LOCALE, available_locales
 from maskroom.restore import SUPPORTED_EXTS as RESTORE_EXTS, unmask_file
+from webui.audit import AuditLog
 
 try:
     import pymupdf as fitz
@@ -45,10 +46,42 @@ MAX_PREVIEW_PAGES = 8
 MAX_TEXT_CHARS = int(os.environ.get("MAX_TEXT_CHARS", "200000"))
 MAX_MARKDOWN_ROWS = 2000
 API_KEY = os.environ.get("MASKROOM_API_KEY")
+ADMIN_KEY = os.environ.get("MASKROOM_ADMIN_KEY")  # gates /admin dashboard + /api/audit
 TTL_HOURS = float(os.environ.get("SESSION_TTL_HOURS", "24"))
+AUDIT_TTL_DAYS = float(os.environ.get("AUDIT_TTL_DAYS", "90"))  # 0 = keep forever
 
 app = Flask(__name__, static_folder="static")
 sessions = SessionStore(os.path.join(RUNS, "sessions"), ttl=TTL_HOURS * 3600 or None)
+audit = AuditLog(os.path.join(RUNS, "audit"), ttl_days=AUDIT_TTL_DAYS)
+
+
+def _user():
+    return request.headers.get("X-Maskroom-User") or "unknown"
+
+
+def _org():
+    return request.headers.get("X-Maskroom-Org") or ""
+
+
+def _ip():
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote_addr or "")
+
+
+def _entity_counts(findings):
+    by = {}
+    for f in findings or []:
+        by[f["entity"]] = by.get(f["entity"], 0) + 1
+    return by
+
+
+def _audit(**kw):
+    """Record an audit entry; never let auditing break the request."""
+    try:
+        audit.sweep()
+        audit.record(**kw)
+    except Exception as e:  # noqa: BLE001
+        app.logger.warning("audit record failed: %s", e)
 
 # ---------------------------------------------------------------- engines
 _nlp_engines = {}
@@ -99,9 +132,22 @@ def get_engine(options):
 
 
 # ------------------------------------------------------------------ auth
+def _admin_ok():
+    given = request.headers.get("X-Admin-Key") or request.args.get("admin_key") or ""
+    return bool(ADMIN_KEY) and hmac.compare_digest(given, ADMIN_KEY)
+
+
 @app.before_request
 def check_api_key():
-    if not API_KEY or not request.path.startswith("/api/") or request.path == "/api/config":
+    p = request.path
+    # Audit dashboard + API: gated by the separate admin key (never the user key).
+    if p == "/admin" or p.startswith("/api/audit"):
+        if ADMIN_KEY and not _admin_ok():
+            if p == "/admin":
+                return send_from_directory(os.path.join(BASE, "static"), "admin.html")
+            return jsonify({"error": "Admin key required (X-Admin-Key header)."}), 401
+        return None
+    if not API_KEY or not p.startswith("/api/") or p == "/api/config":
         return None
     given = request.headers.get("X-API-Key") or request.args.get("key") or ""
     if not hmac.compare_digest(given, API_KEY):
@@ -127,12 +173,19 @@ def staging():
     return send_from_directory(os.path.join(BASE, "static"), "staging.html")
 
 
+@app.get("/admin")
+def admin_page():
+    return send_from_directory(os.path.join(BASE, "static"), "admin.html")
+
+
 @app.get("/api/config")
 def config():
     return jsonify({"auth_required": bool(API_KEY), "default_locale": DEFAULT_LOCALE,
                     "locales": available_locales(), "session_ttl_hours": TTL_HOURS,
                     "preamble": rules.LLM_TOKEN_PREAMBLE, "max_text_chars": MAX_TEXT_CHARS,
-                    "restore_exts": list(RESTORE_EXTS)})
+                    "restore_exts": list(RESTORE_EXTS),
+                    "admin_auth_required": bool(ADMIN_KEY),
+                    "audit_ttl_days": AUDIT_TTL_DAYS})
 
 
 @app.get("/api/locales")
@@ -219,6 +272,9 @@ def mask_text():
         for f in findings:
             f["token"] = reverse.get(f["text"].strip())
         entries = len(engine.vault)
+    _audit(action="mask", user=_user(), session_id=sess.id, ip=_ip(), kind="text",
+           input_text=data["text"], output_text=masked, by_entity=_entity_counts(findings),
+           entity_total=len(findings), changed=changed)
     return jsonify({
         "session_id": sess.id, "masked": masked, "changed": changed,
         "findings": findings, "vault_entries": entries,
@@ -238,6 +294,9 @@ def unmask_text():
     engine = get_engine(engine_options({}))
     with sessions.bind(engine, sess):
         restored, report = engine.unmask_text(data["text"])
+    _audit(action="unmask", user=_user(), session_id=sess.id, ip=_ip(), kind="text",
+           input_text=data["text"], output_text=restored,
+           entity_total=report.get("restored", 0), unresolved=report.get("unresolved", []))
     return jsonify({"session_id": sess.id, "text": restored, **report})
 
 
@@ -410,6 +469,14 @@ def process():
 
     with open(os.path.join(run_dir, "result.json"), "w") as fh:
         json.dump({k: v for k, v in resp.items() if k not in ("before", "after")}, fh)
+    if not restore:
+        _audit(action="process", user=_user(), session_id=sess.id if sess else None, ip=_ip(),
+               kind=resp["kind"], filename=name, input_file=in_path, output_file=out_path,
+               by_entity=by_entity, entity_total=len(findings))
+    else:
+        _audit(action="restore-file", user=_user(), session_id=sess.id if sess else None,
+               ip=_ip(), kind=resp["kind"], filename=name, input_file=in_path,
+               output_file=out_path, entity_total=len(findings))
     return jsonify(resp)
 
 
@@ -447,7 +514,64 @@ def unmask_file_route():
             "downloads": {"output": out_name}}
     with open(os.path.join(run_dir, "result.json"), "w") as fh:
         json.dump(resp, fh)
+    _audit(action="unmask-file", user=_user(), session_id=sess.id, ip=_ip(),
+           kind=report.get("kind", "text"), filename=name,
+           input_file=in_path, output_file=os.path.join(run_dir, out_name),
+           entity_total=report.get("restored", 0), unresolved=report.get("unresolved", []))
     return jsonify(resp)
+
+
+# ------------------------------------------------------------- audit API
+# All /api/audit routes are gated by the admin key in check_api_key().
+@app.get("/api/audit")
+def audit_list():
+    def _float(name):
+        v = request.args.get(name)
+        try:
+            return float(v) if v not in (None, "") else None
+        except ValueError:
+            return None
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 500))
+    except ValueError:
+        limit = 50
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        offset = 0
+    audit.sweep()
+    return jsonify(audit.list(
+        user=request.args.get("user") or None,
+        action=request.args.get("action") or None,
+        since=_float("since"), until=_float("until"),
+        q=request.args.get("q") or None, limit=limit, offset=offset))
+
+
+@app.get("/api/audit/stats")
+def audit_stats():
+    return jsonify(audit.stats())
+
+
+@app.get("/api/audit/<rid>")
+def audit_get(rid):
+    rec = audit.get(rid)
+    if not rec:
+        return jsonify({"error": "Record not found."}), 404
+    return jsonify(rec)
+
+
+@app.get("/api/audit/<rid>/file/<role>")
+def audit_file(rid, role):
+    if role not in ("input", "output"):
+        return jsonify({"error": "role must be input or output"}), 400
+    path = audit.file_path(rid, role)
+    if not path:
+        return jsonify({"error": "File not found."}), 404
+    rec = audit.get(rid) or {}
+    stem = os.path.splitext(rec.get("filename") or role)[0]
+    ext = os.path.splitext(path)[1]
+    label = "original" if role == "input" else "masked"
+    return send_file(path, as_attachment=True, download_name=f"{stem}_{label}{ext}")
 
 
 @app.get("/api/download/<run_id>/<path:fname>")

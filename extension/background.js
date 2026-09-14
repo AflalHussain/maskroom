@@ -25,6 +25,17 @@ async function settings() {
   return s;
 }
 
+// Admin-set identity for the audit trail (read-only managed policy). Cached;
+// refreshed when the managed area changes.
+let _managed = null;
+async function managed() {
+  if (_managed) return _managed;
+  try { _managed = await chrome.storage.managed.get({ userId: "", orgId: "" }); }
+  catch (e) { _managed = { userId: "", orgId: "" }; }
+  return _managed;
+}
+chrome.storage.onChanged.addListener((changes, area) => { if (area === "managed") _managed = null; });
+
 function b64ToBytes(b64) {
   const bin = atob(b64), out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -39,7 +50,11 @@ function bytesToB64(buf) {
 
 async function request(path, init) {
   const s = await settings();
-  if (s.apiKey) (init.headers = init.headers || {})["X-API-Key"] = s.apiKey;
+  init.headers = init.headers || {};
+  if (s.apiKey) init.headers["X-API-Key"] = s.apiKey;
+  const m = await managed();
+  if (m.userId) init.headers["X-Maskroom-User"] = m.userId;
+  if (m.orgId) init.headers["X-Maskroom-Org"] = m.orgId;
   try {
     return { res: await fetch(s.serverUrl + path, init) };
   } catch (e) {
