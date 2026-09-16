@@ -36,8 +36,15 @@ replace the `update_url` with Google's URL above and skip Step 2.
    google-chrome --pack-extension=/path/to/extension \
                  --pack-extension-key=/path/to/maskroom-signing-key.pem
    ```
-   This writes `extension.crx`. Rename it `maskroom-<version>.crx` (version =
-   `manifest.json`'s `version`, currently `0.1.0`).
+   This writes `extension.crx` next to the folder. Rename it `maskroom-<version>.crx`
+   (version = `manifest.json`'s `version`, currently `0.1.0`).
+   **The key must be PKCS#8** (`-----BEGIN PRIVATE KEY-----`). Chrome rejects the older
+   PKCS#1 form (`BEGIN RSA PRIVATE KEY`) with *"private key must be a valid format
+   (PKCS#8-format PEM-encoded RSA key)"*. The shipped `local/maskroom-signing-key.pem` is
+   already PKCS#8; to convert any PKCS#1 key without changing the extension ID:
+   ```
+   openssl pkcs8 -topk8 -nocrypt -in old-key.pem -out maskroom-signing-key.pem
+   ```
    *(Chrome UI equivalent: `chrome://extensions → Pack extension`, pointing at the folder and
    the existing `.pem`. Do not let it generate a new key — that would change the ID.)*
 2. **Host two files** on an HTTPS URL the fleet can reach:

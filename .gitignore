@@ -17,3 +17,7 @@ local/
 
 # office lock files
 .~lock.*#
+
+# extension build artifacts / signing keys
+*.crx
+*.pem
