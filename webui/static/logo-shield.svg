@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 104" role="img" aria-label="Maskroom">
+  <defs>
+    <linearGradient id="sh" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c4854"/>
+      <stop offset="1" stop-color="#212d38"/>
+    </linearGradient>
+  </defs>
+  <!-- shield whose top edge is shaped into an M crown -->
+  <path fill="url(#sh)" d="M48 98 C28 90 12 77 12 51 V26 L23 17 34 31 48 15 62 31 73 17 84 26 V51 C84 77 68 90 48 98 Z"/>
+  <!-- cyan domino mask with two eye holes (evenodd) -->
+  <path fill="#18bccb" fill-rule="evenodd" d="
+    M25 51 C25 47 29 46 33 46 L43 46 C46 44 50 44 53 46 L63 46 C67 46 71 47 71 51
+    C71 58 68 62 61 62 C56 62 53 61 50.5 59 C49 58 47 58 45.5 59 C43 61 40 62 35 62 C28 62 25 57 25 51 Z
+    M35 52 C36.5 49.5 41 49.5 42.5 52 C41 54.5 36.5 54.5 35 52 Z
+    M53.5 52 C55 49.5 59.5 49.5 61 52 C59.5 54.5 55 54.5 53.5 52 Z"/>
+</svg>
