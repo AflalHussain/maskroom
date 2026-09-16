@@ -49,6 +49,7 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
     <span id="who"></span>
     <button class="ghost" id="refresh">refresh</button>
     <button class="ghost" id="signout">sign out</button>
+    <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
   </div>
 </header>
 
@@ -95,6 +96,11 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
 
 <script>
 const $=s=>document.querySelector(s);
+const themeBtn=()=>document.querySelector("#themebtn");
+function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("maskroom-theme",t)}catch(e){}const b=themeBtn();if(b)b.textContent=t==="light"?"◑":"◐";}
+let __savedTheme=null;try{__savedTheme=localStorage.getItem("maskroom-theme")}catch(e){}
+applyTheme(__savedTheme||"light");
+document.addEventListener("click",(e)=>{if(e.target&&e.target.id==="themebtn")applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light");});
 const TOKEN_RE=/TOK_[A-Z0-9_]+_[0-9A-F]{8,}/g;
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const hl=s=>esc(s).replace(TOKEN_RE,m=>`<mark>${m}</mark>`);
