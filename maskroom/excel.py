@@ -159,6 +159,14 @@ class ExcelMixin:
     def pseudonymize_excel(self, input_path, output_path):
         """Scan every sheet and cell, replacing detected PII spans with tokens."""
         wb = openpyxl.load_workbook(input_path)
+        cells_changed = self._pseudonymize_workbook(wb)
+        wb.save(output_path)
+        print(f"[Success] Excel saved to: {output_path} ({cells_changed} cells modified)")
+
+    def _pseudonymize_workbook(self, wb):
+        """Mask every sheet of an open openpyxl workbook in place; returns the
+        number of cells changed. Shared by the Excel and CSV/TSV pipelines so
+        both get the same header/column rules, value profiling and context."""
         cells_changed = 0
 
         numeric_entities = rules.NUMERIC_CELL_ENTITIES
@@ -257,8 +265,7 @@ class ExcelMixin:
                                 {"where": f"{ws.title}!{cell.coordinate}",
                                  "method": "detected", **f})
 
-        wb.save(output_path)
-        print(f"[Success] Excel saved to: {output_path} ({cells_changed} cells modified)")
+        return cells_changed
 
     # ----------------------------------------------------------- restore
     def depseudonymize_excel(self, input_path, output_path):

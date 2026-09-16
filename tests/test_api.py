@@ -219,3 +219,18 @@ def test_process_masks_docx(client):
     with zipfile.ZipFile(io.BytesIO(masked)) as z:
         xml = z.read("word/document.xml").decode()
     assert "Nimal Perera" not in xml and "853421234V" not in xml and "TOK_PERSON_" in xml
+
+
+def test_process_masks_csv_column_aware(client):
+    from webui import app as webapp
+    if hasattr(webapp, "ADMIN_KEY"):
+        webapp.ADMIN_KEY = None
+    csv_bytes = ("Name,NIC,Salary\nNimal Perera,853421234V,120000\n").encode()
+    r = client.post("/api/process", data={"file": (io.BytesIO(csv_bytes), "staff.csv"),
+                    "session": "true", "preview": "false"}, content_type="multipart/form-data")
+    d = r.get_json()
+    assert r.status_code == 200, d
+    assert d["kind"] == "tabular" and d["downloads"]["output"] == "masked.csv"
+    out = client.get(f"/api/download/{d['run_id']}/masked.csv").data.decode()
+    assert "Nimal Perera" not in out and "853421234V" not in out
+    assert "TOK_PERSON_" in out and "120000" in out

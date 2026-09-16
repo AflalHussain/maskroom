@@ -14,6 +14,7 @@ from .locale import DEFAULT_LOCALE, build_policy
 from .excel import ExcelMixin
 from .pdf import PdfMixin
 from .office import OfficeMixin
+from .tabular import TabularMixin
 
 
 def build_nlp_engine(nlp_model=None, language="en"):
@@ -30,7 +31,7 @@ def build_nlp_engine(nlp_model=None, language="en"):
     return provider.create_engine()
 
 
-class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin):
+class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
     # Generic policy constants (rules.py); the country-specific part is
     # compiled into self.policy from the locale file.
     TOKEN_RE = rules.TOKEN_RE

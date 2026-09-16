@@ -370,9 +370,12 @@ def process():
         return jsonify({"error": "No file uploaded."}), 400
     name = os.path.basename(f.filename)
     ext = os.path.splitext(name)[1].lower()
-    if ext not in (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx"):
-        return jsonify({"error": f"Unsupported file type {ext!r} — use .xlsx, .xlsm, .pdf, .docx or .pptx."}), 400
+    if ext not in (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json"):
+        return jsonify({"error": f"Unsupported file type {ext!r} — use .xlsx, .xlsm, .pdf, .docx, "
+                                 ".pptx, .csv, .tsv, .txt or .json."}), 400
     is_office = ext in (".docx", ".pptx")
+    is_csv = ext in (".csv", ".tsv")
+    is_textfile = ext in (".txt", ".json")
 
     opts = request.form
     restore = opts.get("restore") == "true"
@@ -428,6 +431,10 @@ def process():
                 engine.redact_spatial_pdf(in_path, out_path)
             elif is_office:
                 engine.pseudonymize_office(in_path, out_path)
+            elif is_csv:
+                engine.pseudonymize_csv(in_path, out_path)
+            elif is_textfile:
+                engine.pseudonymize_text_file(in_path, out_path)
             else:
                 engine.pseudonymize_excel(in_path, out_path)
                 text_name = "masked.md"
@@ -451,7 +458,8 @@ def process():
         "run_id": run_id,
         "session_id": sess.id if sess else None,
         "filename": name,
-        "kind": "pdf" if ext == ".pdf" else ("office" if is_office else "excel"),
+        "kind": ("pdf" if ext == ".pdf" else "office" if is_office
+                 else "tabular" if is_csv else "text" if is_textfile else "excel"),
         "mode": "restore" if restore else ("text" if pdf_text else
                                           ("redact" if ext == ".pdf" else "pseudonymize")),
         "elapsed_s": round(elapsed, 1),
@@ -462,7 +470,7 @@ def process():
                       "vault": "vault.json" if not restore else None,
                       "text": out_name if pdf_text else text_name},
     }
-    if want_preview and not is_office:
+    if want_preview and not is_office and not is_csv and not is_textfile:
         if ext == ".pdf":
             resp["before"] = pdf_preview(in_path)
             resp["after"] = pdf_preview(out_path) if not pdf_text else None
