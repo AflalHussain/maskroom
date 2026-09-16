@@ -11,7 +11,7 @@ def main(argv=None):
         prog="maskroom",
         description="Pseudonymize Excel workbooks / redact PDFs with Presidio.",
     )
-    parser.add_argument("input", help="Input .xlsx or .pdf file")
+    parser.add_argument("input", help="Input .xlsx, .pdf, or .docx/.pptx file")
     parser.add_argument("output", nargs="?", help="Output path (default: <input>_masked.<ext>)")
     parser.add_argument("--vault", help="Vault JSON file: written after masking, "
                         "read when using --restore")
@@ -61,8 +61,10 @@ def main(argv=None):
         engine.pseudonymize_excel(args.input, output)
     elif ext == ".pdf":
         engine.redact_spatial_pdf(args.input, output)
+    elif ext in (".docx", ".pptx"):
+        engine.pseudonymize_office(args.input, output)
     else:
-        parser.error(f"Unsupported file type: {ext} (expected .xlsx, .xlsm, or .pdf)")
+        parser.error(f"Unsupported file type: {ext} (expected .xlsx, .xlsm, .pdf, .docx, or .pptx)")
 
     if args.vault:
         engine.save_vault(args.vault)

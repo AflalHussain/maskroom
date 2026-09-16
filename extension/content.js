@@ -30,7 +30,7 @@
     fileInput: ['input[type="file"][multiple]', 'input[type="file"]'],
     dropTarget: ['fieldset', 'form'],
   };
-  const FILE_RE = /\.(xlsx|xlsm|pdf)$/i;
+  const FILE_RE = /\.(xlsx|xlsm|pdf|docx|pptx)$/i;
   const RESTORE_RE = /\.(md|txt|csv|tsv|json|html?|xml|ya?ml|xlsx|xlsm|docx|pptx)$/i;
   const MAX_UPLOAD = 25 * 1024 * 1024;
   const T = self.MaskroomTokens;
@@ -536,8 +536,8 @@
       bar = document.createElement("div"); bar.id = "maskroom-bar";
       bar.innerHTML = `<span class="mr-brand">MASKROOM</span><span class="mr-meta"></span>
         <button class="mr-primary" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
-        <button data-act="file" title="Mask a .xlsx/.pdf and attach the masked version">Mask file</button>
-        <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf" multiple hidden>
+        <button data-act="file" title="Mask a .xlsx/.pdf/.docx and attach the masked version">Mask file</button>
+        <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf,.docx,.pptx" multiple hidden>
         <button data-act="unmaskfile" title="Restore the real values inside a file Claude produced (saved as *_restored)">Unmask file</button>
         <input type="file" id="maskroom-unmask-file" accept=".md,.txt,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.xlsx,.xlsm,.docx,.pptx" multiple hidden>
         <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first — click to turn on/off">guard: on</button>

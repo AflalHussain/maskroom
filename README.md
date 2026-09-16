@@ -408,9 +408,10 @@ The page has three steps that share one **session vault**:
    street address becomes a `TOK_<TYPE>_<ID>` pseudonym. *Copy for Claude* puts the masked
    text on the clipboard, prefixed (optionally) with a one-line instruction telling the
    model to treat tokens as opaque labels and repeat them verbatim.
-2. **Mask files** — drop `.xlsx`/`.pdf`. Excel gives a masked workbook plus a Markdown
+2. **Mask files** — drop `.xlsx`/`.pdf`/`.docx`/`.pptx`. Excel gives a masked workbook plus a Markdown
    rendering (for chat surfaces without spreadsheet support); PDFs come back as masked
-   **text**, one section per page, instead of black boxes, so the model still sees the
+   **text**, one section per page, instead of black boxes; Word/PowerPoint (`.docx`/`.pptx`)
+   are masked in place (text runs pseudonymized, formatting kept), so the model still sees the
    content. Everything joins the same vault, so the same person gets the same token in the
    prompt and in the attachment.
 3. **Unmask the reply** — paste the answer; tokens are restored even when the model
@@ -499,7 +500,7 @@ bodies are capped at `MAX_TEXT_CHARS` (default 200 000).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `input` | — | `.xlsx`, `.xlsm`, or `.pdf` file |
+| `input` | — | `.xlsx`, `.xlsm`, `.pdf`, `.docx`, or `.pptx` file |
 | `output` | `<input>_masked.<ext>` | output path |
 | `--vault FILE` | off | write (mask) or read (`--restore`) the token↔value mapping |
 | `--restore` | off | reverse a masked workbook using `--vault` (Excel only) |

@@ -13,6 +13,7 @@ from . import recognizers, rules
 from .locale import DEFAULT_LOCALE, build_policy
 from .excel import ExcelMixin
 from .pdf import PdfMixin
+from .office import OfficeMixin
 
 
 def build_nlp_engine(nlp_model=None, language="en"):
@@ -29,7 +30,7 @@ def build_nlp_engine(nlp_model=None, language="en"):
     return provider.create_engine()
 
 
-class FinancialPrivacyEngine(ExcelMixin, PdfMixin):
+class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin):
     # Generic policy constants (rules.py); the country-specific part is
     # compiled into self.policy from the locale file.
     TOKEN_RE = rules.TOKEN_RE

@@ -196,3 +196,26 @@ def test_audit_records_file_process_with_downloads(client):
     masked_wb = openpyxl.load_workbook(io.BytesIO(client.get(f"/api/audit/{rec['id']}/file/output").data))
     cells = [c.value for row in masked_wb.active.iter_rows() for c in row]
     assert "Nimal Perera" not in cells and any(str(c).startswith("TOK_PERSON_") for c in cells if c)
+
+
+def test_process_masks_docx(client):
+    from webui import app as webapp
+    webapp.ADMIN_KEY = None
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml",
+                   '<?xml version="1.0"?><w:document xmlns:w="w"><w:body><w:p>'
+                   '<w:r><w:t>Dear Nimal Perera, NIC 853421234V.</w:t></w:r>'
+                   '</w:p></w:body></w:document>')
+    r = client.post("/api/process", data={"file": (io.BytesIO(buf.getvalue()), "letter.docx"),
+                    "session": "true", "preview": "false"}, content_type="multipart/form-data")
+    d = r.get_json()
+    assert r.status_code == 200, d
+    assert d["kind"] == "office" and d["mode"] == "pseudonymize" and d["downloads"]["output"] == "masked.docx"
+    assert d["vault_entries"] >= 2
+    masked = client.get(f"/api/download/{d['run_id']}/masked.docx").data
+    with zipfile.ZipFile(io.BytesIO(masked)) as z:
+        xml = z.read("word/document.xml").decode()
+    assert "Nimal Perera" not in xml and "853421234V" not in xml and "TOK_PERSON_" in xml
