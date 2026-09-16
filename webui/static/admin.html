@@ -57,7 +57,7 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
   <h2>Admin sign-in</h2>
   <p class="muted" style="font-size:13px">Enter the admin key (server <code>MASKROOM_ADMIN_KEY</code>) to view the audit trail.</p>
   <input type="password" id="adminkey" placeholder="admin key" autocomplete="off">
-  <button id="signin">Sign in</button>
+  <button class="primary" id="signin">Sign in</button>
   <div class="err" id="gateerr"></div>
 </div>
 
@@ -73,7 +73,7 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
     <label>from <input type="date" id="f-since"></label>
     <label>to <input type="date" id="f-until"></label>
     <label>search <input type="text" id="f-q" placeholder="user / file / session"></label>
-    <button id="apply">Apply</button>
+    <button class="primary" id="apply">Apply</button>
     <button class="ghost" id="clear">Clear</button>
   </div>
 
