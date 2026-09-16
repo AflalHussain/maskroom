@@ -20,18 +20,18 @@
   --text: #0f172a;
   --text-2: #475569;
   --text-3: #7a8aa0;
-  /* brand + actions — enterprise blue */
-  --brand: #2563eb;             /* blue-600: links, active accents */
-  --brand-soft: #eff4ff;
-  --primary: #2563eb;           /* blue primary action */
-  --primary-hover: #1d4ed8;
+  /* brand + actions — ink primary, muted steel-blue accent */
+  --brand: #3a5c86;             /* muted steel blue: links, active accents */
+  --brand-soft: #eef2f7;
+  --primary: #1e2a3a;           /* ink navy primary action */
+  --primary-hover: #111a27;
   --on-primary: #ffffff;
-  --ring: rgba(37, 99, 235, .28);
+  --ring: rgba(58, 92, 134, .30);
   /* semantic */
   --ok: #067647;   --ok-bg: #ecfdf3;   --ok-bd: #abefc6;
   --warn: #b54708; --warn-bg: #fffaeb; --warn-bd: #fedf89;
   --bad: #b42318;  --bad-bg: #fef3f2;  --bad-bd: #fecdca;
-  --info: #175cd3; --info-bg: #eff4ff; --info-bd: #b2ccff;
+  --info: #35608f; --info-bg: #eef2f8; --info-bd: #cdddf0;
   /* shape + type */
   --radius: 10px;
   --radius-sm: 7px;
@@ -53,16 +53,16 @@
   --text: #e6ebf3;
   --text-2: #9fb0c7;
   --text-3: #6b7c96;
-  --brand: #6ea8fe;
-  --brand-soft: #10203a;
-  --primary: #3b82f6;
-  --primary-hover: #2f6fe0;
-  --on-primary: #ffffff;
-  --ring: rgba(110, 168, 254, .32);
+  --brand: #8fb0d6;
+  --brand-soft: #172438;
+  --primary: #e8edf4;
+  --primary-hover: #ffffff;
+  --on-primary: #0f1826;
+  --ring: rgba(143, 176, 214, .30);
   --ok: #47c98a;   --ok-bg: #10231a;   --ok-bd: #1f5138;
   --warn: #eab04a; --warn-bg: #241d10; --warn-bd: #574320;
   --bad: #f37166;  --bad-bg: #2a1512;  --bad-bd: #5c2a24;
-  --info: #7aa7ff; --info-bg: #101827;  --info-bd: #24406e;
+  --info: #8fb0d6; --info-bg: #131f30;  --info-bd: #2c4363;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
   --shadow-md: 0 2px 8px rgba(0,0,0,.4);
   --shadow-lg: 0 12px 32px rgba(0,0,0,.55);
@@ -85,7 +85,7 @@ a:hover { text-decoration: underline; }
 /* ---- brand lockup ---- */
 .mr-brand { display: inline-flex; align-items: center; gap: 10px; }
 .mr-logo { display: inline-flex; width: 26px; height: 26px; border-radius: 7px;
-  background: linear-gradient(150deg, #3b82f6, #1d4ed8); align-items: center; justify-content: center; box-shadow: var(--shadow-sm); }
+  background: linear-gradient(150deg, #4a6b96, #26405f); align-items: center; justify-content: center; box-shadow: var(--shadow-sm); }
 .mr-logo::after { content: ""; width: 13px; height: 3.5px; border-radius: 1px; background: #fff; box-shadow: 0 5px 0 rgba(255,255,255,.55); }
 .mr-brand .name { font-weight: 800; font-size: 16px; letter-spacing: -.01em; color: var(--text); }
 .mr-brand .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-3); }
