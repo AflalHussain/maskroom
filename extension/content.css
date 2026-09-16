@@ -1,18 +1,25 @@
-#maskroom-bar{position:fixed;right:18px;bottom:18px;z-index:2147483646;display:flex;align-items:center;gap:8px;
-  background:#141a20;color:#e9e4d8;border:1px solid #26303a;border-radius:999px;padding:6px 8px 6px 14px;
-  font:12px/1 "IBM Plex Mono",ui-monospace,Menlo,monospace;box-shadow:0 4px 18px rgba(0,0,0,.35)}
-#maskroom-bar .mr-brand{font-weight:700;letter-spacing:.06em;color:#d9a441}
-#maskroom-bar .mr-meta{color:#8d94a1;white-space:nowrap}
-#maskroom-bar .mr-meta b{color:#e9e4d8;font-weight:600}
-#maskroom-bar button{background:transparent;border:1px solid #3a4650;color:#e9e4d8;border-radius:999px;padding:6px 11px;cursor:pointer;font:inherit}
-#maskroom-bar button:hover{border-color:#d9a441;color:#d9a441}
-#maskroom-bar button.mr-primary{background:#d9a441;color:#0c1013;border-color:#d9a441;font-weight:600}
-#maskroom-bar button.mr-primary:hover{filter:brightness(1.08);color:#0c1013}
+/* Maskroom floating bar + toast on claude.ai. A dark "command bar" chip that
+   stays legible over claude's light or dark themes; mirrors the Maskroom
+   design tokens. System font stack (extension pages can't load remote fonts). */
+#maskroom-bar{position:fixed;right:18px;bottom:18px;z-index:2147483646;display:flex;align-items:center;gap:7px;
+  background:#181c22;color:#e7e9ec;border:1px solid #2b323c;border-radius:12px;padding:7px 9px 7px 13px;
+  font:12.5px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  box-shadow:0 10px 30px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.2)}
+#maskroom-bar .mr-brand{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-weight:700;font-size:11px;
+  letter-spacing:.14em;color:#e0b24e;padding-right:2px}
+#maskroom-bar .mr-meta{color:#9aa2ad;white-space:nowrap;font-size:11.5px}
+#maskroom-bar .mr-meta b{color:#e7e9ec;font-weight:600}
+#maskroom-bar button{background:transparent;border:1px solid #39414d;color:#e7e9ec;border-radius:999px;
+  padding:6px 12px;cursor:pointer;font:600 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;transition:background .12s,border-color .12s,color .12s}
+#maskroom-bar button:hover{background:#232b34;border-color:#4a5361}
+#maskroom-bar button.mr-primary{background:linear-gradient(150deg,#e6bd5c,#c8901f);color:#191203;border-color:transparent;font-weight:700}
+#maskroom-bar button.mr-primary:hover{filter:brightness(1.06)}
 #maskroom-bar button.mr-off{opacity:.5;text-decoration:line-through}
 #maskroom-bar button:disabled{opacity:.5;cursor:wait}
-#maskroom-toast{position:fixed;right:18px;bottom:66px;z-index:2147483647;background:#0c1013;color:#e9e4d8;border:1px solid #d9a441;
-  border-radius:8px;padding:10px 14px;font:12.5px/1.4 "IBM Plex Mono",ui-monospace,Menlo,monospace;max-width:360px;
-  box-shadow:0 4px 18px rgba(0,0,0,.35);opacity:0;transition:opacity .15s;pointer-events:none}
-#maskroom-toast.mr-show{opacity:1}
-#maskroom-toast.mr-bad{border-color:#e2574c;color:#ffb3ad}
-.maskroom-restored{text-decoration:underline dotted #d9a441;text-underline-offset:3px}
+#maskroom-toast{position:fixed;right:18px;bottom:70px;z-index:2147483647;background:#181c22;color:#e7e9ec;border:1px solid #2b323c;
+  border-left:3px solid #e0b24e;border-radius:10px;padding:11px 15px;
+  font:12.5px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:360px;
+  box-shadow:0 12px 32px rgba(0,0,0,.32);opacity:0;transform:translateY(4px);transition:opacity .15s,transform .15s;pointer-events:none}
+#maskroom-toast.mr-show{opacity:1;transform:translateY(0)}
+#maskroom-toast.mr-bad{border-left-color:#f37166;color:#ffcfc9}
+.maskroom-restored{text-decoration:underline dotted #b98328;text-underline-offset:3px}

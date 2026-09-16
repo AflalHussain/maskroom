@@ -1,39 +1,75 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Maskroom settings</title>
 <style>
-body{font:13px/1.5 system-ui,sans-serif;margin:0;padding:16px;min-width:340px;background:#141a20;color:#e9e4d8}
-h1{font-size:14px;letter-spacing:.08em;text-transform:uppercase;color:#d9a441;margin:0 0 12px}
-label{display:block;margin:10px 0 4px;color:#8d94a1;font-size:12px}
-input[type=text],input[type=password]{width:100%;box-sizing:border-box;background:#0c1013;border:1px solid #26303a;color:#e9e4d8;padding:7px 9px;border-radius:4px;font:12.5px ui-monospace,Menlo,monospace}
-.row{display:flex;align-items:center;gap:8px;margin-top:10px;color:#e9e4d8}
-.row input{accent-color:#d9a441}
-button{margin-top:14px;background:#d9a441;color:#0c1013;border:0;border-radius:4px;padding:8px 14px;font-weight:600;cursor:pointer}
-button.ghost{background:transparent;border:1px solid #3a4650;color:#e9e4d8;margin-left:8px}
-#status{margin-top:10px;font-size:12px;color:#8d94a1;min-height:1.4em}
-#status.ok{color:#3fb98d} #status.bad{color:#e2574c}
-p.note{color:#5a6270;font-size:11.5px;margin:12px 0 0}
+:root{
+  --bg:#f5f6f8; --surface:#fff; --surface-2:#f8f9fb; --border:#e4e7ec; --border-strong:#d3d8e0;
+  --text:#191c22; --text-2:#545c68; --text-3:#858d9b; --brand:#9a6a1a; --brand-soft:#f4ecdd;
+  --primary:#1c1f26; --primary-hover:#303540; --on-primary:#fff;
+  --ok:#067647; --bad:#b42318; --ring:rgba(154,106,26,.28);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; --mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{font:13.5px/1.55 var(--sans);margin:0;padding:20px;min-width:380px;background:var(--bg);color:var(--text)}
+.head{display:flex;align-items:center;gap:9px;margin-bottom:16px}
+.logo{width:24px;height:24px;border-radius:6px;background:linear-gradient(150deg,#b98328,#7d5410);display:inline-grid;place-items:center}
+.logo::after{content:"";width:12px;height:3px;border-radius:1px;background:#fff;box-shadow:0 4px 0 rgba(255,255,255,.55)}
+.head .name{font-weight:800;font-size:15px}
+.head .tag{font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text-3)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 16px;margin-bottom:14px;box-shadow:0 1px 2px rgba(16,24,40,.05)}
+h2{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-2);margin:0 0 12px}
+label.top{display:block;margin:12px 0 5px;color:var(--text-3);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+label.top:first-child{margin-top:0}
+input[type=text],input[type=password],select{width:100%;background:var(--surface);border:1px solid var(--border-strong);color:var(--text);padding:8px 10px;border-radius:7px;font:13px var(--sans)}
+input:focus,select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--ring)}
+.row{display:flex;align-items:flex-start;gap:9px;margin-top:11px}
+.row input[type=checkbox]{accent-color:var(--brand);width:15px;height:15px;margin-top:2px}
+.row label{margin:0;color:var(--text);font-size:13px;line-height:1.45}
+.row.sub{padding-left:24px} .row.sub label{color:var(--text-2)}
+.actions{display:flex;gap:8px;margin-top:16px}
+button{background:var(--primary);color:var(--on-primary);border:1px solid var(--primary);border-radius:7px;padding:8px 15px;font:600 13px var(--sans);cursor:pointer}
+button:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+button.ghost{background:var(--surface);border:1px solid var(--border-strong);color:var(--text)}
+button.ghost:hover{background:var(--surface-2)}
+#status{margin-top:11px;font-size:12.5px;color:var(--text-3);min-height:1.3em;font-family:var(--mono)}
+#status.ok{color:var(--ok)} #status.bad{color:var(--bad)}
+#log{font:11.5px/1.5 var(--mono);color:var(--text-2);max-height:180px;overflow:auto;white-space:pre-wrap;background:var(--surface-2);border:1px solid var(--border);border-radius:7px;padding:10px;margin-bottom:10px}
+.note{color:var(--text-3);font-size:12px;margin:4px 0 0}
+.note b{color:var(--text-2)}
 </style></head>
 <body>
-<h1>Maskroom for Claude</h1>
-<label for="serverUrl">Maskroom server URL</label>
-<input type="text" id="serverUrl" placeholder="http://127.0.0.1:5170">
-<label for="apiKey">API key (if the server sets MASKROOM_API_KEY)</label>
-<input type="password" id="apiKey">
-<div class="row"><input type="checkbox" id="guard"><label for="guard" style="margin:0;color:#e9e4d8">Guard: Enter/send masks unmasked text first</label></div>
-<div class="row"><input type="checkbox" id="unmask"><label for="unmask" style="margin:0;color:#e9e4d8">Show real values in replies (on screen only)</label></div>
-<label for="excelAttach">Attach masked Excel as</label>
-<select id="excelAttach" style="width:100%;background:#0c1013;border:1px solid #26303a;color:#e9e4d8;padding:7px 9px;border-radius:4px">
-  <option value="xlsx">masked workbook (.xlsx) — claude.ai needs analysis enabled to read it</option>
-  <option value="md">Markdown tables (.md) — readable by any chat surface</option>
-</select>
-<div class="row"><input type="checkbox" id="interceptDownloads"><label for="interceptDownloads" style="margin:0;color:#e9e4d8">Restore files downloaded from claude.ai automatically (saved as *_restored)</label></div>
-<div class="row" style="padding-left:24px"><input type="checkbox" id="keepMasked"><label for="keepMasked" style="margin:0;color:#8d94a1">Also keep the masked (token) copy next to the restored file — useful for demos</label></div>
-<div class="row"><input type="checkbox" id="preamble"><label for="preamble" style="margin:0;color:#e9e4d8">Prepend the token instruction once per session</label></div>
-<button id="save">Save</button><button class="ghost" id="test">Test connection</button>
-<div id="status"></div>
-<h1 style="margin-top:18px">Recent downloads</h1>
-<div id="log" style="font:11.5px ui-monospace,Menlo,monospace;color:#8d94a1;max-height:180px;overflow:auto;white-space:pre-wrap"></div>
-<button class="ghost" id="copylog" style="margin-top:8px">Copy log</button><button class="ghost" id="clearlog" style="margin-top:8px">Clear</button>
+<div class="head"><span class="logo"></span><span class="name">Maskroom</span><span class="tag">for Claude</span></div>
+
+<div class="card">
+  <h2>Connection</h2>
+  <label class="top" for="serverUrl">Maskroom server URL</label>
+  <input type="text" id="serverUrl" placeholder="http://127.0.0.1:5170">
+  <label class="top" for="apiKey">API key (if the server sets MASKROOM_API_KEY)</label>
+  <input type="password" id="apiKey">
+  <div class="actions"><button id="save">Save</button><button class="ghost" id="test">Test connection</button></div>
+  <div id="status"></div>
+</div>
+
+<div class="card">
+  <h2>Masking</h2>
+  <div class="row"><input type="checkbox" id="guard"><label for="guard">Guard: Enter/send masks unmasked text first</label></div>
+  <div class="row"><input type="checkbox" id="unmask"><label for="unmask">Show real values in replies (on screen only)</label></div>
+  <div class="row"><input type="checkbox" id="preamble"><label for="preamble">Prepend the token instruction once per session</label></div>
+  <label class="top" for="excelAttach">Attach masked Excel as</label>
+  <select id="excelAttach">
+    <option value="xlsx">masked workbook (.xlsx) — claude.ai needs analysis enabled to read it</option>
+    <option value="md">Markdown tables (.md) — readable by any chat surface</option>
+  </select>
+</div>
+
+<div class="card">
+  <h2>Downloads</h2>
+  <div class="row"><input type="checkbox" id="interceptDownloads"><label for="interceptDownloads">Restore files downloaded from claude.ai automatically (saved as *_restored)</label></div>
+  <div class="row sub"><input type="checkbox" id="keepMasked"><label for="keepMasked">Also keep the masked (token) copy next to the restored file — useful for demos</label></div>
+  <h2 style="margin-top:16px">Recent downloads</h2>
+  <div id="log"></div>
+  <div class="actions"><button class="ghost" id="copylog">Copy log</button><button class="ghost" id="clearlog">Clear</button></div>
+</div>
+
 <p class="note">Use <b>Mask file</b> on the bar for .xlsx/.pdf attachments; with guard on, files dropped or picked in
 claude.ai go through Maskroom too. Not supported by Anthropic; depends on claude.ai's page structure.</p>
 <script src="options.js"></script>
