@@ -10,6 +10,7 @@ Windows Registry Editor Version 5.00
 "IncognitoModeAvailability"=dword:00000001
 
 ; Lock the guard on (per-extension 3rd-party managed config).
-[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\3rdparty\extensions$ID\policy]
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\3rdparty\extensions\lcmdehcdpfddkjgajmlpgfholdekpgio\policy]
 "guardLocked"=dword:00000001
-"orgId"="yourco"
+"serverUrl"="https://maskroom.yourco.example"
+"orgId"="hsenidmobile"

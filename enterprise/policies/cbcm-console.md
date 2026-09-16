@@ -13,7 +13,7 @@ Set **Installation policy = Force install**, and **Pin to toolbar** on.
 Select the Maskroom extension → **Policy for extensions** → paste:
 
 ```json
-{ "guardLocked": { "Value": true } }
+{ "guardLocked": { "Value": true }, "serverUrl": { "Value": "https://maskroom.yourco.example" } }
 ```
 
 ## Disable Incognito (closes the bypass)

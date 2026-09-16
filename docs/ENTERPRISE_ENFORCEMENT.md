@@ -345,8 +345,11 @@ This is the **per-extension "3rd party" policy** (distinct from `ExtensionSettin
 delivered to the extension's own namespace. The value the admin pushes:
 
 ```json
-{ "guardLocked": true }
+{ "guardLocked": true, "serverUrl": "https://maskroom.yourco.example" }
 ```
+
+`serverUrl` (optional) points every install at your Maskroom server and locks the per-user
+Server URL field; `guardLocked` forces the guard on. Both are read from `chrome.storage.managed`.
 
 Where it goes on each platform
 ([Configuring Apps and Extensions by Policy](https://www.chromium.org/administrators/configuring-policy-for-extensions/)):

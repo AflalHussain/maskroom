@@ -83,8 +83,9 @@ On a managed machine, fully quit and reopen Chrome, then:
    and is pinned.
 3. Open `https://claude.ai`: the bar shows **`guard: on 🔒`**, clicking it does nothing, and
    the options page shows the Guard checkbox disabled and "locked by your administrator".
-4. Point the extension at your Maskroom server (options → server URL), or pre-set it via the
-   same 3rd-party config if you add a `serverUrl` managed key later.
+4. The **Maskroom server URL** is pushed to every install by the `serverUrl` key in the
+   guard-lock config (Step 3), so users never type it and the options field is locked. Confirm
+   the extension reaches it — the bar shows a session id and a pseudonym count, not "no session".
 
 ---
 

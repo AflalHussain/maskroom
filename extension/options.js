@@ -11,14 +11,22 @@ chrome.storage.local.get(DEFAULTS).then((s) => {
 
 // Admin lock: when guardLocked is set by managed policy, force the Guard checkbox on,
 // disable it, and say so. Managed storage is read-only, so the user cannot change it.
-chrome.storage.managed.get({ guardLocked: false }).then((m) => {
-  if (!m || !m.guardLocked) return;
-  const cb = $("guard"); cb.checked = true; cb.disabled = true;
-  const note = document.createElement("span");
-  note.textContent = " 🔒 locked by your administrator";
-  note.style.cssText = "color:#d9a441;font-size:11.5px";
-  const label = document.querySelector('label[for="guard"]');
-  if (label) label.appendChild(note);
+chrome.storage.managed.get({ guardLocked: false, serverUrl: "" }).then((m) => {
+  if (!m) return;
+  if (m.guardLocked) {
+    const cb = $("guard"); cb.checked = true; cb.disabled = true;
+    const note = document.createElement("span");
+    note.textContent = " 🔒 locked by your administrator";
+    note.style.cssText = "color:var(--brand);font-size:11.5px";
+    const label = document.querySelector('label[for="guard"]');
+    if (label) label.appendChild(note);
+  }
+  if (m.serverUrl) {
+    const f = $("serverUrl"); f.value = m.serverUrl; f.disabled = true;
+    const lbl = document.querySelector('label[for="serverUrl"]');
+    if (lbl) { const n = document.createElement("span"); n.textContent = " 🔒 set by your administrator";
+      n.style.cssText = "color:var(--brand);font-size:11px"; lbl.appendChild(n); }
+  }
 }).catch(() => {});
 
 async function ensurePermission(url) {

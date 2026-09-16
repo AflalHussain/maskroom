@@ -5,7 +5,9 @@
 <dict>
   <key>guardLocked</key>
   <dict><key>state</key><string>always</string><key>value</key><true/></dict>
+  <key>serverUrl</key>
+  <dict><key>state</key><string>always</string><key>value</key><string>https://maskroom.yourco.example</string></dict>
   <key>orgId</key>
-  <dict><key>state</key><string>always</string><key>value</key><string>yourco</string></dict>
+  <dict><key>state</key><string>always</string><key>value</key><string>hsenidmobile</string></dict>
 </dict>
 </plist>

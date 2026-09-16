@@ -3,8 +3,9 @@
     "extensions": {
       "lcmdehcdpfddkjgajmlpgfholdekpgio": {
         "guardLocked": true,
+        "serverUrl": "https://maskroom.yourco.example",
         "userId": "${user_email}",
-        "orgId": "yourco"
+        "orgId": "hsenidmobile"
       }
     }
   }

@@ -21,6 +21,8 @@ const tabVaults = {};  // tabId -> {token: original}; pushed by the top frame, r
 
 async function settings() {
   const s = await chrome.storage.local.get(DEFAULTS);
+  const m = await managed();
+  if (m.serverUrl) s.serverUrl = m.serverUrl;   // admin policy overrides the user field
   s.serverUrl = (s.serverUrl || DEFAULTS.serverUrl).replace(/\/+$/, "");
   return s;
 }
@@ -30,8 +32,8 @@ async function settings() {
 let _managed = null;
 async function managed() {
   if (_managed) return _managed;
-  try { _managed = await chrome.storage.managed.get({ userId: "", orgId: "" }); }
-  catch (e) { _managed = { userId: "", orgId: "" }; }
+  try { _managed = await chrome.storage.managed.get({ userId: "", orgId: "", serverUrl: "" }); }
+  catch (e) { _managed = { userId: "", orgId: "", serverUrl: "" }; }
   return _managed;
 }
 chrome.storage.onChanged.addListener((changes, area) => { if (area === "managed") _managed = null; });
