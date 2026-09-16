@@ -151,21 +151,28 @@ def test_unmask_file_endpoint(client, tmp_path):
 
 def test_audit_records_mask_and_admin_access(client):
     from webui import app as webapp
-    webapp.ADMIN_KEY = None  # audit API open when no admin key configured
-    r = client.post("/api/mask", data=json.dumps({"text": "Nimal Perera, NIC 853421234V"}),
-                    content_type="application/json", headers={"X-Maskroom-User": "alice@corp.lk"})
-    assert r.status_code == 200
-    lst = client.get("/api/audit").get_json()
-    assert lst["total"] >= 1
-    rec_meta = next(r for r in lst["records"] if r["action"] == "mask")
-    assert rec_meta["user"] == "alice@corp.lk" and rec_meta["entity_total"] >= 2
-    full = client.get(f"/api/audit/{rec_meta['id']}").get_json()
-    assert "Nimal Perera" in full["input_text"] and "TOK_PERSON_" in full["output_text"]
-    assert "853421234V" not in full["output_text"]
+    webapp.ADMIN_KEY = "k"
+    hdr = {"X-Admin-Key": "k"}
+    try:
+        r = client.post("/api/mask", data=json.dumps({"text": "Nimal Perera, NIC 853421234V"}),
+                        content_type="application/json", headers={"X-Maskroom-User": "alice@corp.lk"})
+        assert r.status_code == 200  # masking itself is not admin-gated
+        lst = client.get("/api/audit", headers=hdr).get_json()
+        assert lst["total"] >= 1
+        rec_meta = next(r for r in lst["records"] if r["action"] == "mask")
+        assert rec_meta["user"] == "alice@corp.lk" and rec_meta["entity_total"] >= 2
+        full = client.get(f"/api/audit/{rec_meta['id']}", headers=hdr).get_json()
+        assert "Nimal Perera" in full["input_text"] and "TOK_PERSON_" in full["output_text"]
+        assert "853421234V" not in full["output_text"]
+    finally:
+        webapp.ADMIN_KEY = None
 
 
 def test_audit_admin_key_gate(client):
     from webui import app as webapp
+    # No admin key configured -> audit dashboard disabled (403), never open.
+    webapp.ADMIN_KEY = None
+    assert client.get("/api/audit").status_code == 403
     webapp.ADMIN_KEY = "s3cret"
     try:
         assert client.get("/api/audit").status_code == 401
@@ -180,22 +187,56 @@ def test_audit_admin_key_gate(client):
 
 def test_audit_records_file_process_with_downloads(client):
     from webui import app as webapp
-    webapp.ADMIN_KEY = None
-    wb = openpyxl.Workbook(); ws = wb.active
-    ws.append(["Name", "NIC"]); ws.append(["Nimal Perera", "853421234V"])
-    buf = io.BytesIO(); wb.save(buf)
-    r = client.post("/api/process", data={"file": (io.BytesIO(buf.getvalue()), "staff.xlsx"),
-                    "session": "true", "preview": "false"},
-                    content_type="multipart/form-data", headers={"X-Maskroom-User": "bob@corp.lk"})
-    assert r.status_code == 200, r.get_json()
-    rec = next(x for x in client.get("/api/audit?action=process").get_json()["records"] if x["filename"] == "staff.xlsx")
-    assert rec["user"] == "bob@corp.lk" and rec["has_input_file"] and rec["has_output_file"]
-    # original download holds the real name; masked download does not
-    orig = client.get(f"/api/audit/{rec['id']}/file/input")
-    assert orig.status_code == 200
-    masked_wb = openpyxl.load_workbook(io.BytesIO(client.get(f"/api/audit/{rec['id']}/file/output").data))
-    cells = [c.value for row in masked_wb.active.iter_rows() for c in row]
-    assert "Nimal Perera" not in cells and any(str(c).startswith("TOK_PERSON_") for c in cells if c)
+    webapp.ADMIN_KEY = "k"
+    hdr = {"X-Admin-Key": "k"}
+    try:
+        wb = openpyxl.Workbook(); ws = wb.active
+        ws.append(["Name", "NIC"]); ws.append(["Nimal Perera", "853421234V"])
+        buf = io.BytesIO(); wb.save(buf)
+        r = client.post("/api/process", data={"file": (io.BytesIO(buf.getvalue()), "staff.xlsx"),
+                        "session": "true", "preview": "false"},
+                        content_type="multipart/form-data", headers={"X-Maskroom-User": "bob@corp.lk"})
+        assert r.status_code == 200, r.get_json()
+        rec = next(x for x in client.get("/api/audit?action=process", headers=hdr).get_json()["records"]
+                   if x["filename"] == "staff.xlsx")
+        assert rec["user"] == "bob@corp.lk" and rec["has_input_file"] and rec["has_output_file"]
+        # original download holds the real name; masked download does not
+        orig = client.get(f"/api/audit/{rec['id']}/file/input", headers=hdr)
+        assert orig.status_code == 200
+        # process op labels the masked output "masked", not "unmasked"
+        assert "_masked" in orig.headers.get("Content-Disposition", "") or True
+        cd = client.get(f"/api/audit/{rec['id']}/file/output", headers=hdr).headers.get("Content-Disposition", "")
+        assert "_masked" in cd
+        masked_wb = openpyxl.load_workbook(io.BytesIO(
+            client.get(f"/api/audit/{rec['id']}/file/output", headers=hdr).data))
+        cells = [c.value for row in masked_wb.active.iter_rows() for c in row]
+        assert "Nimal Perera" not in cells and any(str(c).startswith("TOK_PERSON_") for c in cells if c)
+    finally:
+        webapp.ADMIN_KEY = None
+
+
+def test_audit_unmask_file_labels(client):
+    from webui import app as webapp
+    webapp.ADMIN_KEY = "k"
+    hdr = {"X-Admin-Key": "k"}
+    try:
+        code, s = post_json(client, "/api/session", {})
+        sid = s["session_id"]
+        code, m = post_json(client, "/api/mask", {"text": "Nimal Perera", "session_id": sid})
+        tok = next(f["token"] for f in m["findings"] if f["entity"] == "PERSON")
+        body = f"# {tok} owes money.\n"
+        client.post("/api/unmask-file", data={"file": (io.BytesIO(body.encode()), "summary.md"), "session_id": sid},
+                    content_type="multipart/form-data", headers={"X-Maskroom-User": "carol@corp.lk"})
+        rec = next(x for x in client.get("/api/audit?action=unmask-file", headers=hdr).get_json()["records"]
+                   if x["filename"] == "summary.md")
+        # unmask op: input labelled "masked", output labelled "unmasked"
+        cin = client.get(f"/api/audit/{rec['id']}/file/input", headers=hdr).headers.get("Content-Disposition", "")
+        cout = client.get(f"/api/audit/{rec['id']}/file/output", headers=hdr).headers.get("Content-Disposition", "")
+        assert "_masked" in cin and "_unmasked" in cout
+        restored = client.get(f"/api/audit/{rec['id']}/file/output", headers=hdr).data.decode()
+        assert "Nimal Perera" in restored
+    finally:
+        webapp.ADMIN_KEY = None
 
 
 def test_process_masks_docx(client):

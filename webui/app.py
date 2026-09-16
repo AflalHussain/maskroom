@@ -140,9 +140,16 @@ def _admin_ok():
 @app.before_request
 def check_api_key():
     p = request.path
-    # Audit dashboard + API: gated by the separate admin key (never the user key).
+    # Audit dashboard + API: gated by the separate admin key (never the user
+    # key). The store holds real PII, so it is DISABLED unless an admin key is
+    # configured — it is never silently open.
     if p == "/admin" or p.startswith("/api/audit"):
-        if ADMIN_KEY and not _admin_ok():
+        if not ADMIN_KEY:
+            if p == "/admin":
+                return send_from_directory(os.path.join(BASE, "static"), "admin.html")
+            return jsonify({"error": "Audit dashboard is disabled. Set MASKROOM_ADMIN_KEY "
+                                     "on the server to enable it."}), 403
+        if not _admin_ok():
             if p == "/admin":
                 return send_from_directory(os.path.join(BASE, "static"), "admin.html")
             return jsonify({"error": "Admin key required (X-Admin-Key header)."}), 401
@@ -581,7 +588,13 @@ def audit_file(rid, role):
     rec = audit.get(rid) or {}
     stem = os.path.splitext(rec.get("filename") or role)[0]
     ext = os.path.splitext(path)[1]
-    label = "original" if role == "input" else "masked"
+    # For restore/unmask ops the input is the masked file and the output the
+    # unmasked (restored) file; for mask ops it's the reverse.
+    restore = rec.get("action") in ("unmask", "unmask-file", "restore-file")
+    if role == "input":
+        label = "masked" if restore else "original"
+    else:
+        label = "unmasked" if restore else "masked"
     return send_file(path, as_attachment=True, download_name=f"{stem}_{label}{ext}")
 
 

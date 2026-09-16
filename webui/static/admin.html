@@ -142,11 +142,19 @@ async function api(path){
 function showGate(msg){ $("#gate").classList.remove("hide"); $("#app").classList.add("hide"); if(msg)$("#gateerr").textContent=msg; }
 function showApp(){ $("#gate").classList.add("hide"); $("#app").classList.remove("hide"); }
 
+function showDisabled(){
+  $("#gate").classList.remove("hide"); $("#app").classList.add("hide");
+  $("#gate").innerHTML='<h2>Audit dashboard disabled</h2>'+
+    '<p class="muted" style="font-size:13px">This dashboard holds sensitive data and is off until an admin key is configured. '+
+    'Set <code>MASKROOM_ADMIN_KEY</code> on the server and reload.</p>';
+}
 async function boot(){
   try{ cfg=await (await fetch("/api/config")).json(); }catch(e){}
-  if(cfg.admin_auth_required && !KEY){ showGate(""); return; }
+  if(!cfg.admin_auth_required){ showDisabled(); return; }   // server has no admin key configured
+  if(!KEY){ showGate(""); return; }
   try{ await loadAll(); showApp(); }
-  catch(e){ if(e.code===401){ KEY=""; showGate("Invalid admin key."); } else showGate(e.message||"Error"); }
+  catch(e){ if(e.code===401){ KEY=""; showGate("Invalid admin key."); }
+            else if(e.code===403){ showDisabled(); } else showGate(e.message||"Error"); }
 }
 
 async function loadAll(){ await Promise.all([loadStats(), loadList()]); }
@@ -198,14 +206,19 @@ async function openDetail(id){
   let r; try{ r=await api("/api/audit/"+id); }catch(e){ $("#listerr").textContent=e.message; return; }
   const q=KEY?"?admin_key="+encodeURIComponent(KEY):"";
   const hasFiles=r.input_file||r.output_file;
+  // For restore/unmask operations the input is the masked file and the output
+  // is the unmasked (restored) file; for mask operations it's the reverse.
+  const isRestore=(r.action==="unmask"||r.action==="unmask-file"||r.action==="restore-file");
+  const inLabel=isRestore?"masked":"original", outLabel=isRestore?"unmasked":"masked";
+  const inLabelText=isRestore?"input (masked)":"input (original)";
   const textBlock=(r.input_text!=null||r.output_text!=null)?`
     <div class="duo">
-      <div class="pane"><div class="cap">input (original)</div><div class="box">${esc(r.input_text)}</div></div>
-      <div class="pane"><div class="cap out">output (${r.action==="unmask"||r.action==="unmask-file"||r.action==="restore-file"?"restored":"masked"})</div><div class="box">${hl(r.output_text)}</div></div>
+      <div class="pane"><div class="cap">${inLabelText}</div><div class="box">${isRestore?hl(r.input_text):esc(r.input_text)}</div></div>
+      <div class="pane"><div class="cap out">output (${outLabel})</div><div class="box">${isRestore?esc(r.output_text):hl(r.output_text)}</div></div>
     </div>`:"";
   const fileBlock=hasFiles?`<div class="dl">
-      ${r.input_file?`<a href="/api/audit/${id}/file/input${q}" download>⬇ original file</a>`:""}
-      ${r.output_file?`<a href="/api/audit/${id}/file/output${q}" download>⬇ masked file</a>`:""}
+      ${r.input_file?`<a href="/api/audit/${id}/file/input${q}" download>⬇ ${inLabel} file</a>`:""}
+      ${r.output_file?`<a href="/api/audit/${id}/file/output${q}" download>⬇ ${outLabel} file</a>`:""}
     </div>`:"";
   const chips=Object.entries(r.by_entity||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="chip">${esc(k)} ${v}</span>`).join("");
   const unres=(r.unresolved&&r.unresolved.length)?`<div class="pane"><div class="cap">unresolved tokens</div><div class="box">${r.unresolved.map(esc).join("\n")}</div></div>`:"";

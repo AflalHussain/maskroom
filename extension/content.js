@@ -443,14 +443,38 @@
   });
 
   // Guard for raw uploads: a real (trusted) drop or file-picker selection in
-  // claude.ai is taken over and routed through maskFile instead.
-  document.addEventListener("drop", (e) => {
-    if (!settings.guard || !e.isTrusted || isOurs(e.target)) return;
+  // claude.ai is taken over and routed through maskFile instead. We intercept
+  // the whole drag sequence on WINDOW capture (the earliest phase) so
+  // claude.ai's own drag overlay never appears — otherwise, because we swallow
+  // the drop, claude's drop handler never runs to dismiss the overlay and its
+  // UI freezes at the "drop here" state. Our own synthetic attach drops are
+  // untrusted (isTrusted === false), so they pass straight through.
+  const isFileDrag = (e) => {
+    const t = e.dataTransfer && e.dataTransfer.types;
+    return !!t && Array.prototype.indexOf.call(t, "Files") !== -1;
+  };
+  const swallowDrag = (e) => {
+    if (e.isTrusted && settings.guard && isTop && !isOurs(e.target) && isFileDrag(e)) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      return true;
+    }
+    return false;
+  };
+  let dragHinted = false;
+  window.addEventListener("dragenter", (e) => { if (swallowDrag(e) && !dragHinted) { dragHinted = true; toast("Drop the file to mask it with Maskroom."); } }, true);
+  window.addEventListener("dragover", swallowDrag, true);
+  window.addEventListener("dragleave", swallowDrag, true);
+  window.addEventListener("dragend", () => { dragHinted = false; }, true);
+  window.addEventListener("drop", (e) => {
+    if (!settings.guard || !isTop || !e.isTrusted || isOurs(e.target)) return;
     const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
     if (!files.length) return;
-    const maskable = files.filter((f) => FILE_RE.test(f.name));
-    if (!maskable.length) { toast(`${files.map((f) => f.name).join(", ")}: not a type Maskroom can mask — attached as-is.`, true); return; }
     e.preventDefault(); e.stopImmediatePropagation();
+    dragHinted = false;
+    // Belt and suspenders: if claude did manage to show an overlay, clear it.
+    for (const t of ["dragleave", "dragend"]) { try { window.dispatchEvent(new DragEvent(t, { bubbles: true })); } catch (_) { /* ignore */ } }
+    const maskable = files.filter((f) => FILE_RE.test(f.name));
+    if (!maskable.length) { toast(`${files.map((f) => f.name).join(", ")}: not a type Maskroom can mask — not attached.`, true); return; }
     maskFiles(maskable);
     const rest = files.filter((f) => !FILE_RE.test(f.name));
     if (rest.length) toast(`${rest.map((f) => f.name).join(", ")}: not maskable, not attached.`, true);
