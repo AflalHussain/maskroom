@@ -137,8 +137,8 @@
     toast("New Maskroom session for this chat.");
   }
 
-  // Adopt a session created elsewhere (the /staging page shows its id), so
-  // files masked there and text masked here share one vault.
+  // Switch this chat to a different session id — from another chat or the
+  // /staging page — so they share one vault (the same tokens on both).
   async function adoptSession(id) {
     id = (id || "").trim();
     if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) { toast("That does not look like a session id.", true); return false; }
@@ -567,7 +567,7 @@
         <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first — click to turn on/off">guard: on</button>
         <button data-act="unmask" title="Show real values in replies (on screen only) — click to turn on/off">unmask: on</button>
         <button data-act="new" title="Start a new vault for this chat">new session</button>
-        <button data-act="adopt" title="Use a session id from the Maskroom staging page">use id…</button>
+        <button data-act="adopt" title="Use a different session id — from another chat or the Maskroom staging page — so they share one vault">use session id…</button>
         <button data-act="opts" title="Settings">⚙</button>`;
       bar.addEventListener("click", async (e) => {
         const hit = e.target.closest && e.target.closest("[data-act]");
@@ -578,7 +578,7 @@
           else if (act === "file") bar.querySelector("#maskroom-file").click();
           else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
           else if (act === "new") newSession();
-          else if (act === "adopt") adoptSession(window.prompt("Maskroom session id (shown on the staging page):", ""));
+          else if (act === "adopt") adoptSession(window.prompt("Enter a session id to use here (from another chat, or the Maskroom staging page):", sessionId || ""));
           else if (act === "guard") { if (guardLocked) { toast("Guard is locked on by your administrator.", true); } else { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); } }
           else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
           else if (act === "opts") call({ type: "openOptions" });
