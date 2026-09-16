@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Managed preference domain: com.google.Chrome.extensions.lcmdehcdpfddkjgajmlpgfholdekpgio -->
+<plist version="1.0">
+<dict>
+  <key>guardLocked</key>
+  <dict><key>state</key><string>always</string><key>value</key><true/></dict>
+  <key>orgId</key>
+  <dict><key>state</key><string>always</string><key>value</key><string>yourco</string></dict>
+</dict>
+</plist>

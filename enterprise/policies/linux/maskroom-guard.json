@@ -1,0 +1,11 @@
+{
+  "3rdparty": {
+    "extensions": {
+      "lcmdehcdpfddkjgajmlpgfholdekpgio": {
+        "guardLocked": true,
+        "userId": "${user_email}",
+        "orgId": "yourco"
+      }
+    }
+  }
+}

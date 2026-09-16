@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Self-hosted update manifest. Host this and the .crx on your HTTPS server,
+     then point ExtensionSettings update_url at THIS file's URL.
+     Bump 'version' and 'codebase' on every new .crx (version must increase). -->
+<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+  <app appid="lcmdehcdpfddkjgajmlpgfholdekpgio">
+    <updatecheck codebase="https://EXTENSIONS.YOURCO.EXAMPLE/maskroom/maskroom-0.1.0.crx"
+                 version="0.1.0"/>
+  </app>
+</gupdate>

@@ -1,0 +1,10 @@
+{
+  "ExtensionSettings": {
+    "lcmdehcdpfddkjgajmlpgfholdekpgio": {
+      "installation_mode": "force_installed",
+      "update_url": "https://EXTENSIONS.YOURCO.EXAMPLE/maskroom/update.xml",
+      "toolbar_pin": "force_pinned"
+    }
+  },
+  "IncognitoModeAvailability": 1
+}

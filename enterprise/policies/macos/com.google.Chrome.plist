@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Deliver via your MDM as a managed preference for domain com.google.Chrome -->
+<plist version="1.0">
+<dict>
+  <key>ExtensionSettings</key>
+  <dict>
+    <key>lcmdehcdpfddkjgajmlpgfholdekpgio</key>
+    <dict>
+      <key>installation_mode</key><string>force_installed</string>
+      <key>update_url</key><string>https://EXTENSIONS.YOURCO.EXAMPLE/maskroom/update.xml</string>
+      <key>toolbar_pin</key><string>force_pinned</string>
+    </dict>
+  </dict>
+  <key>IncognitoModeAvailability</key><integer>1</integer>
+</dict>
+</plist>

@@ -1,0 +1,107 @@
+# Maskroom enterprise deployment — sysadmin runbook
+
+Force-install the Maskroom extension across a managed Chrome fleet and lock its guard
+on. Background and citations: [`../docs/ENTERPRISE_ENFORCEMENT.md`](../docs/ENTERPRISE_ENFORCEMENT.md).
+
+- **Fixed extension ID:** `lcmdehcdpfddkjgajmlpgfholdekpgio`
+  (set by the `key` in [`../extension/manifest.json`](../extension/manifest.json); stable on
+  every machine and every rebuild).
+- **Signing key:** `local/maskroom-signing-key.pem` in the source tree — **secret**, git-ignored.
+  Whoever packages the `.crx` needs it; store it in the company secret vault, never commit it.
+- **Ready-made policy files:** in [`policies/`](policies) and [`update.xml`](update.xml),
+  pre-filled with the ID. Replace `EXTENSIONS.YOURCO.EXAMPLE` and `yourco` with real values.
+
+There are two independent things to push: **force-install** (Chrome-native) and **guard
+lock** (our per-extension config). Do both. Also disable Incognito, or the guard is skipped.
+
+---
+
+## Step 1 — Decide how the extension is hosted
+
+| | Unlisted Chrome Web Store (recommended) | Self-hosted |
+|---|---|---|
+| Effort | Upload once; Google hosts + serves updates | You run an HTTPS server, sign + host the `.crx` and `update.xml` |
+| `update_url` | `https://clients2.google.com/service/update2/crx` | your `update.xml` URL |
+| Use when | Default | Company forbids the Web Store / must not use Google infra |
+
+If Web Store: publish the built `extension/` folder as **unlisted**, then in the policy files
+replace the `update_url` with Google's URL above and skip Step 2.
+
+---
+
+## Step 2 — (Self-hosted only) package and host
+
+1. **Package the `.crx`** using the fixed signing key (from a machine with Chrome):
+   ```
+   google-chrome --pack-extension=/path/to/extension \
+                 --pack-extension-key=/path/to/maskroom-signing-key.pem
+   ```
+   This writes `extension.crx`. Rename it `maskroom-<version>.crx` (version =
+   `manifest.json`'s `version`, currently `0.1.0`).
+   *(Chrome UI equivalent: `chrome://extensions → Pack extension`, pointing at the folder and
+   the existing `.pem`. Do not let it generate a new key — that would change the ID.)*
+2. **Host two files** on an HTTPS URL the fleet can reach:
+   - `maskroom-<version>.crx`
+   - [`update.xml`](update.xml) (already references the ID; fix the `codebase` URL and host).
+3. Point `update_url` in the install policy at the **`update.xml`** URL (not the `.crx`).
+
+---
+
+## Step 3 — Push the policies
+
+Pick the platform. Replace the placeholder host/org first.
+
+**Chrome Browser Cloud Management (any OS):** follow
+[`policies/cbcm-console.md`](policies/cbcm-console.md). No files to host if using the Web Store.
+
+**Linux** — copy into `/etc/opt/chrome/policies/managed/` (root):
+```
+sudo cp policies/linux/maskroom-install.json /etc/opt/chrome/policies/managed/
+sudo cp policies/linux/maskroom-guard.json   /etc/opt/chrome/policies/managed/
+```
+`maskroom-install.json` force-installs + pins + disables Incognito; `maskroom-guard.json`
+locks the guard.
+
+**Windows** — import [`policies/windows/maskroom.reg`](policies/windows/maskroom.reg)
+(or set the same values via GPO). It covers force-install, Incognito off, and the guard lock.
+
+**macOS** — deliver the two plists in [`policies/macos/`](policies/macos) through your MDM:
+`com.google.Chrome.plist` (force-install + Incognito) and
+`com.google.Chrome.extensions.<ID>.plist` (guard lock).
+
+---
+
+## Step 4 — Verify
+
+On a managed machine, fully quit and reopen Chrome, then:
+
+1. `chrome://policy` → **Reload policies**. Confirm:
+   - `ExtensionSettings` lists the ID with `force_installed`.
+   - `IncognitoModeAvailability` = 1.
+   - Under the extension, `guardLocked` = true.
+2. `chrome://extensions`: Maskroom is present, has **no remove/disable control** (managed),
+   and is pinned.
+3. Open `https://claude.ai`: the bar shows **`guard: on 🔒`**, clicking it does nothing, and
+   the options page shows the Guard checkbox disabled and "locked by your administrator".
+4. Point the extension at your Maskroom server (options → server URL), or pre-set it via the
+   same 3rd-party config if you add a `serverUrl` managed key later.
+
+---
+
+## Step 5 — Updating later
+
+1. Bump `version` in `extension/manifest.json`.
+2. Web Store: re-upload. Self-hosted: repackage with the **same** `.pem`, upload the new
+   `.crx`, and edit `update.xml` to the new `version` + `codebase`. Version must increase.
+3. Chrome auto-updates on its schedule; no user action.
+
+---
+
+## What this does and does not guarantee
+
+Guaranteed on a **managed** browser: the extension cannot be removed or disabled, and the
+guard cannot be turned off. Not covered, and needing OS/device management to close: a
+different browser (Firefox/Safari), an unmanaged personal device, a non-enrolled profile, and
+Incognito (disabled here via policy). The guard also **fails closed** — if the Maskroom
+server is unreachable, sends are blocked, so plan server availability. Full detail and
+sources: [`../docs/ENTERPRISE_ENFORCEMENT.md`](../docs/ENTERPRISE_ENFORCEMENT.md) §C.
