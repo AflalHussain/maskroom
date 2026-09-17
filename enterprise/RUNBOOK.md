@@ -37,7 +37,7 @@ replace the `update_url` with Google's URL above and skip Step 2.
                  --pack-extension-key=/path/to/maskroom-signing-key.pem
    ```
    This writes `extension.crx` next to the folder. Rename it `maskroom-<version>.crx`
-   (version = `manifest.json`'s `version`, currently `0.1.0`).
+   (version = `manifest.json`'s `version`, currently `0.1.1`).
    **The key must be PKCS#8** (`-----BEGIN PRIVATE KEY-----`). Chrome rejects the older
    PKCS#1 form (`BEGIN RSA PRIVATE KEY`) with *"private key must be a valid format
    (PKCS#8-format PEM-encoded RSA key)"*. The shipped `local/maskroom-signing-key.pem` is
@@ -123,6 +123,25 @@ On a managed machine, fully quit and reopen Chrome, then:
    hosting: upload the new `.crx` and edit `update.xml`'s `version` + `codebase`.) Version
    must increase.
 3. Chrome auto-updates on its schedule; no user action.
+
+---
+
+## Troubleshooting
+
+**"Cannot reach Maskroom at &lt;url&gt;" on a user's browser (but fine at the admin's).**
+This is a network/permission failure reaching the *Maskroom server*, not an API-key
+rejection (a bad key returns an HTTP 401/403 with a different message). Check, in order:
+- **`chrome://policy` on the user's machine** shows the pushed `serverUrl`. If it shows the
+  default `http://127.0.0.1:5170`, the `serverUrl` guard-lock policy did not apply to that
+  profile — re-check Step 3 (and that the user is on the managed profile, not a personal one).
+- **The server origin is reachable from the user's network** (not just the admin LAN): open
+  the `serverUrl` directly in the user's browser. A rotated ngrok URL, VPN-only host, or
+  firewall is the usual cause.
+- The extension is **v0.1.1 or newer** (`chrome://extensions`). v0.1.0 only had
+  `host_permissions` for `claude.ai` and `localhost`, so the service worker's `fetch` to any
+  other server was blocked (looked like "Cannot reach"). v0.1.1 declares `https://*/*`, which
+  a force-installed extension is granted automatically. If users are on 0.1.0, push the update
+  (Step 5).
 
 ---
 
