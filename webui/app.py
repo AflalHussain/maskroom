@@ -14,6 +14,7 @@ header on every /api route.
 """
 import base64
 import hmac
+import io
 import json
 import os
 import sys
@@ -22,7 +23,7 @@ import time
 import uuid
 
 import openpyxl
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from maskroom import FinancialPrivacyEngine, SessionStore, build_nlp_engine
@@ -49,6 +50,10 @@ API_KEY = os.environ.get("MASKROOM_API_KEY")
 ADMIN_KEY = os.environ.get("MASKROOM_ADMIN_KEY")  # gates /admin dashboard + /api/audit
 TTL_HOURS = float(os.environ.get("SESSION_TTL_HOURS", "24"))
 AUDIT_TTL_DAYS = float(os.environ.get("AUDIT_TTL_DAYS", "90"))  # 0 = keep forever
+REPO_ROOT = os.path.dirname(BASE)
+EXT_DIR = os.path.join(REPO_ROOT, "extension")
+# Directory holding the packaged maskroom-<version>.crx for self-hosted install.
+EXT_DIST_DIR = os.environ.get("EXT_DIST_DIR", os.path.join(REPO_ROOT, "local"))
 
 app = Flask(__name__, static_folder="static")
 sessions = SessionStore(os.path.join(RUNS, "sessions"), ttl=TTL_HOURS * 3600 or None)
@@ -137,6 +142,62 @@ def _admin_ok():
     return bool(ADMIN_KEY) and hmac.compare_digest(given, ADMIN_KEY)
 
 
+# ------------------------------------------------ self-hosted extension
+import glob as _glob
+import re as _re
+import zipfile as _zipfile
+
+
+def _external_base():
+    """Absolute base URL as the client reached us, honouring a proxy/tunnel
+    (ngrok, load balancer) via X-Forwarded-* so the generated URLs are correct
+    wherever the server is exposed."""
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0].strip()
+    host = request.headers.get("X-Forwarded-Host", request.host).split(",")[0].strip()
+    return f"{scheme}://{host}"
+
+
+def _latest_crx():
+    """Path to the newest maskroom .crx in EXT_DIST_DIR, or None."""
+    crxs = sorted(_glob.glob(os.path.join(EXT_DIST_DIR, "*.crx")), key=os.path.getmtime)
+    # Absolute: send_file resolves relative paths against the Flask app root, not CWD.
+    return os.path.abspath(crxs[-1]) if crxs else None
+
+
+def _crx_version(path):
+    """Read the extension version from inside the .crx (CRX3 = 'Cr24' + u32
+    version + u32 header length + header + ZIP). Falls back to the filename."""
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+            if magic == b"Cr24":
+                import struct
+                f.read(4)  # format version
+                (hlen,) = struct.unpack("<I", f.read(4))
+                f.seek(12 + hlen)
+                zbytes = io.BytesIO(f.read())
+            else:
+                f.seek(0); zbytes = io.BytesIO(f.read())
+        with _zipfile.ZipFile(zbytes) as z:
+            return json.loads(z.read("manifest.json").decode("utf-8"))["version"]
+    except Exception:  # noqa: BLE001
+        m = _re.search(r"(\d+(?:\.\d+)+)", os.path.basename(path))
+        return m.group(1) if m else "0.0.0"
+
+
+def _extension_id():
+    """Compute the extension ID from the manifest 'key' (base64 DER public
+    key): sha256(DER)[:16] mapped 0-f -> a-p. Matches Chrome's algorithm."""
+    try:
+        key = json.load(open(os.path.join(EXT_DIR, "manifest.json")))["key"]
+        der = base64.b64decode(key)
+        import hashlib
+        h = hashlib.sha256(der).hexdigest()[:32]
+        return h.translate(str.maketrans("0123456789abcdef", "abcdefghijklmnop"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @app.before_request
 def check_api_key():
     p = request.path
@@ -183,6 +244,37 @@ def staging():
 @app.get("/admin")
 def admin_page():
     return send_from_directory(os.path.join(BASE, "static"), "admin.html")
+
+
+# ---- self-hosted extension install (open; Chrome sends no auth) ----
+@app.get("/ext/update.xml")
+def ext_update_xml():
+    """Update manifest for force-installed self-hosting. The codebase URL is
+    built from THIS request, so it is correct on ngrok/prod/localhost without
+    editing anything. Point the ExtensionSettings update_url at this route."""
+    crx = _latest_crx()
+    ext_id = _extension_id()
+    if not crx or not ext_id:
+        return Response("<!-- no .crx in EXT_DIST_DIR or no manifest key -->",
+                        status=503, mimetype="application/xml")
+    codebase = f"{_external_base()}/ext/maskroom.crx"
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">\n'
+           f'  <app appid="{ext_id}">\n'
+           f'    <updatecheck codebase="{codebase}" version="{_crx_version(crx)}"/>\n'
+           '  </app>\n</gupdate>\n')
+    return Response(xml, mimetype="application/xml",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/ext/maskroom.crx")
+def ext_crx():
+    crx = _latest_crx()
+    if not crx:
+        return jsonify({"error": "No packaged extension available."}), 404
+    return send_file(crx, mimetype="application/x-chrome-extension",
+                     as_attachment=True,
+                     download_name=f"maskroom-{_crx_version(crx)}.crx")
 
 
 @app.get("/api/config")

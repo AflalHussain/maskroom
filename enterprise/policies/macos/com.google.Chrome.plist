@@ -8,7 +8,7 @@
     <key>lcmdehcdpfddkjgajmlpgfholdekpgio</key>
     <dict>
       <key>installation_mode</key><string>force_installed</string>
-      <key>update_url</key><string>https://EXTENSIONS.YOURCO.EXAMPLE/maskroom/update.xml</string>
+      <key>update_url</key><string>https://MASKROOM.YOURCO.EXAMPLE/ext/update.xml</string>
       <key>toolbar_pin</key><string>force_pinned</string>
     </dict>
   </dict>

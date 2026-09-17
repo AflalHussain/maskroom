@@ -3,7 +3,7 @@ Windows Registry Editor Version 5.00
 ; Force-install Maskroom (non-removable) + pin, via ExtensionSettings.
 ; ExtensionSettings is a JSON string value; keep it on one line.
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome]
-"ExtensionSettings"="{\"lcmdehcdpfddkjgajmlpgfholdekpgio\":{\"installation_mode\":\"force_installed\",\"update_url\":\"https://EXTENSIONS.YOURCO.EXAMPLE/maskroom/update.xml\",\"toolbar_pin\":\"force_pinned\"}}"
+"ExtensionSettings"="{\"lcmdehcdpfddkjgajmlpgfholdekpgio\":{\"installation_mode\":\"force_installed\",\"update_url\":\"https://MASKROOM.YOURCO.EXAMPLE/ext/update.xml\",\"toolbar_pin\":\"force_pinned\"}}"
 
 ; Disable Incognito so the guard cannot be skipped (1 = Disabled).
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome]

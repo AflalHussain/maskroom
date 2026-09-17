@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Self-hosted update manifest. Host this and the .crx on your HTTPS server,
+<!-- PREFERRED: the Maskroom server serves this automatically at
+     /ext/update.xml with a self-filling codebase URL — point update_url there and
+     drop the .crx in EXT_DIST_DIR (default local/). This static file is only for
+     hosting the manifest by hand.
+
+     Self-hosted update manifest. Host this and the .crx on your HTTPS server,
      then point ExtensionSettings update_url at THIS file's URL.
      Bump 'version' and 'codebase' on every new .crx (version must increase). -->
 <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">

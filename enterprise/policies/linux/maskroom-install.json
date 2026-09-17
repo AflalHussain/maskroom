@@ -2,7 +2,7 @@
   "ExtensionSettings": {
     "lcmdehcdpfddkjgajmlpgfholdekpgio": {
       "installation_mode": "force_installed",
-      "update_url": "https://EXTENSIONS.YOURCO.EXAMPLE/maskroom/update.xml",
+      "update_url": "https://MASKROOM.YOURCO.EXAMPLE/ext/update.xml",
       "toolbar_pin": "force_pinned"
     }
   },

@@ -47,9 +47,27 @@ replace the `update_url` with Google's URL above and skip Step 2.
    ```
    *(Chrome UI equivalent: `chrome://extensions → Pack extension`, pointing at the folder and
    the existing `.pem`. Do not let it generate a new key — that would change the ID.)*
-2. **Host two files** on an HTTPS URL the fleet can reach:
-   - `maskroom-<version>.crx`
-   - [`update.xml`](update.xml) (already references the ID; fix the `codebase` URL and host).
+
+2. **Host the `.crx` and its update manifest.** The Maskroom server does this for you — no
+   manual `update.xml` editing per host:
+   - **Drop the packaged `.crx` where the server looks for it.** By default that is the
+     `local/` folder in the source tree; override with the `EXT_DIST_DIR` environment
+     variable. The server picks the highest-versioned `maskroom-*.crx` (or any `*.crx`) there.
+   - The server then serves, over whatever host/scheme the request arrives on:
+     - **`GET /ext/update.xml`** — generated on the fly; its `codebase` and the app id are
+       filled in from the request (honouring `X-Forwarded-Proto`/`X-Forwarded-Host` behind a
+       proxy or tunnel), so the same deployment works on `localhost`, an ngrok URL, or the
+       production hostname **without editing any file**.
+     - **`GET /ext/maskroom.crx`** — the packaged extension, served with
+       `Content-Type: application/x-chrome-extension` (required, or Chrome rejects the
+       download).
+   - Point `update_url` in the install policy at **`https://<your-maskroom-host>/ext/update.xml`**
+     (the policy files ship with `https://MASKROOM.YOURCO.EXAMPLE/ext/update.xml` — replace
+     the host only).
+
+   *Manual alternative:* host `maskroom-<version>.crx` and the static [`update.xml`](update.xml)
+   (fix its `codebase`) on any HTTPS URL yourself, and point `update_url` there instead.
+
 3. Point `update_url` in the install policy at the **`update.xml`** URL (not the `.crx`).
 
 ---
@@ -99,8 +117,11 @@ On a managed machine, fully quit and reopen Chrome, then:
 ## Step 5 — Updating later
 
 1. Bump `version` in `extension/manifest.json`.
-2. Web Store: re-upload. Self-hosted: repackage with the **same** `.pem`, upload the new
-   `.crx`, and edit `update.xml` to the new `version` + `codebase`. Version must increase.
+2. Web Store: re-upload. Self-hosted: repackage with the **same** `.pem` and drop the new
+   `maskroom-<version>.crx` in `EXT_DIST_DIR` (default `local/`) — the server picks the
+   highest version and regenerates `/ext/update.xml` automatically; no file edits. (Manual
+   hosting: upload the new `.crx` and edit `update.xml`'s `version` + `codebase`.) Version
+   must increase.
 3. Chrome auto-updates on its schedule; no user action.
 
 ---
