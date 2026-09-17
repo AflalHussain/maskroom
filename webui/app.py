@@ -781,12 +781,16 @@ def policy_test():
     except overlay_mod.PolicyError as e:
         return jsonify({"error": str(e)}), 400
     masked, changed = eng.pseudonymize_text(text)
-    findings = eng._last_findings
+    # Count the tokens actually applied (grouped by entity), not raw findings:
+    # overlapping detections that lost to a higher-priority rule never produce a
+    # token, so counting findings would show phantom entities.
     by_entity = {}
-    for f in findings:
-        by_entity[f["entity"]] = by_entity.get(f["entity"], 0) + 1
+    for tok in rules.TOKEN_RE.findall(masked):
+        m = _re.match(r"TOK_(.+)_[0-9A-F]{8,}$", tok)
+        if m:
+            by_entity[m.group(1)] = by_entity.get(m.group(1), 0) + 1
     return jsonify({"masked": masked, "changed": changed,
-                    "findings": findings, "by_entity": by_entity})
+                    "findings": eng._last_findings, "by_entity": by_entity})
 
 
 @app.get("/api/download/<run_id>/<path:fname>")

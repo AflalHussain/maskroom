@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskroom · Admin rules</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b567d'/%3E%3Cstop offset='1' stop-color='%231e2e44'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7.5' fill='url(%23g)'/%3E%3Crect x='8' y='9.4' width='16' height='2.6' rx='1.3' fill='%23fff' opacity='.55'/%3E%3Crect x='8' y='14.4' width='16' height='3.2' rx='1.6' fill='%23fff'/%3E%3Crect x='8' y='19.8' width='10' height='2.6' rx='1.3' fill='%23fff' opacity='.55'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+.top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
+.top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.top .right #who{font-family:var(--mono);font-size:12px;color:var(--text-3)}
+.wrap{padding:22px 24px;display:flex;flex-direction:column;gap:18px;max-width:1100px;margin:0 auto;width:100%}
+.card>h2{font-size:13px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--text-2);margin:0 0 3px}
+.card .desc{font-size:12.5px;color:var(--text-3);margin:0 0 12px}
+.rows{display:flex;flex-direction:column;gap:8px}
+.row{display:grid;gap:8px;align-items:center}
+.row.deny{grid-template-columns:1fr 190px 32px}
+.row.allow{grid-template-columns:1fr 32px}
+.row.regex{grid-template-columns:150px 170px 1fr 74px 1fr 32px}
+.row input{width:100%}
+.row .x{border:1px solid var(--border-strong);background:var(--surface);color:var(--text-3);border-radius:var(--radius-sm);height:34px;cursor:pointer;font-size:15px;line-height:1}
+.row .x:hover{background:var(--surface-2);color:var(--bad)}
+.colhead{display:grid;gap:8px;font:600 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);padding:0 2px}
+.colhead.deny{grid-template-columns:1fr 190px 32px}
+.colhead.regex{grid-template-columns:150px 170px 1fr 74px 1fr 32px}
+.addbar{margin-top:10px}
+.add{font:600 12.5px var(--sans);color:var(--brand);background:none;border:1px dashed var(--border-strong);border-radius:var(--radius-sm);padding:7px 12px;cursor:pointer}
+.add:hover{background:var(--brand-soft)}
+.savebar{position:sticky;bottom:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow-md);padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:4}
+.savebar .status{font-family:var(--mono);font-size:12px;color:var(--text-3);margin-left:auto}
+.savebar .status.ok{color:var(--ok)} .savebar .status.bad{color:var(--bad)}
+.testgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.testgrid{grid-template-columns:1fr}.row.regex{grid-template-columns:1fr 1fr}.colhead.regex{display:none}.row.deny{grid-template-columns:1fr 130px 32px}}
+.pane .cap{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:6px}
+.pane .cap.out{color:var(--brand)}
+.box{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;font-family:var(--mono);font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word;min-height:110px;max-height:320px;overflow:auto}
+mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 3px}
+textarea#testtext{min-height:110px}
+details.builtins summary{cursor:pointer;font:600 13px var(--sans);color:var(--text-2);list-style:none}
+details.builtins summary::-webkit-details-marker{display:none}
+details.builtins summary:before{content:"▸ ";color:var(--text-3)}
+details.builtins[open] summary:before{content:"▾ "}
+.bi{margin-top:12px;display:flex;flex-direction:column;gap:12px;font-size:12.5px}
+.bi .grp .lbl{font:600 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:5px}
+.bi .list{font-family:var(--mono);font-size:11.5px;color:var(--text-2);line-height:1.7}
+.bi .list b{color:var(--brand);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.gate{max-width:400px;margin:12vh auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-md)}
+.gate h2{font-size:18px;font-weight:700}
+.hide{display:none}
+.chipcount{font:600 11.5px var(--mono);color:var(--text-3);margin-left:8px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">Admin rules</span></div>
+  <div class="right">
+    <span id="who"></span>
+    <a class="ghost" href="/admin" style="padding:7px 12px;border-radius:8px">audit ↗</a>
+    <button class="ghost" id="reload">reload</button>
+    <button class="ghost" id="signout">sign out</button>
+    <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
+  </div>
+</header>
+
+<div id="gate" class="gate hide">
+  <h2>Admin sign-in</h2>
+  <p class="muted" style="font-size:13px">Enter the admin key (server <code>MASKROOM_ADMIN_KEY</code>) to edit detection rules.</p>
+  <input type="password" id="adminkey" placeholder="admin key" autocomplete="off">
+  <button class="primary" id="signin">Sign in</button>
+  <div class="err" id="gateerr"></div>
+</div>
+
+<main id="app" class="wrap hide">
+
+  <div class="card">
+    <details class="builtins">
+      <summary>Built-in coverage <span class="chipcount" id="bi-locale"></span></summary>
+      <div class="bi" id="bi"></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Deny terms</h2>
+    <p class="desc">Exact words or phrases to <b>always mask</b> (case-insensitive, whole match) — codenames, client names, product names. Minimum 3 characters.</p>
+    <div class="colhead deny"><span>term</span><span>entity label</span><span></span></div>
+    <div class="rows" id="deny"></div>
+    <div class="addbar"><button class="add" data-add="deny">+ add deny term</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Allow terms <span style="font-weight:500;text-transform:none;letter-spacing:0;color:var(--text-3);font-size:12px">— never mask</span></h2>
+    <p class="desc">Exact terms to <b>never mask</b> — kills false positives on your own brand or generic words the detectors over-catch.</p>
+    <div class="rows" id="allow"></div>
+    <div class="addbar"><button class="add" data-add="allow">+ add allow term</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Regex rules</h2>
+    <p class="desc">Custom patterns → an entity. <code>score</code> is 0–1 detection confidence; <code>context</code> words nearby raise an ambiguous match above threshold. Nested-quantifier patterns are rejected.</p>
+    <div class="colhead regex"><span>name</span><span>entity label</span><span>regex</span><span>score</span><span>context (comma-sep)</span><span></span></div>
+    <div class="rows" id="regex"></div>
+    <div class="addbar"><button class="add" data-add="regex">+ add regex rule</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Test</h2>
+    <p class="desc">Preview masking with the rules above (including unsaved edits), before you save.</p>
+    <div class="testgrid">
+      <div class="pane">
+        <div class="cap">sample text</div>
+        <textarea id="testtext" placeholder="Paste text with the terms/patterns you added…"></textarea>
+        <div style="margin-top:10px"><button class="primary" id="testbtn">Test masking</button></div>
+      </div>
+      <div class="pane">
+        <div class="cap out">masked preview</div>
+        <div class="box" id="testout"><span class="muted">Run a test to see what would mask.</span></div>
+        <div class="chips" id="testchips" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="err" id="testerr"></div>
+  </div>
+
+  <div class="savebar">
+    <button class="primary" id="save">Save rules</button>
+    <button class="ghost" id="discard">Discard changes</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div class="err" id="apperr"></div>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("maskroom-theme",t)}catch(e){}const b=$("#themebtn");if(b)b.textContent=t==="light"?"◑":"◐";}
+let __t=null;try{__t=localStorage.getItem("maskroom-theme")}catch(e){}
+applyTheme(__t||"light");
+document.addEventListener("click",e=>{if(e.target&&e.target.id==="themebtn")applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light");});
+
+const TOKEN_RE=/TOK_[A-Z0-9_]+_[0-9A-F]{8,}/g;
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hl=s=>esc(s).replace(TOKEN_RE,m=>`<mark>${m}</mark>`);
+let KEY=""; try{KEY=localStorage.getItem("maskroom-admin-key")||""}catch(e){}
+let DEFAULT_ENTITY="CUSTOM_TERM";
+
+async function api(path,method="GET",body){
+  const h={}; if(KEY)h["X-Admin-Key"]=KEY;
+  if(body!==undefined)h["Content-Type"]="application/json";
+  const r=await fetch(path,{method,headers:h,body:body!==undefined?JSON.stringify(body):undefined});
+  if(r.status===401)throw{code:401,message:"Admin key required or invalid."};
+  let d=null;try{d=await r.json()}catch(e){}
+  if(!r.ok)throw{code:r.status,message:(d&&d.error)||r.statusText};
+  return d;
+}
+function showGate(msg){$("#gate").classList.remove("hide");$("#app").classList.add("hide");if(msg)$("#gateerr").textContent=msg;}
+function showApp(){$("#gate").classList.add("hide");$("#app").classList.remove("hide");}
+function showDisabled(){
+  $("#gate").classList.remove("hide");$("#app").classList.add("hide");
+  $("#gate").innerHTML='<h2>Rules console disabled</h2><p class="muted" style="font-size:13px">This console edits detection policy and is off until an admin key is configured. Set <code>MASKROOM_ADMIN_KEY</code> on the server and reload.</p>';
+}
+
+// ---- editable rows ----
+function mkDeny(d={}){const el=document.createElement("div");el.className="row deny";
+  el.innerHTML=`<input class="term" placeholder="Project Halo" value="${esc(d.term||"")}">
+    <input class="entity" placeholder="${DEFAULT_ENTITY}" value="${esc(d.entity||"")}">
+    <button class="x" title="remove">×</button>`;return el;}
+function mkAllow(t=""){const el=document.createElement("div");el.className="row allow";
+  el.innerHTML=`<input class="term" placeholder="hSenid Mobile" value="${esc(t)}"><button class="x" title="remove">×</button>`;return el;}
+function mkRegex(r={}){const el=document.createElement("div");el.className="row regex";
+  el.innerHTML=`<input class="name" placeholder="employee_id" value="${esc(r.name||"")}">
+    <input class="entity" placeholder="${DEFAULT_ENTITY}" value="${esc(r.entity||"")}">
+    <input class="re" placeholder="EMP-\\d{6}" value="${esc(r.regex||"")}">
+    <input class="score" type="number" step="0.05" min="0.05" max="1" placeholder="0.85" value="${r.score!=null?esc(r.score):""}">
+    <input class="ctx" placeholder="employee, staff" value="${esc((r.context||[]).join(", "))}">
+    <button class="x" title="remove">×</button>`;return el;}
+
+function add(kind,data){const map={deny:[mkDeny,"#deny"],allow:[mkAllow,"#allow"],regex:[mkRegex,"#regex"]};
+  const [mk,sel]=map[kind];const el=mk(data);$(sel).appendChild(el);
+  el.querySelector(".x").addEventListener("click",()=>el.remove());return el;}
+
+function populate(ov){
+  $("#deny").innerHTML="";$("#allow").innerHTML="";$("#regex").innerHTML="";
+  (ov.deny_terms||[]).forEach(d=>add("deny",d));
+  (ov.allow_terms||[]).forEach(t=>add("allow",t));
+  (ov.regex_rules||[]).forEach(r=>add("regex",r));
+  if(!(ov.deny_terms||[]).length)add("deny");
+  if(!(ov.allow_terms||[]).length)add("allow");
+  if(!(ov.regex_rules||[]).length)add("regex");
+}
+function gather(){
+  const deny=[...document.querySelectorAll("#deny .row")].map(r=>({
+    term:r.querySelector(".term").value.trim(),
+    entity:r.querySelector(".entity").value.trim()||DEFAULT_ENTITY})).filter(x=>x.term);
+  const allow=[...document.querySelectorAll("#allow .row")].map(r=>r.querySelector(".term").value.trim()).filter(Boolean);
+  const regex=[...document.querySelectorAll("#regex .row")].map(r=>({
+    name:r.querySelector(".name").value.trim(),
+    entity:r.querySelector(".entity").value.trim()||DEFAULT_ENTITY,
+    regex:r.querySelector(".re").value,
+    score:parseFloat(r.querySelector(".score").value||"0.85"),
+    context:r.querySelector(".ctx").value.split(",").map(s=>s.trim()).filter(Boolean),
+  })).filter(x=>x.name||x.regex.trim());
+  return {deny_terms:deny,allow_terms:allow,regex_rules:regex};
+}
+
+function renderBuiltins(b){
+  $("#bi-locale").textContent=b.locale?`${b.locale.name} (${b.locale.code})`:"";
+  const chips=a=>`<div class="chips">${(a||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join("")||'<span class="muted">—</span>'}</div>`;
+  const lines=a=>`<div class="list">${(a||[]).map(x=>`<b>${esc(x.entity)}</b> ← /${esc(x.header||x.regex)}/`).join("<br>")||'<span class="muted">—</span>'}</div>`;
+  $("#bi").innerHTML=`
+    <div class="grp"><div class="lbl">Locale identifier entities</div>${chips(b.locale_identifiers)}</div>
+    <div class="grp"><div class="lbl">Column-header rules</div>${lines(b.column_rules)}</div>
+    <div class="grp"><div class="lbl">Value-profile patterns</div>${lines(b.profile_patterns)}</div>
+    <div class="grp"><div class="lbl">Disabled recognizers</div>${chips(b.disabled_entities)}</div>`;
+}
+
+function status(msg,cls){const s=$("#status");s.textContent=msg;s.className="status"+(cls?" "+cls:"");}
+
+async function boot(){
+  let cfg={admin_auth_required:true};
+  try{cfg=await(await fetch("/api/config")).json();}catch(e){}
+  if(!cfg.admin_auth_required){showDisabled();return;}
+  if(!KEY){showGate("");return;}
+  try{await load();showApp();}
+  catch(e){if(e.code===401){KEY="";showGate("Invalid admin key.");}
+           else if(e.code===403){showDisabled();}else showGate(e.message||"Error");}
+}
+async function load(){
+  const d=await api("/api/policy");
+  DEFAULT_ENTITY=d.default_entity||"CUSTOM_TERM";
+  renderBuiltins(d.builtins||{});
+  populate(d.overlay||{});
+  const n=(d.overlay.deny_terms||[]).length+(d.overlay.allow_terms||[]).length+(d.overlay.regex_rules||[]).length;
+  $("#who").textContent=`${n} custom rule${n===1?"":"s"}`;
+  status("");
+}
+
+async function save(){
+  status("saving…");
+  try{
+    const d=await api("/api/policy","PUT",gather());
+    populate(d.overlay);
+    const n=d.overlay.deny_terms.length+d.overlay.allow_terms.length+d.overlay.regex_rules.length;
+    $("#who").textContent=`${n} custom rule${n===1?"":"s"}`;
+    status("saved · engines reloaded","ok");
+  }catch(e){status(e.message||"save failed","bad");}
+}
+async function test(){
+  $("#testerr").textContent="";
+  const text=$("#testtext").value;
+  if(!text.trim()){$("#testerr").textContent="Enter some text to test.";return;}
+  $("#testout").innerHTML='<span class="muted">testing…</span>';$("#testchips").innerHTML="";
+  try{
+    const d=await api("/api/policy/test","POST",{text,overlay:gather()});
+    $("#testout").innerHTML=d.changed?hl(d.masked):esc(d.masked)+'\n\n— nothing matched —';
+    $("#testchips").innerHTML=Object.entries(d.by_entity||{}).sort((a,b)=>b[1]-a[1])
+      .map(([k,v])=>`<span class="chip">${esc(k)} ${v}</span>`).join("");
+  }catch(e){$("#testerr").textContent=e.message||"test failed";$("#testout").innerHTML='<span class="muted">—</span>';}
+}
+
+// events
+document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("[data-add]");if(a)add(a.dataset.add);});
+$("#signin").addEventListener("click",()=>{KEY=$("#adminkey").value.trim();try{localStorage.setItem("maskroom-admin-key",KEY)}catch(e){}boot();});
+$("#adminkey").addEventListener("keydown",e=>{if(e.key==="Enter")$("#signin").click();});
+$("#signout").addEventListener("click",()=>{KEY="";try{localStorage.removeItem("maskroom-admin-key")}catch(e){}showGate("");});
+$("#reload").addEventListener("click",()=>load().catch(e=>$("#apperr").textContent=e.message));
+$("#discard").addEventListener("click",()=>load().catch(e=>$("#apperr").textContent=e.message));
+$("#save").addEventListener("click",save);
+$("#testbtn").addEventListener("click",test);
+
+boot();
+</script>
+</body>
+</html>
