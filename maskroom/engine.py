@@ -9,6 +9,7 @@ from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
+from . import overlay as overlay_mod
 from . import recognizers, rules
 from .locale import DEFAULT_LOCALE, build_policy
 from .excel import ExcelMixin
@@ -42,7 +43,7 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
 
     def __init__(self, salt=None, min_score=0.6, entities=None, language="en",
                  nlp_model=None, dates="birth", locations="address", column_rules=True,
-                 locale=DEFAULT_LOCALE, nlp_engine=None):
+                 locale=DEFAULT_LOCALE, nlp_engine=None, overlay=None):
         """
         salt:      secret used for deterministic tokens. Prefer the
                    PII_TOKEN_SALT environment variable over hardcoding.
@@ -71,6 +72,9 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
                    nlp_model. Loading spaCy is the expensive part of
                    construction, so long-running services build one per
                    model and pass it here.
+        overlay:   admin policy overlay (see maskroom.overlay) — exact-term
+                   deny lists, never-mask allow lists and custom regex rules
+                   layered on top of the locale. None loads it from disk.
         """
         if dates not in ("birth", "all", "none"):
             raise ValueError('dates must be "birth", "all", or "none"')
@@ -97,6 +101,13 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
         self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine) if nlp_engine else AnalyzerEngine()
         self.anonymizer = AnonymizerEngine()
         recognizers.install(self.analyzer.registry, self.policy)
+
+        # Admin policy overlay: custom deny terms / regex rules become extra
+        # recognizers; allow terms are filtered out after analysis.
+        self.overlay = overlay_mod.validate(overlay) if overlay is not None else overlay_mod.load()
+        self.allow_terms = overlay_mod.allow_set(self.overlay)
+        for rec in overlay_mod.recognizers(self.overlay):
+            self.analyzer.registry.add_recognizer(rec)
 
     # ------------------------------------------------------------ tokens
     def generate_token(self, original_text, entity_type):
@@ -222,8 +233,15 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
             return bool(self.policy.address_hint_re.search(span)
                         or self.policy.address_before_re.search(before))
 
-        return [r for r in results
-                if r.entity_type != "LOCATION" or keep_location(r)]
+        results = [r for r in results
+                   if r.entity_type != "LOCATION" or keep_location(r)]
+
+        # Admin allow-list: never mask a span whose text is a never-mask term
+        # (kills false positives on the org's own brand or generic words).
+        if self.allow_terms:
+            results = [r for r in results
+                       if text[r.start:r.end].strip().casefold() not in self.allow_terms]
+        return results
 
     def pseudonymize_text(self, text, entities=None, context=None):
         """

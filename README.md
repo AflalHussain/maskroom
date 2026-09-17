@@ -461,6 +461,23 @@ The dashboard shows stat tiles, a filterable table (user, action, date range, se
 per-record view with the original beside the masked version and file downloads. Set
 `MASKROOM_ADMIN_KEY` to require sign-in; without it the audit API is open (local demo only).
 
+### Admin rules console
+
+At [`/admin/rules`](http://127.0.0.1:5170/admin/rules) (same admin key) an administrator can
+layer custom detection rules on top of the locale policy without touching code:
+
+- **Deny terms** — exact words/phrases to always mask (project codenames, client names).
+- **Allow terms** — never-mask exceptions that kill false positives (your own brand, generic words).
+- **Regex rules** — custom patterns (e.g. `EMP-\d{6}`) with a score and optional context words.
+
+A **Test** box previews what would mask before you save. Saving validates every rule (bad or
+ReDoS-prone regex, too-short deny terms, and bad entity names are rejected), hot-swaps the
+running engines, and records the change to the audit trail. Rules live in one YAML file
+(`MASKROOM_POLICY_FILE`, default `config/custom_policy.yaml` — git-ignored as it can hold
+sensitive terms; see [`config/custom_policy.example.yaml`](config/custom_policy.example.yaml)).
+They apply to free-text and per-cell detection; whole-column header shortcuts are a separate
+layer.
+
 ### JSON API
 
 Every route is also usable from scripts, gateways, hooks or an MCP server. Set
@@ -483,6 +500,9 @@ Every route is also usable from scripts, gateways, hooks or an MCP server. Set
 | `GET /api/audit/<id>` | – | one record with original input + masked output — admin key only |
 | `GET /api/audit/<id>/file/<input\|output>` | – | the stored original or masked file — admin key only |
 | `GET /api/audit/stats` | – | totals by action/user + retention — admin key only |
+| `GET /api/policy` | – | `{overlay, builtins, default_entity, limits}` — the custom overlay + a read-only view of built-in rules — **admin key only** |
+| `PUT /api/policy` | JSON `{deny_terms[], allow_terms[], regex_rules[]}` | validates + saves, hot-reloads engines, audit-logged → `{ok, overlay}` — admin key only |
+| `POST /api/policy/test` | JSON `{text, overlay?}` | preview masking for a candidate overlay → `{masked, changed, findings, by_entity}` — admin key only |
 
 ```bash
 SID=$(curl -s -X POST localhost:5170/api/session | jq -r .session_id)

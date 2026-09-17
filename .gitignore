@@ -15,6 +15,9 @@ salary_masked_*.xlsx
 local/
 *.egg-info/
 
+# admin policy overlay — may hold sensitive terms (client/person names)
+config/custom_policy.yaml
+
 # office lock files
 .~lock.*#
 

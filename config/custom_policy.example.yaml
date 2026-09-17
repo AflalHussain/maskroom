@@ -1,0 +1,29 @@
+# Maskroom admin policy overlay — custom detection rules layered on top of the
+# locale policy. Edit through the admin console (/admin/rules); this example
+# documents the format. Copy to config/custom_policy.yaml to seed a deployment
+# (that file is git-ignored because it can hold sensitive terms).
+#
+# Scope: applies to free-text and per-cell detection (anything analyzed as
+# text). Whole-column header shortcuts in spreadsheets are a separate layer.
+
+version: 1
+
+# Exact words/phrases to ALWAYS mask (case-insensitive, whole match). Use for
+# project codenames, client names, internal product names. Min 3 characters —
+# use a regex rule for short structured ids. `entity` is the label the token
+# carries (default CUSTOM_TERM).
+deny_terms:
+  - {term: "Project Halo", entity: CUSTOM_TERM}
+  - {term: "Northwind Industries", entity: CLIENT_NAME}
+
+# Terms to NEVER mask — kills false positives on your own public brand or on
+# generic words the detectors over-catch.
+allow_terms:
+  - "hSenid Mobile"
+
+# Custom regex rules. `score` (0-1) is the detection confidence; `context`
+# words nearby raise an ambiguous match above the threshold. Patterns with
+# nested quantifiers (ReDoS) are rejected on save.
+regex_rules:
+  - {name: employee_id, entity: EMPLOYEE_ID, regex: 'EMP-\d{6}', score: 0.85, context: [employee, staff, badge]}
+  - {name: cost_center, entity: COST_CENTER, regex: 'CC\d{4}', score: 0.6, context: [cost, center, centre, budget]}

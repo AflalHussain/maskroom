@@ -27,6 +27,7 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from maskroom import FinancialPrivacyEngine, SessionStore, build_nlp_engine
+from maskroom import overlay as overlay_mod
 from maskroom import rules
 from maskroom.locale import DEFAULT_LOCALE, available_locales
 from maskroom.restore import SUPPORTED_EXTS as RESTORE_EXTS, unmask_file
@@ -58,6 +59,10 @@ EXT_DIST_DIR = os.environ.get("EXT_DIST_DIR", os.path.join(REPO_ROOT, "local"))
 app = Flask(__name__, static_folder="static")
 sessions = SessionStore(os.path.join(RUNS, "sessions"), ttl=TTL_HOURS * 3600 or None)
 audit = AuditLog(os.path.join(RUNS, "audit"), ttl_days=AUDIT_TTL_DAYS)
+
+# Admin pages served without a key (they prompt for it client-side); their APIs
+# demand the key. Kept together so check_api_key() gates them uniformly.
+ADMIN_PAGES = {"/admin": "admin.html", "/admin/rules": "rules.html"}
 
 
 def _user():
@@ -93,6 +98,12 @@ _nlp_engines = {}
 _engines = {}
 _build_lock = threading.Lock()
 
+# Admin policy overlay (custom deny/allow/regex). Loaded once; the fingerprint
+# is folded into the engine cache key so a save via /api/policy hot-swaps every
+# warm engine. Guarded by _build_lock on write.
+_overlay = overlay_mod.load()
+_overlay_fp = overlay_mod.fingerprint(_overlay)
+
 
 def _bool(v, default=True):
     if v is None or v == "":
@@ -120,7 +131,7 @@ def get_engine(options):
     """A warm engine for this option set. Engines share the spaCy model
     for their nlp_model, so a new option combination costs only recognizer
     setup, not a model load."""
-    key = tuple(sorted(options.items()))
+    key = tuple(sorted(options.items())) + (("overlay", _overlay_fp),)
     eng = _engines.get(key)
     if eng is not None:
         return eng
@@ -132,7 +143,7 @@ def get_engine(options):
             if nlp is None:
                 nlp = _nlp_engines[model] = build_nlp_engine(model)
             kw = dict(options, entities=list(options["entities"]) if options["entities"] else None)
-            eng = _engines[key] = FinancialPrivacyEngine(nlp_engine=nlp, **kw)
+            eng = _engines[key] = FinancialPrivacyEngine(nlp_engine=nlp, overlay=_overlay, **kw)
     return eng
 
 
@@ -201,18 +212,22 @@ def _extension_id():
 @app.before_request
 def check_api_key():
     p = request.path
-    # Audit dashboard + API: gated by the separate admin key (never the user
-    # key). The store holds real PII, so it is DISABLED unless an admin key is
-    # configured — it is never silently open.
-    if p == "/admin" or p.startswith("/api/audit"):
+    # Admin surfaces (audit dashboard + rules console) and their APIs: gated by
+    # the separate admin key (never the user key). They expose real PII and edit
+    # detection policy, so they are DISABLED unless an admin key is configured —
+    # never silently open. The pages load without a key and prompt for it
+    # client-side; the APIs demand it.
+    admin_page = ADMIN_PAGES.get(p)
+    admin_api = p.startswith("/api/audit") or p.startswith("/api/policy")
+    if admin_page or admin_api:
         if not ADMIN_KEY:
-            if p == "/admin":
-                return send_from_directory(os.path.join(BASE, "static"), "admin.html")
-            return jsonify({"error": "Audit dashboard is disabled. Set MASKROOM_ADMIN_KEY "
-                                     "on the server to enable it."}), 403
+            if admin_page:
+                return send_from_directory(os.path.join(BASE, "static"), admin_page)
+            return jsonify({"error": "Admin surfaces are disabled. Set MASKROOM_ADMIN_KEY "
+                                     "on the server to enable them."}), 403
         if not _admin_ok():
-            if p == "/admin":
-                return send_from_directory(os.path.join(BASE, "static"), "admin.html")
+            if admin_page:
+                return send_from_directory(os.path.join(BASE, "static"), admin_page)
             return jsonify({"error": "Admin key required (X-Admin-Key header)."}), 401
         return None
     if not API_KEY or not p.startswith("/api/") or p == "/api/config":
@@ -244,6 +259,11 @@ def staging():
 @app.get("/admin")
 def admin_page():
     return send_from_directory(os.path.join(BASE, "static"), "admin.html")
+
+
+@app.get("/admin/rules")
+def rules_page():
+    return send_from_directory(os.path.join(BASE, "static"), "rules.html")
 
 
 # ---- self-hosted extension install (open; Chrome sends no auth) ----
@@ -688,6 +708,85 @@ def audit_file(rid, role):
     else:
         label = "unmasked" if restore else "masked"
     return send_file(path, as_attachment=True, download_name=f"{stem}_{label}{ext}")
+
+
+# ---- admin policy console (custom deny/allow/regex); admin-key gated ----
+def _build_engine(options, overlay_data):
+    """A one-off engine with a candidate overlay (not cached), sharing the
+    already-loaded spaCy model. Used to preview unsaved rules."""
+    model = options["nlp_model"]
+    with _build_lock:
+        nlp = _nlp_engines.get(model)
+        if nlp is None:
+            nlp = _nlp_engines[model] = build_nlp_engine(model)
+    kw = dict(options, entities=list(options["entities"]) if options["entities"] else None)
+    return FinancialPrivacyEngine(nlp_engine=nlp, overlay=overlay_data, **kw)
+
+
+def _builtin_view():
+    """Read-only summary of the built-in policy so an admin can see what is
+    already covered before adding a custom rule."""
+    pol = get_engine(engine_options({})).policy
+    return {
+        "locale": {"code": pol.code, "name": pol.name},
+        "column_rules": [{"entity": e, "header": c.pattern} for (e, c, _d) in pol.column_rules],
+        "profile_patterns": [{"entity": e, "regex": rx.pattern} for (e, rx, _v) in pol.profile_patterns],
+        "disabled_entities": sorted(pol.disabled_entities),
+        "locale_identifiers": sorted({i["entity"] for i in pol.identifiers}),
+    }
+
+
+@app.get("/api/policy")
+def policy_get():
+    return jsonify({
+        "overlay": _overlay,
+        "builtins": _builtin_view(),
+        "default_entity": overlay_mod.DEFAULT_ENTITY,
+        "limits": {"min_deny_len": overlay_mod.MIN_DENY_LEN,
+                   "max_regex_len": overlay_mod.MAX_REGEX_LEN},
+    })
+
+
+@app.put("/api/policy")
+def policy_put():
+    global _overlay, _overlay_fp
+    data = request.get_json(silent=True) or {}
+    try:
+        norm = overlay_mod.save(data)
+    except overlay_mod.PolicyError as e:
+        return jsonify({"error": str(e)}), 400
+    with _build_lock:
+        _overlay = norm
+        _overlay_fp = overlay_mod.fingerprint(norm)
+        _engines.clear()  # global change: drop every warm engine so it rebuilds
+    counts = {"deny_terms": len(norm["deny_terms"]), "allow_terms": len(norm["allow_terms"]),
+              "regex_rules": len(norm["regex_rules"])}
+    _audit(action="policy-update", user=_user(), ip=_ip(), kind="policy",
+           by_entity=counts, entity_total=sum(counts.values()),
+           output_text=f"deny={counts['deny_terms']} allow={counts['allow_terms']} "
+                       f"regex={counts['regex_rules']}")
+    return jsonify({"ok": True, "overlay": norm})
+
+
+@app.post("/api/policy/test")
+def policy_test():
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "")[:MAX_TEXT_CHARS]
+    if not text.strip():
+        return jsonify({"error": "Provide some text to test."}), 400
+    # Preview against the candidate overlay if supplied, else the live one.
+    candidate = data.get("overlay", _overlay)
+    try:
+        eng = _build_engine(engine_options({}), candidate)
+    except overlay_mod.PolicyError as e:
+        return jsonify({"error": str(e)}), 400
+    masked, changed = eng.pseudonymize_text(text)
+    findings = eng._last_findings
+    by_entity = {}
+    for f in findings:
+        by_entity[f["entity"]] = by_entity.get(f["entity"], 0) + 1
+    return jsonify({"masked": masked, "changed": changed,
+                    "findings": findings, "by_entity": by_entity})
 
 
 @app.get("/api/download/<run_id>/<path:fname>")
