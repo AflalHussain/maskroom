@@ -12,6 +12,7 @@ from presidio_anonymizer.entities import OperatorConfig
 from . import overlay as overlay_mod
 from . import recognizers, rules
 from .locale import DEFAULT_LOCALE, build_policy
+from .vault import Vault
 from .excel import ExcelMixin
 from .pdf import PdfMixin
 from .office import OfficeMixin
@@ -89,9 +90,7 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
         self.min_score = min_score
         self.entities = entities
         self.language = language
-        self.vault = {}  # {token: original_value} — treat as sensitive material
-        self.numeric_tokens = set()  # tokens whose source cell was numeric (fallback)
-        self.numeric_cells = set()   # "Sheet!A1" cells that were numeric (authoritative)
+        self.vault = Vault()  # token store — treat as sensitive material
         self.report = []  # per-run detection details: where/entity/score/text
         self._last_findings = []  # findings of the most recent analyze call
         self.analyzer_calls = 0
@@ -118,11 +117,11 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
         # Extend the hash prefix on the (rare) collision with a different value.
         length = 8
         token = f"TOK_{entity_type}_{digest[:length]}"
-        while token in self.vault and self.vault[token] != clean_text:
+        while token in self.vault and self.vault.get(token) != clean_text:
             length += 4
             token = f"TOK_{entity_type}_{digest[:length]}"
 
-        self.vault[token] = clean_text
+        self.vault.add(token, clean_text)
         return token
 
     # --------------------------------------------------------- detection
@@ -343,8 +342,8 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
             if seen != token:
                 report["fuzzy"].append({"seen": seen, "token": token})
             report["restored"] += 1
-            values.add(self.vault[token])
-            return self.vault[token]
+            values.add(self.vault.get(token))
+            return self.vault.get(token)
 
         restored = rules.TOKEN_RE.sub(exact, text)
         restored = rules.LOOSE_TOKEN_RE.sub(loose, restored)
@@ -355,18 +354,11 @@ class FinancialPrivacyEngine(ExcelMixin, PdfMixin, OfficeMixin, TabularMixin):
     # ------------------------------------------------------------- vault
     # Plaintext JSON: store securely (see docs/TECHNICAL_DESIGN.md §5).
     def save_vault(self, path):
-        payload = {"mappings": self.vault, "numeric_tokens": sorted(self.numeric_tokens),
-                   "numeric_cells": sorted(self.numeric_cells)}
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+            json.dump(self.vault.to_dict(), f, ensure_ascii=False, indent=2)
         print(f"[Vault] {len(self.vault)} mappings written to: {path} (protect this file)")
 
     def load_vault(self, path):
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        if "mappings" in data:
-            self.vault.update(data["mappings"])
-            self.numeric_tokens.update(data.get("numeric_tokens", []))
-            self.numeric_cells.update(data.get("numeric_cells", []))
-        else:  # legacy flat {token: value} format
-            self.vault.update(data)
+        self.vault.update_from_dict(data)

@@ -11,8 +11,8 @@ from maskroom.restore import NOTES_SHEET, unmask_file
 @pytest.fixture
 def vault_engine(make_engine):
     e = make_engine()
-    e.vault.update({"TOK_PERSON_8B584CCF": "Nimal Perera", "TOK_LK_NIC_0F0F0F0F": "853421234V",
-                    "TOK_EMAIL_ADDRESS_ABCDEF12": "a&b@x.lk"})
+    e.vault.update_from_dict({"TOK_PERSON_8B584CCF": "Nimal Perera", "TOK_LK_NIC_0F0F0F0F": "853421234V",
+                              "TOK_EMAIL_ADDRESS_ABCDEF12": "a&b@x.lk"})
     return e
 
 

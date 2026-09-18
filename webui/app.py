@@ -388,9 +388,8 @@ def mask_text():
     with sessions.bind(engine, sess):
         masked, changed = engine.pseudonymize_text(data["text"])
         findings = list(engine._last_findings)
-        reverse = {v: k for k, v in engine.vault.items()}
         for f in findings:
-            f["token"] = reverse.get(f["text"].strip())
+            f["token"] = engine.vault.token_for(f["text"].strip())
         entries = len(engine.vault)
     _audit(action="mask", user=_user(), session_id=sess.id, ip=_ip(), kind="text",
            input_text=data["text"], output_text=masked, by_entity=_entity_counts(findings),

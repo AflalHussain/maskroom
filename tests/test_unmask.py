@@ -5,7 +5,7 @@ import pytest
 @pytest.fixture
 def vault_engine(make_engine):
     e = make_engine()
-    e.vault.update({
+    e.vault.update_from_dict({
         "TOK_PERSON_8B584CCF": "Nimal Perera",
         "TOK_PERSON_1A2B3C4D": "Kumari Bandara",
         "TOK_LK_NIC_0F0F0F0F": "853421234V",
@@ -54,7 +54,7 @@ def test_ambiguous_or_unknown_tokens_are_reported_not_guessed(vault_engine):
 
 def test_prefix_ambiguity_is_unresolved(make_engine):
     e = make_engine()
-    e.vault.update({"TOK_PERSON_ABCDEF12": "A", "TOK_PERSON_ABCDEF34": "B"})
+    e.vault.update_from_dict({"TOK_PERSON_ABCDEF12": "A", "TOK_PERSON_ABCDEF34": "B"})
     text, rep = e.unmask_text("TOK_PERSON_ABCDEF")
     assert text == "TOK_PERSON_ABCDEF" and rep["restored"] == 0 and rep["unresolved"]
 

@@ -11,7 +11,6 @@ import io
 import os
 import re
 import zipfile
-from xml.sax.saxutils import escape
 
 import openpyxl
 
@@ -83,10 +82,10 @@ def _unmask_office(engine, in_path, out_path, report):
             data = zin.read(item.filename)
             if _OFFICE_TEXT_PARTS.match(item.filename):
                 xml = data.decode("utf-8", errors="replace")
-                # Vault values are plain text; escape them so they stay valid XML.
+                # Vault values are plain text; use an escaped view so restored
+                # values stay valid XML.
                 vault = engine.vault
-                safe_engine_vault = {k: escape(v) for k, v in vault.items()}
-                engine.vault = safe_engine_vault
+                engine.vault = vault.escaped()
                 try:
                     restored, rep = engine.unmask_text(xml)
                 finally:

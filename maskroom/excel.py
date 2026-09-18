@@ -207,8 +207,7 @@ class ExcelMixin:
                             continue
                         token = self.generate_token(rule_text, rule[0])
                         if numeric:
-                            self.numeric_tokens.add(token)
-                            self.numeric_cells.add(f"{ws.title}!{cell.coordinate}")
+                            self.vault.mark_numeric(token, f"{ws.title}!{cell.coordinate}")
                         cell.value = token
                         cells_changed += 1
                         self.report.append(
@@ -256,8 +255,7 @@ class ExcelMixin:
                         new_text, changed, self._last_findings = hit
                     if changed:
                         if entities is not None and rules.TOKEN_RE.fullmatch(new_text):
-                            self.numeric_tokens.add(new_text)
-                            self.numeric_cells.add(f"{ws.title}!{cell.coordinate}")
+                            self.vault.mark_numeric(new_text, f"{ws.title}!{cell.coordinate}")
                         cell.value = new_text
                         cells_changed += 1
                         for f in self._last_findings:
@@ -287,10 +285,8 @@ class ExcelMixin:
                     # Per-cell record wins (the same value can be a number in
                     # one sheet and text in another); per-token is the
                     # fallback when the vault came from a different workbook.
-                    if self.numeric_cells:
-                        was_numeric = f"{ws.title}!{cell.coordinate}" in self.numeric_cells
-                    else:
-                        was_numeric = cell.value.strip() in self.numeric_tokens
+                    was_numeric = self.vault.was_numeric(
+                        cell=f"{ws.title}!{cell.coordinate}", token=cell.value.strip())
                     restored = self.depseudonymize_text(cell.value)
                     if rules.TOKEN_RE.search(restored):
                         unresolved += 1  # token missing from the vault

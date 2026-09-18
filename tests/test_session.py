@@ -8,12 +8,12 @@ from maskroom.session import SessionStore
 def test_create_persist_reload(tmp_path):
     store = SessionStore(str(tmp_path), base_salt="s")
     s = store.create()
-    s.vault["TOK_PERSON_AAAAAAAA"] = "Nimal"
+    s.vault.add("TOK_PERSON_AAAAAAAA", "Nimal")
     s.save()
     assert os.path.isfile(s.vault_path)
     fresh = SessionStore(str(tmp_path), base_salt="s")
     again = fresh.get(s.id)
-    assert again is not None and again.vault == {"TOK_PERSON_AAAAAAAA": "Nimal"}
+    assert again is not None and dict(again.vault.items()) == {"TOK_PERSON_AAAAAAAA": "Nimal"}
     assert again.salt == s.salt
 
 
@@ -35,7 +35,7 @@ def test_delete_and_sweep(tmp_path):
 
 def test_bind_swaps_vault_and_salt(tmp_path, make_engine):
     engine = make_engine()
-    engine.vault["TOK_PERSON_11111111"] = "engine-own"
+    engine.vault.add("TOK_PERSON_11111111", "engine-own")
     own_salt = engine.salt
     store = SessionStore(str(tmp_path), base_salt="s")
     s1, s2 = store.create(), store.create()
@@ -48,9 +48,10 @@ def test_bind_swaps_vault_and_salt(tmp_path, make_engine):
     with store.bind(engine, s1):
         assert engine.generate_token("Nimal Perera", "PERSON") == t1
     assert t1 != t2
-    assert s1.vault == {t1: "Nimal Perera"} and s2.vault == {t2: "Nimal Perera"}
+    assert dict(s1.vault.items()) == {t1: "Nimal Perera"} and dict(s2.vault.items()) == {t2: "Nimal Perera"}
     # engine state restored afterwards
-    assert engine.vault == {"TOK_PERSON_11111111": "engine-own"} and engine.salt == own_salt
+    assert dict(engine.vault.items()) == {"TOK_PERSON_11111111": "engine-own"} and engine.salt == own_salt
     # persisted
-    assert SessionStore(str(tmp_path), base_salt="s").get(s1.id).vault == {t1: "Nimal Perera"}
+    reloaded = SessionStore(str(tmp_path), base_salt="s").get(s1.id)
+    assert dict(reloaded.vault.items()) == {t1: "Nimal Perera"}
     assert s1.calls == 2

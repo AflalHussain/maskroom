@@ -18,13 +18,14 @@ import time
 import uuid
 from contextlib import contextmanager
 
+from .vault import Vault
+
 
 class Session:
     def __init__(self, root, session_id, base_salt):
         self.id = session_id
         self.dir = os.path.join(root, session_id)
-        self.vault = {}
-        self.numeric_tokens = set()
+        self.vault = Vault()
         self.created = time.time()
         self.last_used = self.created
         self.calls = 0
@@ -44,7 +45,7 @@ class Session:
         os.makedirs(self.dir, exist_ok=True)
         payload = {"session_id": self.id, "created": self.created,
                    "last_used": self.last_used, "calls": self.calls,
-                   "mappings": self.vault, "numeric_tokens": sorted(self.numeric_tokens)}
+                   **self.vault.to_dict()}
         tmp = self.vault_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -55,8 +56,7 @@ class Session:
         sess = cls(root, session_id, base_salt)
         with open(sess.vault_path, encoding="utf-8") as f:
             data = json.load(f)
-        sess.vault = data.get("mappings", {})
-        sess.numeric_tokens = set(data.get("numeric_tokens", []))
+        sess.vault = Vault.from_dict(data)
         sess.created = data.get("created", sess.created)
         sess.last_used = data.get("last_used", sess.last_used)
         sess.calls = data.get("calls", 0)
@@ -150,18 +150,15 @@ class SessionStore:
         the shared engine lock, so requests are serialized.
         """
         with self.engine_lock, session.lock:
-            saved = (engine.vault, engine.salt, engine.numeric_tokens,
-                     engine.numeric_cells, engine.report)
+            saved = (engine.vault, engine.salt, engine.report)
             engine.vault = session.vault
+            engine.vault.begin_run()  # cell coords are per-workbook, not per-session
             engine.salt = session.salt
-            engine.numeric_tokens = session.numeric_tokens
-            engine.numeric_cells = set()
             engine.report = []
             try:
                 yield engine
             finally:
                 session.last_used = time.time()
                 session.calls += 1
-                (engine.vault, engine.salt, engine.numeric_tokens,
-                 engine.numeric_cells, engine.report) = saved
+                (engine.vault, engine.salt, engine.report) = saved
                 session.save()
