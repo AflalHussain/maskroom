@@ -30,6 +30,7 @@ from maskroom import FinancialPrivacyEngine, SessionStore, build_nlp_engine
 from maskroom import overlay as overlay_mod
 from maskroom import rules
 from maskroom.locale import DEFAULT_LOCALE, available_locales
+from maskroom.pipeline import SUPPORTED_EXTS as MASK_EXTS, mask_file
 from maskroom.restore import SUPPORTED_EXTS as RESTORE_EXTS, unmask_file
 from webui.audit import AuditLog
 
@@ -489,9 +490,8 @@ def process():
         return jsonify({"error": "No file uploaded."}), 400
     name = os.path.basename(f.filename)
     ext = os.path.splitext(name)[1].lower()
-    if ext not in (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json"):
-        return jsonify({"error": f"Unsupported file type {ext!r} — use .xlsx, .xlsm, .pdf, .docx, "
-                                 ".pptx, .csv, .tsv, .txt or .json."}), 400
+    if ext not in MASK_EXTS:
+        return jsonify({"error": f"Unsupported file type {ext!r} — use {', '.join(MASK_EXTS)}."}), 400
     is_office = ext in (".docx", ".pptx")
     is_csv = ext in (".csv", ".tsv")
     is_textfile = ext in (".txt", ".json")
@@ -530,10 +530,11 @@ def process():
     # A run always has a scratch session so per-run state (vault/report) is
     # isolated; a real session makes the vault shared across the conversation.
     scratch = sess or sessions.create()
+    kind = mode = None
     try:
         with sessions.bind(engine, scratch):
             if restore:
-                if ext != ".xlsx" and ext != ".xlsm":
+                if ext not in (".xlsx", ".xlsm"):
                     return jsonify({"error": "Restore here only works for Excel; use /api/unmask-file for docx/pptx/text."}), 400
                 vf = request.files.get("vault")
                 if vf:
@@ -544,24 +545,18 @@ def process():
                     return jsonify({"error": "Restore needs the vault JSON saved when the "
                                              "file was masked, or the session it was masked in."}), 400
                 engine.depseudonymize_excel(in_path, out_path)
-            elif pdf_text:
-                engine.pseudonymize_pdf_text(in_path, out_path)
-            elif ext == ".pdf":
-                engine.redact_spatial_pdf(in_path, out_path)
-            elif is_office:
-                engine.pseudonymize_office(in_path, out_path)
-            elif is_csv:
-                engine.pseudonymize_csv(in_path, out_path)
-            elif is_textfile:
-                engine.pseudonymize_text_file(in_path, out_path)
+                findings = list(engine.report)
+                kind, mode = "excel", "restore"
             else:
-                engine.pseudonymize_excel(in_path, out_path)
-                text_name = "masked.md"
-                excel_markdown(out_path, os.path.join(run_dir, text_name))
-            findings = list(engine.report)
-            vault_entries = len(engine.vault)
-            if not restore:
+                result = mask_file(engine, in_path, out_path, pdf_text=pdf_text)
+                findings, kind, mode = result.findings, result.kind, result.mode
+                if result.kind == "excel":
+                    text_name = "masked.md"
+                    excel_markdown(out_path, os.path.join(run_dir, text_name))
                 engine.save_vault(os.path.join(run_dir, "vault.json"))
+            vault_entries = len(engine.vault)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Processing failed: {e}"}), 500
     finally:
@@ -577,10 +572,8 @@ def process():
         "run_id": run_id,
         "session_id": sess.id if sess else None,
         "filename": name,
-        "kind": ("pdf" if ext == ".pdf" else "office" if is_office
-                 else "tabular" if is_csv else "text" if is_textfile else "excel"),
-        "mode": "restore" if restore else ("text" if pdf_text else
-                                          ("redact" if ext == ".pdf" else "pseudonymize")),
+        "kind": kind,
+        "mode": mode,
         "elapsed_s": round(elapsed, 1),
         "vault_entries": vault_entries,
         "findings": findings,

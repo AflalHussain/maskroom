@@ -14,14 +14,19 @@ def client(tmp_path_factory):
     webapp.RUNS = runs
     from webui.audit import AuditLog
     webapp.audit = AuditLog(os.path.join(runs, "audit"), ttl_days=0)
-    # isolate the overlay file and start from empty
+    # isolate the overlay file and start from empty. These are module globals,
+    # so save and restore them — otherwise a saved overlay (e.g. an allow-list)
+    # leaks into every engine built by a later test module.
+    saved = (overlay_mod.DEFAULT_PATH, webapp._overlay, webapp._overlay_fp)
     overlay_mod.DEFAULT_PATH = os.path.join(runs, "custom_policy.yaml")
     webapp._overlay = overlay_mod.load()
     webapp._overlay_fp = overlay_mod.fingerprint(webapp._overlay)
     webapp._engines.clear()
     webapp.ADMIN_KEY = "sekret"
     webapp.app.config["TESTING"] = True
-    return webapp.app.test_client()
+    yield webapp.app.test_client()
+    overlay_mod.DEFAULT_PATH, webapp._overlay, webapp._overlay_fp = saved
+    webapp._engines.clear()
 
 
 H = {"X-Admin-Key": "sekret"}

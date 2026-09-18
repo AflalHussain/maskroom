@@ -4,6 +4,7 @@ import os
 
 from .engine import FinancialPrivacyEngine
 from .locale import DEFAULT_LOCALE, available_locales
+from .pipeline import SUPPORTED_EXTS, mask_file
 
 
 def main(argv=None):
@@ -57,19 +58,9 @@ def main(argv=None):
         engine.depseudonymize_excel(args.input, args.output or f"{root}_restored{ext}")
         return
 
-    if ext in (".xlsx", ".xlsm"):
-        engine.pseudonymize_excel(args.input, output)
-    elif ext == ".pdf":
-        engine.redact_spatial_pdf(args.input, output)
-    elif ext in (".docx", ".pptx"):
-        engine.pseudonymize_office(args.input, output)
-    elif ext in (".csv", ".tsv"):
-        engine.pseudonymize_csv(args.input, output)
-    elif ext in (".txt", ".json"):
-        engine.pseudonymize_text_file(args.input, output)
-    else:
-        parser.error(f"Unsupported file type: {ext} "
-                     "(expected .xlsx, .xlsm, .pdf, .docx, .pptx, .csv, .tsv, .txt, or .json)")
+    if ext not in SUPPORTED_EXTS:
+        parser.error(f"Unsupported file type: {ext} (expected {', '.join(SUPPORTED_EXTS)})")
+    mask_file(engine, args.input, output)
 
     if args.vault:
         engine.save_vault(args.vault)
