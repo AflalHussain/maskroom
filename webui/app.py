@@ -388,6 +388,11 @@ def mask_text():
     with sessions.bind(engine, sess):
         masked, changed = engine.pseudonymize_text(data["text"])
         findings = list(engine._last_findings)
+        # token_for is O(vault) per finding, so this loop is O(vault * findings).
+        # Fine at realistic session sizes (hundreds of tokens, a few findings);
+        # sub-millisecond. If sessions ever accumulate many thousands of
+        # pseudonyms and this shows up in profiling, add a Vault.inverse() that
+        # builds the reverse map once and look up against it here (O(vault + findings)).
         for f in findings:
             f["token"] = engine.vault.token_for(f["text"].strip())
         entries = len(engine.vault)
