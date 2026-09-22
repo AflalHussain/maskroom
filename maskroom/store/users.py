@@ -74,6 +74,7 @@ class LoginSession:
     expires: float
     last_seen: float
     ip: str
+    id_token: str | None = None
 
 
 def _user(row):
@@ -151,14 +152,15 @@ class LoginSessionStore:
         self.db = db
         self.ttl = float(hours) * 3600
 
-    def create(self, user_id, ip=""):
-        """Returns the plaintext cookie token (never stored)."""
+    def create(self, user_id, ip="", id_token=None):
+        """Returns the plaintext cookie token (never stored). id_token, when
+        the provider issued one, lets logout end the provider session too."""
         token = secrets.token_urlsafe(32)
         now = time.time()
         with self.db.begin() as conn:
             conn.execute(insert(T_LOGINS).values(
                 id=_sha(token), user_id=user_id, created=now, expires=now + self.ttl,
-                last_seen=now, ip=ip or ""))
+                last_seen=now, ip=ip or "", id_token=id_token))
         return token
 
     def resolve(self, token):
@@ -170,7 +172,7 @@ class LoginSessionStore:
         with self.db.begin() as conn:
             row = conn.execute(
                 select(T_LOGINS.c.id.label("sid"), T_LOGINS.c.user_id, T_LOGINS.c.created.label("s_created"),
-                       T_LOGINS.c.expires, T_LOGINS.c.last_seen, T_LOGINS.c.ip,
+                       T_LOGINS.c.expires, T_LOGINS.c.last_seen, T_LOGINS.c.ip, T_LOGINS.c.id_token,
                        T_USERS.c.email, T_USERS.c.name, T_USERS.c.role, T_USERS.c.disabled,
                        T_USERS.c.created.label("u_created"), T_USERS.c.last_login, T_USERS.c.provider_sub)
                 .join_from(T_LOGINS, T_USERS, T_USERS.c.id == T_LOGINS.c.user_id)
@@ -182,14 +184,19 @@ class LoginSessionStore:
                 expires = now + self.ttl
                 conn.execute(update(T_LOGINS).where(T_LOGINS.c.id == row.sid)
                              .values(last_seen=now, expires=expires))
-        sess = LoginSession(row.sid, row.user_id, row.s_created, expires, now, row.ip)
+        sess = LoginSession(row.sid, row.user_id, row.s_created, expires, now, row.ip, row.id_token)
         user = User(row.user_id, row.email, row.name, row.role, bool(row.disabled),
                     row.u_created, row.last_login, row.provider_sub)
         return sess, user
 
     def revoke(self, token):
+        """End a session. Returns (existed, id_token) so the caller can also
+        end the provider's session."""
+        sid = _sha(token or "")
         with self.db.begin() as conn:
-            return conn.execute(delete(T_LOGINS).where(T_LOGINS.c.id == _sha(token or ""))).rowcount > 0
+            row = conn.execute(select(T_LOGINS.c.id_token).where(T_LOGINS.c.id == sid)).first()
+            removed = conn.execute(delete(T_LOGINS).where(T_LOGINS.c.id == sid)).rowcount > 0
+        return removed, (row.id_token if row else None)
 
     def revoke_user(self, user_id):
         with self.db.begin() as conn:

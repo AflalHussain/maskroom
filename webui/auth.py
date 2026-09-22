@@ -31,7 +31,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from flask import Blueprint, Response, g, jsonify, redirect, request, session as flask_session
 
@@ -87,6 +87,7 @@ class Identity:
     email: str
     name: str = ""
     sub: str | None = None
+    id_token: str | None = None   # raw id_token, kept for RP-initiated logout
 
 
 class AuthError(Exception):
@@ -103,6 +104,11 @@ class IdentityProvider:
     def exchange(self, req):
         """Identity for the provider's callback request, or raise AuthError."""
         raise NotImplementedError
+
+    def end_session_url(self, id_token, post_logout_redirect_uri):
+        """Where to send the browser to end the provider's own session, or
+        None when the provider has no such endpoint (e.g. Google)."""
+        return None
 
 
 class OidcProvider(IdentityProvider):
@@ -139,15 +145,29 @@ class OidcProvider(IdentityProvider):
         if claims.get("email_verified") is False:
             raise AuthError("This email address is not verified at the identity provider.")
         name = claims.get("name") or claims.get("preferred_username") or ""
-        return Identity(email=email, name=name, sub=claims.get("sub"))
+        return Identity(email=email, name=name, sub=claims.get("sub"), id_token=token.get("id_token"))
+
+    def end_session_url(self, id_token, post_logout_redirect_uri):
+        try:
+            endpoint = self.client.load_server_metadata().get("end_session_endpoint")
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not load provider metadata for logout: %s", e)
+            return None
+        if not endpoint:
+            return None
+        params = {"client_id": self.client.client_id, "post_logout_redirect_uri": post_logout_redirect_uri}
+        if id_token:
+            params["id_token_hint"] = id_token
+        return f"{endpoint}?{urlencode(params)}"
 
 
 class FakeProvider(IdentityProvider):
     """Test double: signs in as a fixed identity through the real routes."""
 
-    def __init__(self, identity):
+    def __init__(self, identity, end_session_endpoint=None):
         self.identity = identity
         self.state = None
+        self.end_session_endpoint = end_session_endpoint
 
     def authorize_redirect(self, redirect_uri, state):
         self.state = state
@@ -160,6 +180,14 @@ class FakeProvider(IdentityProvider):
         if isinstance(self.identity, Exception):
             raise self.identity
         return self.identity
+
+    def end_session_url(self, id_token, post_logout_redirect_uri):
+        if not self.end_session_endpoint:
+            return None
+        params = {"client_id": "maskroom", "post_logout_redirect_uri": post_logout_redirect_uri}
+        if id_token:
+            params["id_token_hint"] = id_token
+        return f"{self.end_session_endpoint}?{urlencode(params)}"
 
 
 # ----------------------------------------------------------------- state
@@ -389,7 +417,7 @@ def callback():
                                    bootstrap_admin=email in AUTH.admin_emails)
     if user.disabled:
         return _html(403, "Account disabled", f"{user.email} has been disabled by an administrator.")
-    token = AUTH.logins.create(user.id, ip=client_ip())
+    token = AUTH.logins.create(user.id, ip=client_ip(), id_token=ident.id_token)
     nxt = flask_session.pop("auth_next", "/")
     flask_session.pop("auth_state", None)
     resp = redirect(nxt)
@@ -399,14 +427,39 @@ def callback():
 
 @auth_bp.post("/auth/logout")
 def logout():
+    """End the Maskroom session and say where the browser should go next:
+    the provider's end-session endpoint when it has one (so single sign-on
+    does not log the user straight back in), else the signed-out page. An
+    optional `next` (same rules as login) is honoured after that."""
     token = request.cookies.get(COOKIE)
     if token and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         return jsonify({"error": f"Missing {CSRF_HEADER}: {CSRF_VALUE} header."}), 403
+    id_token = None
     if token:
-        AUTH.logins.revoke(token)
-    resp = jsonify({"ok": True})
+        _removed, id_token = AUTH.logins.revoke(token)
+    body = request.get_json(silent=True) or {}
+    nxt = safe_next(request.args.get("next") or body.get("next"))
+    landing = f"{public_base()}/auth/signed-out"
+    if nxt != "/":
+        landing += "?" + urlencode({"next": nxt})
+    redirect_to = None
+    if AUTH.mode == "oidc" and AUTH.provider is not None:
+        redirect_to = AUTH.provider.end_session_url(id_token, landing)
+    resp = jsonify({"ok": True, "redirect": redirect_to or landing})
     resp.delete_cookie(COOKIE, path="/")
     return resp
+
+
+@auth_bp.get("/auth/signed-out")
+def signed_out():
+    """Neutral landing after logout. Never redirects to a login route, so a
+    still-alive provider session cannot sign the user back in silently."""
+    nxt = safe_next(request.args.get("next"))
+    if nxt.startswith("https://"):   # the extension's chromiumapp.org callback
+        return redirect(nxt)
+    return _html(200, "Signed out",
+                 "You have been signed out of Maskroom. "
+                 f"<a href='/auth/login?next={nxt}'>Sign in again</a>")
 
 
 @auth_bp.get("/api/me")

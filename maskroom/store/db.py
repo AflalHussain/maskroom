@@ -94,10 +94,15 @@ def _migrate(engine):
     """Hand-written column additions for databases created by an older
     version. create_all only adds whole tables. Each step is idempotent and
     the same statement works on SQLite and Postgres."""
-    cols = {c["name"] for c in inspect(engine).get_columns("sessions")}
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("sessions")}
     if "owner_id" not in cols:  # v1 -> v2
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE sessions ADD COLUMN owner_id VARCHAR(32)"))
+    cols = {c["name"] for c in insp.get_columns("login_sessions")}
+    if "id_token" not in cols:  # v2 (early) -> v2
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE login_sessions ADD COLUMN id_token TEXT"))
 
 
 def init_schema(engine):

@@ -121,6 +121,7 @@ login_sessions = Table(
     Column("expires", Float, nullable=False),
     Column("last_seen", Float, nullable=False),
     Column("ip", String(64), nullable=False, server_default=""),
+    Column("id_token", Text),   # for RP-initiated logout (id_token_hint); None when absent
     Index("ix_login_sessions_expires", "expires"),
     Index("ix_login_sessions_user", "user_id"),
 )

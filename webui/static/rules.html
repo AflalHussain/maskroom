@@ -267,7 +267,7 @@ async function test(){
 document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("[data-add]");if(a)add(a.dataset.add);});
 $("#signin").addEventListener("click",()=>{if(cfg.auth_mode==="oidc"){location.href="/auth/login?next="+encodeURIComponent(location.pathname);return;}MaskroomAuth.setLegacy("admin",$("#adminkey").value.trim());boot();});
 $("#adminkey").addEventListener("keydown",e=>{if(e.key==="Enter")$("#signin").click();});
-$("#signout").addEventListener("click",async()=>{if(cfg.auth_mode==="oidc"){try{await fetch("/auth/logout",{method:"POST",credentials:"same-origin",headers:MaskroomAuth.headers()})}catch(e){}location.href="/auth/login?next=/admin/rules";return;}MaskroomAuth.setLegacy("admin","");MaskroomAuth.boot();showGate("");});
+$("#signout").addEventListener("click",()=>{if(cfg.auth_mode==="oidc"){MaskroomAuth.signOut();return;}MaskroomAuth.setLegacy("admin","");MaskroomAuth.boot();showGate("");});
 $("#reload").addEventListener("click",()=>load().catch(e=>$("#apperr").textContent=e.message));
 $("#discard").addEventListener("click",()=>load().catch(e=>$("#apperr").textContent=e.message));
 $("#save").addEventListener("click",save);

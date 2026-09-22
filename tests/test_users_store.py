@@ -68,7 +68,12 @@ def test_login_sessions(db, monkeypatch):
     assert logins.resolve(tok2) is None                          # disabled user
     users.set_disabled(u.id, False)
     assert logins.resolve(tok2) is not None
-    assert logins.revoke(tok2) and logins.resolve(tok2) is None
+    removed, id_tok = logins.revoke(tok2)
+    assert removed and id_tok is None and logins.resolve(tok2) is None
+    assert logins.revoke("never-issued") == (False, None)
+    tok_with = logins.create(u.id, id_token="eyJ.fake.idtoken")
+    assert logins.resolve(tok_with)[0].id_token == "eyJ.fake.idtoken"
+    assert logins.revoke(tok_with) == (True, "eyJ.fake.idtoken")
     tok3 = logins.create(u.id)
     assert logins.revoke_user(u.id) == 2 and logins.resolve(tok3) is None   # tok3 + the expired tok
     assert logins.sweep() == 0

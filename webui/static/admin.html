@@ -225,7 +225,7 @@ function closeDetail(){ $("#drawer").classList.remove("on"); $("#scrim").classLi
 // events
 $("#signin").addEventListener("click",()=>{ if(cfg.auth_mode==="oidc"){ location.href="/auth/login?next="+encodeURIComponent(location.pathname); return; } MaskroomAuth.setLegacy("admin",$("#adminkey").value.trim()); boot(); });
 $("#adminkey").addEventListener("keydown",e=>{ if(e.key==="Enter")$("#signin").click(); });
-$("#signout").addEventListener("click",async()=>{ if(cfg.auth_mode==="oidc"){ try{await fetch("/auth/logout",{method:"POST",credentials:"same-origin",headers:MaskroomAuth.headers()})}catch(e){} location.href="/auth/login?next=/admin"; return; } MaskroomAuth.setLegacy("admin",""); MaskroomAuth.boot(); showGate(""); });
+$("#signout").addEventListener("click",()=>{ if(cfg.auth_mode==="oidc"){ MaskroomAuth.signOut(); return; } MaskroomAuth.setLegacy("admin",""); MaskroomAuth.boot(); showGate(""); });
 $("#refresh").addEventListener("click",()=>loadAll().catch(e=>$("#listerr").textContent=e.message));
 $("#apply").addEventListener("click",()=>{ offset=0; loadList().catch(e=>$("#listerr").textContent=e.message); });
 $("#clear").addEventListener("click",()=>{ ["#f-user","#f-q","#f-since","#f-until"].forEach(i=>$(i).value=""); $("#f-action").value=""; offset=0; loadList(); });

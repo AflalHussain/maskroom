@@ -19,10 +19,10 @@
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:5170/auth/callback",
-        "http://127.0.0.1:5170/auth/callback",
-        "http://localhost:8080/auth/callback",
-        "https://REPLACE_HOST/auth/callback"
+        "http://localhost:5170/auth/*",
+        "http://127.0.0.1:5170/auth/*",
+        "http://localhost:8080/auth/*",
+        "https://REPLACE_HOST/auth/*"
       ],
       "webOrigins": [
         "http://localhost:5170",

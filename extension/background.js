@@ -256,8 +256,15 @@ async function login() {
   if (!me.ok) return { ok: false, error: me.error || "Signed in, but the server did not recognise the session." };
   return { ok: true, principal: me.data.principal, authMode: me.data.auth_mode };
 }
+// Ends the Maskroom session, then lets the provider end its own session in a
+// silent popup that closes when the chain reaches our chromiumapp.org URL.
 async function logout() {
-  const r = await api("/auth/logout", "POST", {});
+  const done = chrome.identity.getRedirectURL("done");
+  const r = await api(`/auth/logout?next=${encodeURIComponent(done)}`, "POST", {});
+  if (r.ok && r.data && r.data.redirect && /^https?:\/\//.test(r.data.redirect)) {
+    try { await chrome.identity.launchWebAuthFlow({ url: r.data.redirect, interactive: false }); }
+    catch (e) { /* provider showed a page or the flow was closed: the local session is gone anyway */ }
+  }
   return { ok: r.ok, error: r.error };
 }
 

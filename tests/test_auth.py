@@ -170,7 +170,35 @@ def test_logout_revokes_the_session(env):
     assert alice.post("/auth/logout").status_code == 403               # CSRF header
     r = alice.post("/auth/logout", headers=H)
     assert r.status_code == 200 and "maskroom_session=;" in r.headers["Set-Cookie"]
+    assert r.get_json()["redirect"] == "http://localhost/auth/signed-out"   # no provider endpoint: land locally
     assert alice.get("/api/me").status_code == 401
+    page = alice.get("/auth/signed-out")
+    assert page.status_code == 200 and b"Sign in again" in page.data
+
+
+def test_logout_ends_the_provider_session_when_it_can(env):
+    """With an end_session_endpoint the browser is sent there with the
+    id_token_hint and a post-logout return to the signed-out page (which may
+    then forward to the extension's chromiumapp.org callback)."""
+    from urllib.parse import parse_qs, urlsplit
+    env.provider.end_session_endpoint = "https://idp.test/logout"
+    env.provider.identity = env.Identity("alice@corp.lk", "Alice", "sub-a", id_token="eyJ.alice.tok")
+    try:
+        alice = env.app.test_client()
+        r = alice.get(alice.get("/auth/login").headers["Location"])
+        assert r.status_code == 302
+        ext = f"https://{EXT_ID}.chromiumapp.org/done"
+        d = alice.post("/auth/logout", query_string={"next": ext}, headers=H).get_json()
+        u = urlsplit(d["redirect"]); q = parse_qs(u.query)
+        assert u.scheme + "://" + u.netloc + u.path == "https://idp.test/logout"
+        assert q["id_token_hint"] == ["eyJ.alice.tok"] and q["client_id"] == ["maskroom"]
+        from urllib.parse import quote
+        assert q["post_logout_redirect_uri"] == [f"http://localhost/auth/signed-out?next={quote(ext, safe='')}"]
+        # the landing forwards the extension to its own URL; a foreign next is dropped
+        assert alice.get("/auth/signed-out", query_string={"next": ext}).headers["Location"] == ext
+        assert alice.get("/auth/signed-out", query_string={"next": "https://evil.example/"}).status_code == 200
+    finally:
+        env.provider.end_session_endpoint = None
 
 
 def test_disabled_user_is_rejected(env):

@@ -505,7 +505,10 @@ popup; afterwards its requests carry the cookie. Sessions live in the database, 
 a user ends their access at once.
 
 **Provider setup.** Register a confidential web client for Maskroom whose redirect URI is
-`<your Maskroom URL>/auth/callback`, then set `MASKROOM_OIDC_ISSUER` (e.g.
+`<your Maskroom URL>/auth/callback` and whose allowed post-logout redirect URI is
+`<your Maskroom URL>/auth/signed-out` (sign-out ends the provider session too, where the
+provider supports it; Google does not, so a Google user stays signed in to Google but not to
+Maskroom), then set `MASKROOM_OIDC_ISSUER` (e.g.
 `https://accounts.google.com`, `https://login.microsoftonline.com/<tenant>/v2.0`,
 `https://<org>.okta.com`), `MASKROOM_OIDC_CLIENT_ID`, `MASKROOM_OIDC_CLIENT_SECRET`, plus
 `MASKROOM_SECRET_KEY` and, behind a proxy, `MASKROOM_PUBLIC_URL`. The provider must return an

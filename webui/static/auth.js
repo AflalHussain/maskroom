@@ -56,6 +56,18 @@ window.MaskroomAuth = (() => {
     download(a.dataset.dl, a.dataset.name).catch((err) => { a.textContent = "✕ " + err.message; });
   });
 
+  // Ends the Maskroom session, then follows the server's instruction: the
+  // identity provider's logout (so SSO does not sign us straight back in) or
+  // the signed-out page.
+  async function signOut() {
+    let target = "/auth/signed-out";
+    try {
+      const r = await fetch("/auth/logout", { method: "POST", credentials: "same-origin", headers: headers() });
+      const d = await r.json(); if (d && d.redirect) target = d.redirect;
+    } catch (e) {}
+    location.href = target;
+  }
+
   async function boot() {
     try { cfg = await (await fetch("/api/config", { credentials: "same-origin" })).json(); } catch (e) {}
     me = null;
@@ -74,11 +86,7 @@ window.MaskroomAuth = (() => {
         ? `<span title="${esc(me.email || "")}">${esc(me.name || me.email)} · ${esc(me.role)}</span> <a href="#" id="mr-signout">sign out</a>`
         : `<a href="${loginUrl()}">sign in</a>`;
       const so = el.querySelector("#mr-signout");
-      if (so) so.addEventListener("click", async (e) => {
-        e.preventDefault();
-        try { await fetch("/auth/logout", { method: "POST", credentials: "same-origin", headers: headers() }); } catch (err) {}
-        location.href = loginUrl();
-      });
+      if (so) so.addEventListener("click", (e) => { e.preventDefault(); signOut(); });
       return;
     }
     const parts = [];
@@ -103,6 +111,6 @@ window.MaskroomAuth = (() => {
     return { ok: true };
   }
 
-  return { fetchJson, download, link, boot, requireRole, headers, legacy, setLegacy, esc,
+  return { fetchJson, download, link, boot, requireRole, headers, legacy, setLegacy, esc, signOut,
            get cfg() { return cfg; }, get me() { return me; } };
 })();
