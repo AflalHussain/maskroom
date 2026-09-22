@@ -1,0 +1,57 @@
+{
+  "realm": "maskroom",
+  "displayName": "Maskroom",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "clients": [
+    {
+      "clientId": "maskroom",
+      "name": "Maskroom",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "change-me-maskroom-dev-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5170/auth/callback",
+        "http://127.0.0.1:5170/auth/callback",
+        "http://localhost:8080/auth/callback",
+        "https://REPLACE_HOST/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:5170",
+        "http://127.0.0.1:5170",
+        "http://localhost:8080",
+        "https://REPLACE_HOST"
+      ],
+      "defaultClientScopes": ["profile", "email"],
+      "attributes": { "post.logout.redirect.uris": "+" }
+    }
+  ],
+  "users": [
+    {
+      "username": "staff",
+      "email": "staff@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Staff",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "staff", "temporary": false }]
+    },
+    {
+      "username": "admin",
+      "email": "admin@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Admin",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "admin", "temporary": false }]
+    }
+  ]
+}

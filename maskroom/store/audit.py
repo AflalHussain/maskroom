@@ -1,12 +1,13 @@
 """Audit trail of every masking operation, for the admin dashboard.
 
 Each record keeps the original input and the masked output (the admin's
-explicit requirement), attributed to the org user id the extension sends
-(`X-Maskroom-User`), with a retention window so raw PII is not kept forever.
+explicit requirement), attributed to the signed-in user's email or a service
+key's name (webui/auth.py), with a retention window so raw PII is not kept
+forever.
 
 WARNING: this store contains real PII (the original inputs). It must be
-admin-only (see MASKROOM_ADMIN_KEY) and on protected storage. Retention
-(AUDIT_TTL_DAYS) bounds how long originals live; it is not encryption.
+readable by auditors and administrators only and sit on protected storage.
+Retention (AUDIT_TTL_DAYS) bounds how long originals live; it is not encryption.
 
 Metadata and texts are rows in `audit_records`; files a user uploaded or
 received are copied under <files_root>/<id>/input.<ext> and output.<ext>,

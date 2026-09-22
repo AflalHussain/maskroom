@@ -30,7 +30,7 @@ EXPOSE 8080
 
 # One worker: the spaCy model is loaded once per process (~1 GB RAM each).
 # Threads serve concurrent requests; the session store's engine lock serializes
-# analysis. Set MASKROOM_API_KEY to protect /api, MASKROOM_ADMIN_KEY to gate the /admin
-# audit dashboard, SESSION_TTL_HOURS for vault expiry and AUDIT_TTL_DAYS for audit retention.
+# analysis. Set MASKROOM_AUTH_MODE=oidc with the MASKROOM_OIDC_* values for sign-on,
+# SESSION_TTL_HOURS for vault expiry and AUDIT_TTL_DAYS for audit retention.
 # graceful-timeout matches --timeout so a redeploy lets an in-flight OCR job finish.
 CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 4 --timeout 300 --graceful-timeout 300 --bind 0.0.0.0:${PORT} webui.app:app"]

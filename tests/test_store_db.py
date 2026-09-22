@@ -32,8 +32,21 @@ def test_file_sqlite_settings_and_schema(tmp_path):
         assert c.execute(text("PRAGMA foreign_keys")).scalar() == 1
         assert c.execute(select(schema_meta.c.version)).scalar() == db_mod.SCHEMA_VERSION
     assert {"sessions", "vault_entries", "audit_records", "policy_deny_terms",
-            "policy_allow_terms", "policy_regex_rules", "policy_revisions"} <= set(
+            "policy_allow_terms", "policy_regex_rules", "policy_revisions",
+            "users", "login_sessions", "api_keys", "runs"} <= set(
         inspect(engine).get_table_names())
+    engine.dispose()
+
+
+def test_migrate_adds_sessions_owner_id(tmp_path):
+    """A v1 database (no sessions.owner_id) gains the column on init_schema."""
+    engine = db_mod.make_engine(f"sqlite:///{tmp_path}/v1.db")
+    with engine.begin() as c:   # the v1 shape of the table, as create_all made it then
+        c.execute(text("CREATE TABLE sessions (id VARCHAR(64) PRIMARY KEY, created FLOAT NOT NULL, "
+                       "last_used FLOAT NOT NULL, calls INTEGER NOT NULL DEFAULT 0)"))
+    assert "owner_id" not in {c["name"] for c in inspect(engine).get_columns("sessions")}
+    db_mod.init_schema(engine)
+    assert "owner_id" in {c["name"] for c in inspect(engine).get_columns("sessions")}
     engine.dispose()
 
 

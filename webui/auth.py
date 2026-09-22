@@ -1,0 +1,470 @@
+"""Who is calling, and what they may do.
+
+Two modes, chosen by MASKROOM_AUTH_MODE:
+
+  off   (default) no login. The legacy shared secrets still apply: MASKROOM_API_KEY
+        on /api/* (X-API-Key header) and MASKROOM_ADMIN_KEY on the admin APIs
+        (X-Admin-Key header). Query-string keys are no longer accepted. For local
+        demos and tests.
+  oidc  single sign-on. The server runs the OpenID Connect authorization-code
+        flow against any provider with a discovery document (Google, Microsoft
+        Entra, Okta, Keycloak...) and issues its own session cookie, backed by
+        the login_sessions table so a session can be revoked centrally. Roles
+        (staff < auditor < admin) live in the users table and are managed here,
+        never mapped from the provider.
+
+A request is attributed to one Principal, resolved in this order and never
+falling through from a presented-but-invalid credential:
+  1. Authorization: Bearer mr_...   a named service key (api_keys table)
+  2. X-API-Key                      the deprecated shared MASKROOM_API_KEY
+  3. the maskroom_session cookie    a signed-in user
+  4. anonymous
+
+Ownership: sessions and file runs remember the principal that created them and
+are served only to that principal (rows without an owner, created with auth
+off, are admin-only). Cookie-authenticated requests that change state must
+carry `X-Requested-With: maskroom`, which a cross-site form cannot add.
+"""
+import hmac
+import logging
+import os
+import secrets
+import time
+from dataclasses import dataclass
+from urllib.parse import urlsplit
+
+from flask import Blueprint, Response, g, jsonify, redirect, request, session as flask_session
+
+from maskroom.store import (ROLES, ApiKeyStore, LoginSessionStore, RunStore, UserStore,
+                            normalize_email, role_allows)
+from maskroom.store.users import MISSING
+
+log = logging.getLogger("maskroom.auth")
+
+COOKIE = "maskroom_session"
+CSRF_HEADER = "X-Requested-With"
+CSRF_VALUE = "maskroom"
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+OPEN_PREFIXES = ("/ext/", "/auth/", "/static/")
+OPEN_PATHS = frozenset({"/", "/staging", "/admin", "/admin/rules", "/admin/users",
+                        "/api/config", "/favicon.ico"})
+ADMIN_API_PREFIXES = ("/api/policy", "/api/users", "/api/keys")
+AUDITOR_API_PREFIXES = ("/api/audit",)
+
+
+# ------------------------------------------------------------------ model
+@dataclass(frozen=True)
+class Principal:
+    kind: str            # user | service | legacy | anonymous
+    id: str | None
+    email: str | None
+    name: str | None
+    role: str | None
+
+    @property
+    def label(self):
+        """The name the audit trail records."""
+        if self.kind == "user":
+            return self.email
+        if self.kind in ("service", "legacy"):
+            return self.name
+        return "unknown"
+
+    @property
+    def authenticated(self):
+        return self.kind != "anonymous"
+
+    def to_dict(self):
+        return {"kind": self.kind, "id": self.id, "email": self.email,
+                "name": self.name, "role": self.role}
+
+
+ANONYMOUS = Principal("anonymous", None, None, None, None)
+
+
+@dataclass(frozen=True)
+class Identity:
+    email: str
+    name: str = ""
+    sub: str | None = None
+
+
+class AuthError(Exception):
+    """A login that cannot complete; the message is safe to show."""
+
+
+# -------------------------------------------------------------- providers
+class IdentityProvider:
+    """Where users prove who they are. Two calls, both on the server."""
+
+    def authorize_redirect(self, redirect_uri, state):
+        raise NotImplementedError
+
+    def exchange(self, req):
+        """Identity for the provider's callback request, or raise AuthError."""
+        raise NotImplementedError
+
+
+class OidcProvider(IdentityProvider):
+    """Any OpenID Connect issuer, configured by its discovery document."""
+
+    def __init__(self, app, issuer, client_id, client_secret, scopes="openid email profile"):
+        from authlib.integrations.flask_client import OAuth
+        self.issuer = issuer.rstrip("/")
+        self.oauth = OAuth(app)
+        self.client = self.oauth.register(
+            name="oidc", client_id=client_id, client_secret=client_secret,
+            server_metadata_url=f"{self.issuer}/.well-known/openid-configuration",
+            client_kwargs={"scope": scopes})
+
+    def authorize_redirect(self, redirect_uri, state):
+        return self.client.authorize_redirect(redirect_uri, state=state)
+
+    def exchange(self, req):
+        from authlib.integrations.base_client.errors import OAuthError
+        try:
+            token = self.client.authorize_access_token()
+        except OAuthError as e:
+            raise AuthError(f"Sign-in failed: {e.description or e.error}") from e
+        claims = dict(token.get("userinfo") or {})
+        if not claims.get("email"):  # some providers omit email from the id_token
+            try:
+                claims.update(self.client.userinfo(token=token) or {})
+            except Exception as e:  # noqa: BLE001
+                log.warning("userinfo call failed: %s", e)
+        email = claims.get("email")
+        if not email:
+            raise AuthError("The identity provider returned no email address; "
+                            "grant the 'email' scope/claim to the Maskroom client.")
+        if claims.get("email_verified") is False:
+            raise AuthError("This email address is not verified at the identity provider.")
+        name = claims.get("name") or claims.get("preferred_username") or ""
+        return Identity(email=email, name=name, sub=claims.get("sub"))
+
+
+class FakeProvider(IdentityProvider):
+    """Test double: signs in as a fixed identity through the real routes."""
+
+    def __init__(self, identity):
+        self.identity = identity
+        self.state = None
+
+    def authorize_redirect(self, redirect_uri, state):
+        self.state = state
+        return redirect(f"{redirect_uri}?state={state}&code=fake")
+
+    def exchange(self, req):
+        if not self.state or req.args.get("state") != self.state:
+            raise AuthError("Sign-in failed: state mismatch.")
+        self.state = None
+        if isinstance(self.identity, Exception):
+            raise self.identity
+        return self.identity
+
+
+# ----------------------------------------------------------------- state
+class AuthState:
+    def __init__(self, mode, db, provider, legacy_key, admin_key, session_hours,
+                 admin_emails, public_url, extension_ids):
+        self.mode = mode
+        self.db = db
+        self.provider = provider
+        self._legacy_key = legacy_key   # str or callable
+        self._admin_key = admin_key
+        self.session_hours = session_hours
+        self.admin_emails = admin_emails
+        self.public_url = public_url
+        self.extension_ids = extension_ids
+        self.users = UserStore(db)
+        self.logins = LoginSessionStore(db, hours=session_hours)
+        self.keys = ApiKeyStore(db)
+        self.runs = RunStore(db)
+        self._warned_legacy = False
+
+    @property
+    def legacy_key(self):
+        return self._legacy_key() if callable(self._legacy_key) else self._legacy_key
+
+    @property
+    def admin_key(self):
+        return self._admin_key() if callable(self._admin_key) else self._admin_key
+
+
+AUTH = None
+auth_bp = Blueprint("auth", __name__)
+
+
+def configure_auth(app, db, mode=None, provider=None, legacy_key=None, admin_key=None,
+                   session_hours=None, admin_emails=None, public_url=None, extension_ids=None):
+    """Build the process-wide auth state from the environment plus overrides.
+    Called once at import by webui.app and again by tests. Idempotent."""
+    global AUTH
+    env = os.environ.get
+    mode = (mode or env("MASKROOM_AUTH_MODE") or "off").strip().lower()
+    if mode not in ("off", "oidc"):
+        raise RuntimeError(f"MASKROOM_AUTH_MODE must be 'off' or 'oidc', not {mode!r}")
+    if not app.secret_key:
+        app.secret_key = env("MASKROOM_SECRET_KEY") or secrets.token_hex(32)
+    if mode == "oidc" and not env("MASKROOM_SECRET_KEY") and not app.testing:
+        log.warning("MASKROOM_SECRET_KEY is not set; login state will not survive a restart "
+                    "or be shared between workers.")
+    if mode == "oidc" and provider is None:
+        issuer, cid = env("MASKROOM_OIDC_ISSUER"), env("MASKROOM_OIDC_CLIENT_ID")
+        if not issuer or not cid:
+            raise RuntimeError("MASKROOM_AUTH_MODE=oidc needs MASKROOM_OIDC_ISSUER and "
+                               "MASKROOM_OIDC_CLIENT_ID (and usually MASKROOM_OIDC_CLIENT_SECRET).")
+        provider = OidcProvider(app, issuer, cid, env("MASKROOM_OIDC_CLIENT_SECRET"),
+                                env("MASKROOM_OIDC_SCOPES") or "openid email profile")
+    emails = admin_emails if admin_emails is not None else env("MASKROOM_ADMIN_EMAILS", "")
+    if isinstance(emails, str):
+        emails = {normalize_email(e) for e in emails.split(",") if e.strip()}
+    ext_ids = set(extension_ids or [])
+    ext_ids.update(x.strip() for x in env("MASKROOM_EXTENSION_IDS", "").split(",") if x.strip())
+    AUTH = AuthState(
+        mode=mode, db=db, provider=provider,
+        legacy_key=legacy_key if legacy_key is not None else env("MASKROOM_API_KEY"),
+        admin_key=admin_key if admin_key is not None else env("MASKROOM_ADMIN_KEY"),
+        session_hours=float(session_hours or env("MASKROOM_SESSION_HOURS") or 12),
+        admin_emails=emails, public_url=(public_url or env("MASKROOM_PUBLIC_URL") or "").rstrip("/"),
+        extension_ids=ext_ids)
+    if "auth" not in app.blueprints:
+        app.register_blueprint(auth_bp)
+    return AUTH
+
+
+# --------------------------------------------------------------- helpers
+def external_base():
+    """Absolute base URL as the client reached us, honouring a proxy/tunnel
+    (ngrok, load balancer) via X-Forwarded-* so generated URLs are correct
+    wherever the server is exposed."""
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0].strip()
+    host = request.headers.get("X-Forwarded-Host", request.host).split(",")[0].strip()
+    return f"{scheme}://{host}"
+
+
+def client_ip():
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote_addr or "")
+
+
+def public_base():
+    return AUTH.public_url or external_base()
+
+
+def current_principal():
+    return getattr(g, "principal", ANONYMOUS)
+
+
+def owned(owner_id):
+    """Whether the current principal may use a session or run with this owner.
+    With auth off everything is shared; an ownerless row (made with auth off,
+    or before the upgrade) is admin-only; otherwise the ids must match."""
+    if AUTH.mode == "off":
+        return True
+    p = current_principal()
+    if owner_id is None:
+        return p.role == "admin"
+    return p.id == owner_id
+
+
+def safe_next(n):
+    """Where to go after login: a same-origin path, or the extension's own
+    chromiumapp.org callback. Anything else becomes '/'."""
+    if not n:
+        return "/"
+    if n.startswith("/") and not n.startswith("//") and not n.startswith("/\\"):
+        return n
+    u = urlsplit(n)
+    if u.scheme == "https" and u.netloc in {f"{eid}.chromiumapp.org" for eid in AUTH.extension_ids}:
+        return n
+    return "/"
+
+
+def cookie_kwargs():
+    https = external_base().startswith("https")
+    return {"httponly": True, "secure": https, "samesite": "None" if https else "Lax",
+            "path": "/", "max_age": int(AUTH.session_hours * 3600)}
+
+
+def required_role(path):
+    if path.startswith(ADMIN_API_PREFIXES):
+        return "admin"
+    if path.startswith(AUDITOR_API_PREFIXES):
+        return "auditor"
+    return "staff"
+
+
+def resolve_principal():
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        key = AUTH.keys.authenticate(auth[7:].strip())
+        return Principal("service", key.id, None, key.name, key.role) if key else ANONYMOUS
+    given = request.headers.get("X-API-Key")
+    if given:
+        legacy = AUTH.legacy_key
+        if legacy and hmac.compare_digest(given, legacy):
+            if not AUTH._warned_legacy:
+                AUTH._warned_legacy = True
+                log.warning("A client authenticated with the deprecated shared MASKROOM_API_KEY; "
+                            "move it to a named service key (maskroom-admin key create).")
+            return Principal("legacy", "legacy-api-key", None, "legacy-api-key", "staff")
+        return ANONYMOUS
+    token = request.cookies.get(COOKIE)
+    if token:
+        hit = AUTH.logins.resolve(token)
+        if hit:
+            _login, user = hit
+            return Principal("user", user.id, user.email, user.name, user.role)
+    return ANONYMOUS
+
+
+def _legacy_gate(path):
+    """Auth off: the pre-SSO shared-secret checks, headers only."""
+    if path.startswith(ADMIN_API_PREFIXES) or path.startswith(AUDITOR_API_PREFIXES):
+        admin_key = AUTH.admin_key
+        if not admin_key:
+            return jsonify({"error": "Admin surfaces are disabled. Set MASKROOM_ADMIN_KEY "
+                                     "on the server to enable them."}), 403
+        given = request.headers.get("X-Admin-Key") or ""
+        if not hmac.compare_digest(given, admin_key):
+            return jsonify({"error": "Admin key required (X-Admin-Key header)."}), 401
+        return None
+    if path == "/api/me" or not path.startswith("/api/"):
+        return None
+    if AUTH.legacy_key and current_principal().kind not in ("legacy", "service"):
+        return jsonify({"error": "Missing or invalid API key (X-API-Key header)."}), 401
+    return None
+
+
+def authenticate():
+    """before_request: attribute the request and enforce the access matrix."""
+    g.principal = ANONYMOUS
+    path = request.path
+    if path in OPEN_PATHS or path.startswith(OPEN_PREFIXES):
+        return None
+    g.principal = resolve_principal()
+    if AUTH.mode == "off":
+        return _legacy_gate(path)
+    if not path.startswith("/api/"):
+        return None
+    p = g.principal
+    if not p.authenticated:
+        return jsonify({"error": "Sign-in required.", "login_url": "/auth/login"}), 401
+    if p.kind == "user" and request.method not in SAFE_METHODS \
+            and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
+        return jsonify({"error": f"Missing {CSRF_HEADER}: {CSRF_VALUE} header."}), 403
+    need = required_role(path)
+    if not role_allows(p.role, need):
+        return jsonify({"error": f"The {need} role is required."}), 403
+    return None
+
+
+def _html(status, title, body):
+    return Response(f"<!doctype html><meta charset=utf-8><title>{title}</title>"
+                    f"<body style='font-family:system-ui;margin:3rem'><h2>{title}</h2><p>{body}</p>"
+                    f"<p><a href='/'>Back to Maskroom</a></p></body>", status=status, mimetype="text/html")
+
+
+# ---------------------------------------------------------------- routes
+@auth_bp.get("/auth/login")
+def login():
+    if AUTH.mode != "oidc":
+        return jsonify({"error": "Sign-in is not enabled on this server (MASKROOM_AUTH_MODE=off)."}), 404
+    state = secrets.token_urlsafe(16)
+    flask_session["auth_next"] = safe_next(request.args.get("next"))
+    flask_session["auth_state"] = state
+    return AUTH.provider.authorize_redirect(f"{public_base()}/auth/callback", state)
+
+
+@auth_bp.get("/auth/callback")
+def callback():
+    if AUTH.mode != "oidc":
+        return jsonify({"error": "Sign-in is not enabled on this server."}), 404
+    try:
+        ident = AUTH.provider.exchange(request)
+    except AuthError as e:
+        return _html(400, "Sign-in failed", str(e))
+    email = normalize_email(ident.email)
+    user = AUTH.users.upsert_login(email, name=ident.name, sub=ident.sub,
+                                   bootstrap_admin=email in AUTH.admin_emails)
+    if user.disabled:
+        return _html(403, "Account disabled", f"{user.email} has been disabled by an administrator.")
+    token = AUTH.logins.create(user.id, ip=client_ip())
+    nxt = flask_session.pop("auth_next", "/")
+    flask_session.pop("auth_state", None)
+    resp = redirect(nxt)
+    resp.set_cookie(COOKIE, token, **cookie_kwargs())
+    return resp
+
+
+@auth_bp.post("/auth/logout")
+def logout():
+    token = request.cookies.get(COOKIE)
+    if token and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
+        return jsonify({"error": f"Missing {CSRF_HEADER}: {CSRF_VALUE} header."}), 403
+    if token:
+        AUTH.logins.revoke(token)
+    resp = jsonify({"ok": True})
+    resp.delete_cookie(COOKIE, path="/")
+    return resp
+
+
+@auth_bp.get("/api/me")
+def me():
+    p = current_principal()
+    if AUTH.mode == "off":
+        return jsonify({"auth_mode": "off", "principal": p.to_dict() if p.authenticated else None})
+    if not p.authenticated:
+        return jsonify({"error": "Sign-in required.", "login_url": "/auth/login"}), 401
+    return jsonify({"auth_mode": "oidc", "principal": p.to_dict()})
+
+
+# admin: users and service keys (the role gate lives in authenticate())
+@auth_bp.get("/api/users")
+def users_list():
+    return jsonify({"users": [u.to_dict() for u in AUTH.users.list()], "roles": list(ROLES)})
+
+
+@auth_bp.patch("/api/users/<user_id>")
+def users_patch(user_id):
+    data = request.get_json(silent=True) or {}
+    me_ = current_principal()
+    if me_.kind == "user" and me_.id == user_id:
+        return jsonify({"error": "You cannot change your own role or disable yourself."}), 400
+    user = AUTH.users.get(user_id)
+    if not user:
+        return jsonify({"error": "Unknown user."}), 404
+    if "role" in data:
+        try:
+            AUTH.users.set_role(user_id, data["role"])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    if "disabled" in data:
+        AUTH.users.set_disabled(user_id, bool(data["disabled"]))
+        if data["disabled"]:
+            AUTH.logins.revoke_user(user_id)
+    return jsonify({"user": AUTH.users.get(user_id).to_dict()})
+
+
+@auth_bp.get("/api/keys")
+def keys_list():
+    return jsonify({"keys": [k.to_dict() for k in AUTH.keys.list()], "roles": list(ROLES)})
+
+
+@auth_bp.post("/api/keys")
+def keys_create():
+    data = request.get_json(silent=True) or {}
+    try:
+        key, plaintext = AUTH.keys.create(data.get("name"), role=data.get("role") or "staff",
+                                          created_by=current_principal().label)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"key": key.to_dict(), "secret": plaintext,
+                    "note": "This secret is shown once; store it now."}), 201
+
+
+@auth_bp.delete("/api/keys/<key_id>")
+def keys_revoke(key_id):
+    if not AUTH.keys.revoke(key_id):
+        return jsonify({"error": "Unknown or already revoked key."}), 404
+    return jsonify({"ok": True})

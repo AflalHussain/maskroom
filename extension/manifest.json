@@ -2,11 +2,12 @@
   "manifest_version": 3,
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1AGsnaTLKO8tQJ5trAGD4FER1NWFykCAKpZzGEY0MLTI6/WMjFL5ItSkBhweeurTkYImlDX/V4uhi2L0WQ+v8bFMntTNuS9bhCEQoCRgM4YJR52LcwTA68kHIZKBneFq4QrGRIvS93knL5LTbClgkh5J4POoyR3K6Ym/haHm91S2/LW7hc/SG/9jHbVyymCbCNOy6jsqL+JfLflJ1WCU6TuH/WkXAzrn++6USTdVDRKHAN166JNERF0rbn/uv2Es6Nh8DSarhBmHBE1O+IO48GMAy+ZU01hIkj0/Nxlum9hx8lOyF6EHZmqtOeXGKWQ6Ibw2ngTp6NKQIjMMLS61mQIDAQAB",
   "name": "Maskroom for Claude",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Pseudonymize names, identifiers and contact details in the claude.ai composer before you send, and show the real values again in replies. Needs a Maskroom server.",
   "permissions": [
     "storage",
-    "downloads"
+    "downloads",
+    "identity"
   ],
   "host_permissions": [
     "https://claude.ai/*",

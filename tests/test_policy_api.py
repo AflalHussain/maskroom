@@ -24,6 +24,8 @@ def client(tmp_path_factory, db_module):
     webapp._refresh_overlay(force=True)
     webapp.ADMIN_KEY = "sekret"
     webapp.app.config["TESTING"] = True
+    webapp.configure_auth(webapp.app, db_module, mode="off",
+                          legacy_key=lambda: webapp.API_KEY, admin_key=lambda: webapp.ADMIN_KEY)
     yield webapp.app.test_client()
     webapp._policy = saved_policy
     webapp._refresh_overlay(force=True)

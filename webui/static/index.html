@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/auth.js"></script>
 <style>
 .shell{display:grid;grid-template-columns:320px 1fr;min-height:100vh}
 @media(max-width:900px){.shell{grid-template-columns:1fr}}
@@ -65,6 +66,7 @@ table{font-family:var(--mono);font-size:12.5px}
     <span class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">PII engine</span></span>
     <button id="themebtn" title="Toggle light/dark">◐</button>
   </div>
+  <div class="note" id="mr-auth" style="margin-top:6px"></div>
   <a class="note" href="/staging" style="text-decoration:none;color:var(--accent-text)">LLM staging area → mask text &amp; files for Claude, unmask replies</a>
 
   <fieldset>
@@ -162,7 +164,7 @@ let saved=null; try{saved=localStorage.getItem("maskroom-theme")}catch(e){}
 applyTheme(saved||"light");
 themeBtn.addEventListener("click",()=>applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light"));
 let file=null, model="", dates="birth", locations="address";
-fetch("/api/locales").then(r=>r.json()).then(d=>{const s=document.getElementById("locale");for(const [code,name] of Object.entries(d.locales)){const o=document.createElement("option");o.value=code;o.textContent=`${name} (${code})`;s.appendChild(o);}const g=document.createElement("option");g.value="generic";g.textContent="Generic (no country rules)";s.appendChild(g);s.value=d.default;}).catch(()=>{});
+MaskroomAuth.boot().then(()=>MaskroomAuth.fetchJson("/api/locales")).then(d=>{const s=document.getElementById("locale");for(const [code,name] of Object.entries(d.locales)){const o=document.createElement("option");o.value=code;o.textContent=`${name} (${code})`;s.appendChild(o);}const g=document.createElement("option");g.value="generic";g.textContent="Generic (no country rules)";s.appendChild(g);s.value=d.default;}).catch(()=>{});
 
 function seg(id, cb){ $(id).addEventListener("click",e=>{
   if(e.target.tagName!=="BUTTON")return;
@@ -202,9 +204,7 @@ $("#run").addEventListener("click",async()=>{
   $("#stage").innerHTML=`<div class="spin"><div class="bars"><i></i><i></i><i></i><i></i></div>
     <div>analyzing — ${model?"transformer model, this can take a while":"this usually takes seconds"}</div></div>`;
   try{
-    const res=await fetch("/api/process",{method:"POST",body:fd});
-    const data=await res.json();
-    if(!res.ok) throw new Error(data.error||res.statusText);
+    const data=await MaskroomAuth.fetchJson("/api/process",{method:"POST",body:fd});
     render(data);
   }catch(e){
     $("#stage").innerHTML=`<div class="empty"><div class="glyph">▮▮▮▮▮▮▮▮</div><p></p></div>`;
@@ -227,8 +227,8 @@ function render(d){
   ];
   const chips=Object.entries(d.by_entity).map(([k,v])=>
     `<button class="chip" data-e="${esc(k)}"><span class="n">${v}</span> ${esc(k)}</button>`).join("");
-  const dls=[`<a href="/api/download/${d.run_id}/${d.downloads.output}" download>⬇ ${d.downloads.output}</a>`];
-  if(d.downloads.vault) dls.push(`<a href="/api/download/${d.run_id}/vault.json" download>⬇ vault.json</a>
+  const dls=[MaskroomAuth.link(`/api/download/${d.run_id}/${d.downloads.output}`,d.downloads.output,`⬇ ${esc(d.downloads.output)}`)];
+  if(d.downloads.vault) dls.push(MaskroomAuth.link(`/api/download/${d.run_id}/vault.json`,"vault.json","⬇ vault.json")+`
     <span class="warn">The vault reverses every token — store it separately from the masked file.</span>`);
 
   $("#stage").innerHTML=`

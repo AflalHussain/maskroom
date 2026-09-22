@@ -48,10 +48,20 @@ button.ghost:hover{background:var(--surface-2)}
   <h2>Connection</h2>
   <label class="top" for="serverUrl">Maskroom server URL</label>
   <input type="text" id="serverUrl" placeholder="http://127.0.0.1:5170">
-  <label class="top" for="apiKey">API key (if the server sets MASKROOM_API_KEY)</label>
-  <input type="password" id="apiKey">
   <div class="actions"><button id="save">Save</button><button class="ghost" id="test">Test connection</button></div>
   <div id="status"></div>
+</div>
+
+<div class="card">
+  <h2>Account</h2>
+  <div id="account" class="note">checking…</div>
+  <div class="actions"><button id="login">Sign in</button><button class="ghost" id="logout">Sign out</button></div>
+  <details id="legacy" style="margin-top:10px">
+    <summary class="note">Legacy API key (only for servers running without sign-on)</summary>
+    <label class="top" for="apiKey">API key (the server's MASKROOM_API_KEY)</label>
+    <input type="password" id="apiKey">
+    <div class="actions"><button class="ghost" id="savekey">Save key</button></div>
+  </details>
 </div>
 
 <div class="card">

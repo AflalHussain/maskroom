@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/auth.js"></script>
 <style>
 .top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;position:sticky;top:0;z-index:5}
 .nav{font-size:13px} .nav a{color:var(--text-2);font-weight:600} .nav a:hover{color:var(--brand)}
@@ -61,10 +62,10 @@ details summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.05
   <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">LLM staging</span></div>
   <nav class="nav"><a href="/">file studio →</a></nav>
   <div class="session">
-    <span class="keyrow" id="keyrow"><span>api key</span><input type="password" id="apikey" placeholder="X-API-Key"></span>
+    <span id="mr-auth"></span>
     <span>session <span class="id" id="sid" title="click to copy this session id (use it in the extension’s “use session id” to share this vault)" style="cursor:pointer">—</span></span>
     <span><span class="n" id="entries">0</span> pseudonyms</span>
-    <a id="vaultdl" href="#" download>vault ⬇</a>
+    <a id="vaultdl" href="#" data-dl="" data-name="">vault ⬇</a>
     <button id="newsess" title="Start a new conversation vault">new session</button>
     <button id="endsess" title="Delete this session's vault">end session</button>
     <button id="themebtn" title="Toggle light/dark">◐</button>
@@ -169,15 +170,9 @@ themeBtn.addEventListener("click",()=>applyTheme(document.documentElement.datase
 
 // ---------- api ----------
 let cfg={preamble:"",auth_required:false};
-function headers(json){const h={};if(json)h["Content-Type"]="application/json";const k=$("#apikey").value.trim();if(k)h["X-API-Key"]=k;return h;}
-async function api(path,opts={}){
-  const res=await fetch(path,opts);
-  let data=null;try{data=await res.json()}catch(e){}
-  if(!res.ok)throw new Error((data&&data.error)||`${res.status} ${res.statusText}`);
-  return data;
-}
-$("#apikey").addEventListener("change",()=>{try{localStorage.setItem("maskroom-key",$("#apikey").value)}catch(e){}});
-try{$("#apikey").value=localStorage.getItem("maskroom-key")||""}catch(e){}
+const headers=(json)=>json?{"Content-Type":"application/json"}:{};
+const api=(path,opts={})=>MaskroomAuth.fetchJson(path,opts);
+document.addEventListener("maskroom-auth-changed",()=>{session=null;ensureSession().catch(()=>{});});
 
 // ---------- session ----------
 let session=null;
@@ -185,7 +180,8 @@ function showSession(info){
   session=info?info.session_id:null;
   $("#sid").textContent=session||"—";
   $("#entries").textContent=info?info.vault_entries:0;
-  $("#vaultdl").href=session?`/api/session/${session}/vault${$("#apikey").value?"?key="+encodeURIComponent($("#apikey").value):""}`:"#";
+  $("#vaultdl").dataset.dl=session?`/api/session/${session}/vault`:"";
+  $("#vaultdl").dataset.name=session?`vault-${session}.json`:"";
   try{if(session)localStorage.setItem("maskroom-session",session);else localStorage.removeItem("maskroom-session")}catch(e){}
 }
 async function newSession(){showSession(await api("/api/session",{method:"POST",headers:headers()}));}
@@ -207,9 +203,8 @@ $("#endsess").addEventListener("click",async()=>{
 
 // ---------- boot ----------
 (async()=>{
-  try{cfg=await api("/api/config");}catch(e){}
+  cfg=(await MaskroomAuth.boot()).cfg||cfg;
   $("#ttl").textContent=cfg.session_ttl_hours||24;
-  if(cfg.auth_required)$("#keyrow").style.display="inline-flex";
   if(cfg.restore_exts)$("#restorefile").accept=cfg.restore_exts.join(",");
   const s=$("#locale");
   for(const [code,name] of Object.entries(cfg.locales||{})){const o=document.createElement("option");o.value=code;o.textContent=`${name} (${code})`;s.appendChild(o);}
@@ -272,10 +267,9 @@ async function processFile(f){
     const fd=new FormData();fd.append("file",f);fd.append("session_id",session);fd.append("pdf_mode","text");fd.append("preview","false");
     fd.append("locale",$("#locale").value);fd.append("dates",$("#dates").value);fd.append("locations",$("#locations").value);fd.append("min_score",$("#minscore").value);
     const d=await api("/api/process",{method:"POST",headers:headers(),body:fd});
-    const q=$("#apikey").value?"?key="+encodeURIComponent($("#apikey").value):"";
     const counts=Object.entries(d.by_entity).map(([k,n])=>`<span class="chip">${esc(k)} <span class="n">${n}</span></span>`).join("");
-    const links=[`<a href="/api/download/${d.run_id}/${d.downloads.output}${q}" download>⬇ ${d.downloads.output}</a>`];
-    if(d.downloads.text&&d.downloads.text!==d.downloads.output)links.push(`<a href="/api/download/${d.run_id}/${d.downloads.text}${q}" download>⬇ ${d.downloads.text}</a>`);
+    const links=[MaskroomAuth.link(`/api/download/${d.run_id}/${d.downloads.output}`,d.downloads.output,`⬇ ${esc(d.downloads.output)}`)];
+    if(d.downloads.text&&d.downloads.text!==d.downloads.output)links.push(MaskroomAuth.link(`/api/download/${d.run_id}/${d.downloads.text}`,d.downloads.text,`⬇ ${esc(d.downloads.text)}`));
     card.innerHTML=`<div class="name">${esc(f.name)}</div>
       <div class="meta">${d.findings.length} value${d.findings.length===1?"":"s"} masked · ${d.elapsed_s}s · ${d.mode}</div>
       <div class="chips">${counts||'<span class="chip">nothing detected</span>'}</div>
@@ -310,7 +304,6 @@ async function restoreFile(f){
     await ensureSession();
     const fd=new FormData();fd.append("file",f);fd.append("session_id",session);
     const d=await api("/api/unmask-file",{method:"POST",headers:headers(),body:fd});
-    const q=$("#apikey").value?"?key="+encodeURIComponent($("#apikey").value):"";
     const chips=[`<span class="chip ok">restored <span class="n">${d.restored}</span></span>`];
     if(d.fuzzy.length)chips.push(`<span class="chip warn">near-match <span class="n">${d.fuzzy.length}</span></span>`);
     if(d.unresolved.length)chips.push(`<span class="chip bad">unresolved <span class="n">${d.unresolved.length}</span></span>`);
@@ -319,7 +312,7 @@ async function restoreFile(f){
       <div class="meta">${d.kind} · ${d.elapsed_s}s</div>
       <div class="chips">${chips.join("")}</div>
       ${d.unresolved.length?`<div class="list">${d.unresolved.map(u=>`<div><span class="k" style="color:var(--bad)">✕</span> ${esc(u)}</div>`).join("")}</div>`:""}
-      <div class="dl"><a href="/api/download/${d.run_id}/${d.downloads.output}${q}" download="${esc(stem)}_restored${ext}">⬇ ${esc(stem)}_restored${ext}</a></div>`;
+      <div class="dl">${MaskroomAuth.link(`/api/download/${d.run_id}/${d.downloads.output}`,`${stem}_restored${ext}`,`⬇ ${esc(stem)}_restored${ext}`)}</div>`;
   }catch(e){
     card.querySelector(".meta").textContent="failed";
     $("#restoreerr").textContent=`${f.name}: ${e.message}`;

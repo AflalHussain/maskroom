@@ -34,16 +34,19 @@ input or drop zone (`SEL.fileInput` / `SEL.dropTarget`).
 1. Run the Maskroom server: `pii_env/bin/python webui/app.py` (default `http://127.0.0.1:5170`).
 2. Open `chrome://extensions`, enable *Developer mode*, *Load unpacked*, choose this
    `extension/` directory.
-3. Click the extension icon → set the server URL and API key (if `MASKROOM_API_KEY` is
-   set on the server) → *Test connection* → *Save*. A non-localhost URL asks for a host
-   permission once.
+3. Click the extension icon → set the server URL → *Test connection* → *Save*. A
+   non-localhost URL asks for a host permission once. With sign-on enabled on the server
+   (`MASKROOM_AUTH_MODE=oidc`) click *Sign in*: the server's login page opens in a popup
+   and the extension keeps the session cookie. A server running without sign-on may
+   still want the legacy API key, under *Legacy API key* in the popup.
 4. Open claude.ai. The MASKROOM bar appears bottom-right.
 
 ## How it is built
 
 - `background.js` — the only code that talks to the server (so the page needs no CORS
-  and the API key never enters the page); uploads files and fetches masked ones as base64;
-  owns the download intercept (`chrome.downloads`).
+  and no credential enters the page); uploads files and fetches masked ones as base64;
+  owns the download intercept (`chrome.downloads`) and the sign-in popup
+  (`chrome.identity.launchWebAuthFlow` to the server's `/auth/login`).
 - `content.js` — the bar, guard, composer replacement, session bookkeeping, and the
   MutationObserver that restores tokens in rendered text. All claude.ai selectors are in
   the `SEL` object at the top: **when claude.ai changes its markup, fix them there.**

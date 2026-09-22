@@ -290,8 +290,9 @@ the environment. Ready-made configs:
 
 Before exposing it publicly:
 
-- **Add authentication.** The UI and `/api/*` endpoints have no login; put them behind an
-  auth proxy (Cloudflare Access, oauth2-proxy, your platform's SSO) or a private network.
+- **Turn on sign-on.** Set `MASKROOM_AUTH_MODE=oidc` and point it at your identity
+  provider (see [Authentication](#authentication)); with the default `off` the only
+  protection is the legacy shared keys, which is fine for a demo and nothing else.
 - **Choose the region deliberately.** Uploads contain PII; both configs default to
   Singapore — change `region` / `primary_region` to match your data-residency needs.
 - **Give it a database and a data volume.** Sessions, the audit trail and admin rules
@@ -323,8 +324,15 @@ All settings are environment variables, read when the server starts.
 | `PII_TOKEN_SALT` | built-in (testing only) | Secret behind every token; see [Configure the token salt](#configure-the-token-salt). Changing it orphans every existing vault. |
 | `MASKROOM_DATABASE_URL` | SQLite file under the data dir | Where sessions, the audit trail and admin rules live. `postgresql+psycopg://user:pass@host/db` for Postgres (`postgres://` is accepted). |
 | `MASKROOM_DATA_DIR` | `webui/runs` (repo checkout), `/data` (image) | Root for files: `runs/` scratch, `audit/` file copies, `ext/` extension package, `maskroom.db`. |
-| `MASKROOM_API_KEY` | unset (API open) | Require `X-API-Key` on `/api/*` (except `/api/config`). |
-| `MASKROOM_ADMIN_KEY` | unset (admin surfaces disabled) | Require `X-Admin-Key` on `/admin*`, `/api/audit*`, `/api/policy*`. |
+| `MASKROOM_AUTH_MODE` | `off` | `oidc` = single sign-on with roles (production); `off` = no login, legacy keys only. |
+| `MASKROOM_OIDC_ISSUER`, `MASKROOM_OIDC_CLIENT_ID`, `MASKROOM_OIDC_CLIENT_SECRET` | unset | The OpenID Connect provider (discovery at `<issuer>/.well-known/openid-configuration`) and the client registered for Maskroom. |
+| `MASKROOM_OIDC_SCOPES` | `openid email profile` | Scopes requested at sign-in. |
+| `MASKROOM_SECRET_KEY` | random per start | Signs the short-lived login state cookie; set it so restarts and several workers agree. |
+| `MASKROOM_SESSION_HOURS` | `12` | Sliding lifetime of a sign-on session. |
+| `MASKROOM_ADMIN_EMAILS` | unset | Comma-separated emails that become `admin` on their first sign-in. |
+| `MASKROOM_PUBLIC_URL` | derived from the request | The address users reach the server at, for the OIDC redirect URI behind a proxy. |
+| `MASKROOM_API_KEY` | unset | **Deprecated.** With auth off: require `X-API-Key` on `/api/*`. With sign-on: still accepted as the `legacy-api-key` service identity during a rollout. |
+| `MASKROOM_ADMIN_KEY` | unset (admin surfaces disabled) | Auth off only: require `X-Admin-Key` on the admin APIs. Ignored with sign-on (roles gate them). |
 | `SESSION_TTL_HOURS` | `24` | Idle time after which a session vault is deleted (`0` = never). |
 | `AUDIT_TTL_DAYS` | `90` | Retention of audit records, which hold raw PII (`0` = forever). |
 | `MAX_TEXT_CHARS` | `200000` | Largest text body accepted by `/api/mask`, `/api/unmask`. |
@@ -487,27 +495,75 @@ workbook or PDF instead of the original (guard also catches files dropped on cla
 and replies are restored on screen only. It is unsupported by Anthropic; see the extension
 README for the install steps and the terms-of-service caveat.
 
+### Authentication
+
+Set `MASKROOM_AUTH_MODE=oidc` for real users. Maskroom then runs the OpenID Connect
+authorization-code flow against **any** provider with a discovery document (Google Workspace,
+Microsoft Entra ID, Okta, Auth0, Keycloak…) and issues its own session cookie, which the web
+UI and the Chrome extension both use. The extension opens the server's sign-in page once in a
+popup; afterwards its requests carry the cookie. Sessions live in the database, so disabling
+a user ends their access at once.
+
+**Provider setup.** Register a confidential web client for Maskroom whose redirect URI is
+`<your Maskroom URL>/auth/callback`, then set `MASKROOM_OIDC_ISSUER` (e.g.
+`https://accounts.google.com`, `https://login.microsoftonline.com/<tenant>/v2.0`,
+`https://<org>.okta.com`), `MASKROOM_OIDC_CLIENT_ID`, `MASKROOM_OIDC_CLIENT_SECRET`, plus
+`MASKROOM_SECRET_KEY` and, behind a proxy, `MASKROOM_PUBLIC_URL`. The provider must return an
+`email` claim (grant the `email` scope).
+
+**Roles** are managed in Maskroom, never mapped from the provider: everyone who signs in is
+`staff` (mask, unmask, own files); `auditor` adds the audit trail; `admin` adds rules, users
+and service keys. Bootstrap the first administrators with `MASKROOM_ADMIN_EMAILS`, or
+`maskroom-admin user role someone@corp.lk admin`, then manage the rest at
+[`/admin/users`](http://127.0.0.1:5170/admin/users).
+
+**Ownership.** Sessions, vaults and file runs are served only to the principal that created
+them. Sessions created with auth off have no owner and are admin-only after switching on.
+
+**Service keys** for scripts, gateways and MCP servers are issued at `/admin/users` or with
+`maskroom-admin key create NAME`; send `Authorization: Bearer mr_…`. The old shared
+`MASKROOM_API_KEY` is still accepted as the `legacy-api-key` identity so a rollout can be
+staged, and is logged as deprecated.
+
+**No identity provider yet?** Run the bundled Keycloak:
+
+```bash
+docker compose --profile keycloak up -d db keycloak      # admin console http://localhost:8180
+export MASKROOM_AUTH_MODE=oidc \
+       MASKROOM_OIDC_ISSUER=http://localhost:8180/realms/maskroom \
+       MASKROOM_OIDC_CLIENT_ID=maskroom \
+       MASKROOM_OIDC_CLIENT_SECRET=change-me-maskroom-dev-secret \
+       MASKROOM_SECRET_KEY=$(openssl rand -hex 32) \
+       MASKROOM_ADMIN_EMAILS=admin@example.com
+pii_env/bin/python webui/app.py                           # sign in as admin/admin or staff/staff
+```
+
+The realm in `deploy/keycloak/realm-maskroom.json` imports a `maskroom` client and two example
+users; change the client secret and the passwords before real use. The issuer URL must be the
+same host the browser and the app both reach (with everything in Docker, add `127.0.0.1
+keycloak` to `/etc/hosts` and use `http://keycloak:8180/realms/maskroom`). `start-dev` is a
+development server: production Keycloak runs `start --optimized` with its own Postgres,
+`KC_HOSTNAME` and TLS in front, and can federate to Active Directory over LDAP.
+
 ### Admin audit dashboard
 
 Every mask, unmask and file operation is recorded to an on-disk audit trail so an
 administrator can review, at [`/admin`](http://127.0.0.1:5170/admin), exactly what each user
 sent and the masked version that resulted. Each record keeps the **original input and the
-masked output** (and the original/masked files for file operations), attributed to the org
-user id the extension sends as `X-Maskroom-User` (set via managed policy — see
-[`docs/ENTERPRISE_ENFORCEMENT.md`](docs/ENTERPRISE_ENFORCEMENT.md)).
+masked output** (and the original/masked files for file operations), attributed to the
+signed-in user's email, or to the service key's name for scripts.
 
-> **The audit store contains real PII** (the original inputs). It is gated by a **separate
-> admin key** (`MASKROOM_ADMIN_KEY`, distinct from the per-user `MASKROOM_API_KEY`) and
+> **The audit store contains real PII** (the original inputs). It is readable only by the
+> **auditor** and **admin** roles (with auth off: the separate `MASKROOM_ADMIN_KEY`) and
 > auto-deleted after `AUDIT_TTL_DAYS` (default 90; `0` keeps forever). Keep it on protected
 > storage; retention bounds exposure but is not encryption.
 
 The dashboard shows stat tiles, a filterable table (user, action, date range, search) and a
-per-record view with the original beside the masked version and file downloads. Set
-`MASKROOM_ADMIN_KEY` to enable the dashboard; without it the admin API refuses every call.
+per-record view with the original beside the masked version and file downloads.
 
 ### Admin rules console
 
-At [`/admin/rules`](http://127.0.0.1:5170/admin/rules) (same admin key) an administrator can
+At [`/admin/rules`](http://127.0.0.1:5170/admin/rules) (admin role) an administrator can
 layer custom detection rules on top of the locale policy without touching code:
 
 - **Deny terms** — exact words/phrases to always mask (project codenames, client names).
@@ -527,8 +583,10 @@ detection; whole-column header shortcuts are a separate layer.
 
 ### JSON API
 
-Every route is also usable from scripts, gateways, hooks or an MCP server. Set
-`MASKROOM_API_KEY` to require an `X-API-Key` header (or `?key=`) on all `/api/*` routes.
+Every route is also usable from scripts, gateways, hooks or an MCP server. A script
+authenticates with a **service key** (`Authorization: Bearer mr_…`, issued at `/admin/users`
+or with `maskroom-admin key create`); a browser or the extension uses the sign-on session.
+Credentials travel in headers or the cookie only, never in the query string.
 
 | Route | Body / form | Returns |
 |---|---|---|
@@ -542,14 +600,18 @@ Every route is also usable from scripts, gateways, hooks or an MCP server. Set
 | `POST /api/process` | multipart `file` + options; `session_id` or `session=true`; `pdf_mode=text\|redact`; `restore=true` with a `vault` file **or** a `session_id`; `preview=false` to skip previews | run summary with `downloads.output`, `downloads.text` (`masked.md`), `downloads.vault` |
 | `GET /api/download/<run>/<file>` | – | the file |
 | `GET /api/text/<run>/<file>.md` | – | `{text}` (for copy-to-clipboard) |
-| `GET /api/config` | – | `{auth_required, locales, default_locale, session_ttl_hours, preamble, admin_auth_required, audit_ttl_days}` (never needs a key) |
-| `GET /api/audit` | `?user=&action=&since=&until=&q=&limit=&offset=` | audit records (metadata) — **admin key only** |
-| `GET /api/audit/<id>` | – | one record with original input + masked output — admin key only |
-| `GET /api/audit/<id>/file/<input\|output>` | – | the stored original or masked file — admin key only |
-| `GET /api/audit/stats` | – | totals by action/user + retention — admin key only |
-| `GET /api/policy` | – | `{overlay, builtins, default_entity, limits}` — the custom overlay + a read-only view of built-in rules — **admin key only** |
-| `PUT /api/policy` | JSON `{deny_terms[], allow_terms[], regex_rules[]}` | validates + saves, hot-reloads engines, audit-logged → `{ok, overlay}` — admin key only |
-| `POST /api/policy/test` | JSON `{text, overlay?}` | preview masking for a candidate overlay → `{masked, changed, findings, by_entity}` — admin key only |
+| `GET /api/config` | – | `{auth_mode, login_url, auth_required, locales, default_locale, session_ttl_hours, preamble, admin_auth_required, audit_ttl_days}` (always open) |
+| `GET /api/me` | – | `{auth_mode, principal{kind, id, email, name, role}}`; 401 when signed out |
+| `GET /api/audit` | `?user=&action=&since=&until=&q=&limit=&offset=` | audit records (metadata) — **auditor role** |
+| `GET /api/audit/<id>` | – | one record with original input + masked output — auditor role |
+| `GET /api/audit/<id>/file/<input\|output>` | – | the stored original or masked file — auditor role |
+| `GET /api/audit/stats` | – | totals by action/user + retention — auditor role |
+| `GET /api/policy` | – | `{overlay, builtins, default_entity, limits}` — the custom overlay + a read-only view of built-in rules — **admin role** |
+| `PUT /api/policy` | JSON `{deny_terms[], allow_terms[], regex_rules[]}` | validates + saves, hot-reloads engines, audit-logged → `{ok, overlay}` — admin role |
+| `POST /api/policy/test` | JSON `{text, overlay?}` | preview masking for a candidate overlay → `{masked, changed, findings, by_entity}` — admin role |
+| `GET /api/users`, `PATCH /api/users/<id>` | JSON `{role?, disabled?}` | list users; change a role or disable someone (ends their sessions) — admin role |
+| `GET/POST /api/keys`, `DELETE /api/keys/<id>` | JSON `{name, role}` | list, issue (secret returned once) and revoke service keys — admin role |
+| `GET /auth/login?next=`, `GET /auth/callback`, `POST /auth/logout` | – | the sign-on flow; the extension opens `/auth/login` in a popup |
 
 ```bash
 SID=$(curl -s -X POST localhost:5170/api/session | jq -r .session_id)

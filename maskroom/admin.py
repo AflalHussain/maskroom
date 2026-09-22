@@ -4,6 +4,8 @@ admin rules overlay between YAML and the database.
     maskroom-admin db init                     create the schema (idempotent)
     maskroom-admin policy export [FILE]        current rules as YAML (stdout or FILE)
     maskroom-admin policy import FILE [--user] load a YAML overlay, recording a revision
+    maskroom-admin user list | role EMAIL ROLE | disable EMAIL | enable EMAIL
+    maskroom-admin key create NAME [--role R] | list | revoke ID
 
 Honours MASKROOM_DATABASE_URL and MASKROOM_DATA_DIR like the web app.
 """
@@ -30,12 +32,67 @@ def main(argv=None):
     imp.add_argument("file")
     imp.add_argument("--user", default="maskroom-admin", help="who to record in the revision")
 
+    usr = sub.add_parser("user", help="sign-on users and roles").add_subparsers(dest="cmd", required=True)
+    usr.add_parser("list", help="every user with role and status")
+    p_role = usr.add_parser("role", help="set a user's role (staff, auditor, admin)")
+    p_role.add_argument("email"); p_role.add_argument("role")
+    usr.add_parser("disable", help="block a user and end their sessions").add_argument("email")
+    usr.add_parser("enable", help="re-enable a user").add_argument("email")
+
+    key = sub.add_parser("key", help="service keys for scripts and gateways").add_subparsers(dest="cmd", required=True)
+    p_new = key.add_parser("create", help="issue a key; the secret is printed once")
+    p_new.add_argument("name"); p_new.add_argument("--role", default="staff")
+    key.add_parser("list", help="every key, revoked ones included")
+    key.add_parser("revoke", help="revoke a key by id").add_argument("key_id")
+
     args = parser.parse_args(argv)
-    from .store import PolicyStore, connect, default_url
+    from .store import (ApiKeyStore, LoginSessionStore, PolicyStore, UserStore, connect,
+                        default_url)
 
     if args.group == "db":
         connect()
         print(f"schema ready at {default_url()}")
+        return 0
+
+    if args.group == "user":
+        users = UserStore(connect())
+        if args.cmd == "list":
+            for u in users.list():
+                flag = " (disabled)" if u.disabled else ""
+                print(f"{u.email:40} {u.role:8} {u.name}{flag}")
+            return 0
+        u = users.get_by_email(args.email)
+        if not u:
+            parser.error(f"no user {args.email!r} (users are created on first sign-in)")
+        if args.cmd == "role":
+            try:
+                users.set_role(u.id, args.role)
+            except ValueError as e:
+                parser.error(str(e))
+            print(f"{u.email}: role {args.role}")
+        else:
+            disabled = args.cmd == "disable"
+            users.set_disabled(u.id, disabled)
+            if disabled:
+                LoginSessionStore(connect()).revoke_user(u.id)
+            print(f"{u.email}: {'disabled, sessions ended' if disabled else 'enabled'}")
+        return 0
+
+    if args.group == "key":
+        keys = ApiKeyStore(connect())
+        if args.cmd == "create":
+            try:
+                k, secret = keys.create(args.name, role=args.role, created_by="maskroom-admin")
+            except ValueError as e:
+                parser.error(str(e))
+            print(f"{k.id} {k.name} ({k.role})\nsecret (shown once): {secret}")
+        elif args.cmd == "list":
+            for k in keys.list():
+                state = "revoked" if k.revoked_at else "active"
+                print(f"{k.id:18} {k.name:24} {k.role:8} {state}")
+        else:
+            print("revoked" if keys.revoke(args.key_id) else "no such active key")
+            return 0
         return 0
 
     store = PolicyStore(connect())

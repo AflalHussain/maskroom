@@ -8,13 +8,13 @@
     },
     "userId": {
       "type": "string",
-      "title": "Org user id for the audit trail",
-      "description": "Identifier (e.g. work email or employee id) sent with each request as X-Maskroom-User so the admin dashboard can attribute masking activity to this user. Set by administrators via managed policy."
+      "title": "Deprecated (ignored since 0.2.0)",
+      "description": "No longer used: the audit trail attributes activity to the signed-in user. Remove this key from your policy."
     },
     "orgId": {
       "type": "string",
-      "title": "Organization id",
-      "description": "Optional organization/tenant identifier sent as X-Maskroom-Org."
+      "title": "Deprecated (ignored since 0.2.0)",
+      "description": "No longer used. Remove this key from your policy."
     },
     "serverUrl": {
       "type": "string",

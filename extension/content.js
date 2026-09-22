@@ -59,7 +59,23 @@
       res(undefined);
     }
   });
-  const api = (path, method, body) => call({ type: "api", path, method, body });
+  // Sign-on state: a 401 from the server means "sign in" (the bar shows a
+  // button); any later success clears it.
+  let signedOut = false;
+  const api = async (path, method, body) => {
+    const r = await call({ type: "api", path, method, body });
+    if (r && r.status === 401) { if (!signedOut) { signedOut = true; renderBar(); } }
+    else if (r && r.ok && signedOut) { signedOut = false; renderBar(); }
+    return r;
+  };
+  async function signIn() {
+    const r = await call({ type: "login" });
+    if (r && r.ok) {
+      signedOut = false; renderBar();
+      toast(`Signed in as ${(r.principal && (r.principal.email || r.principal.name)) || "you"}.`);
+      try { await ensureSession(); await loadVault(); } catch (e) { toast(e.message || String(e), true); }
+    } else toast((r && r.error) || "Sign-in failed.", true);
+  }
   const safeSet = async (obj) => { try { await chrome.storage.local.set(obj); } catch (e) { contextDead = true; renderBar(); } };
   const safeGet = async (def) => { try { return await chrome.storage.local.get(def); } catch (e) { contextDead = true; return def; } };
   // Admin lock: chrome.storage.managed is read-only and set only by enterprise policy.
@@ -330,18 +346,14 @@
       await loadVault();
       if (ok) toast(`${file.name}: ${n} value${n === 1 ? "" : "s"} masked · attached as ${masked.name}. Review, then send.`);
       else {
-        toast(`${file.name} was masked (${n} values) but claude.ai did not accept the attachment. Opening the masked file so you can attach it yourself.`, true);
-        window.open(await downloadUrl(path), "_blank");
+        toast(`${file.name} was masked (${n} values) but claude.ai did not accept the attachment. Saving the masked file so you can attach it yourself.`, true);
+        await call({ type: "saveFile", name: masked.name, b64: bin.b64, mime: type });
       }
       return ok;
     } catch (e) {
       toast(`${file.name}: ${e.message || e}`, true);
       return false;
     } finally { busy = false; renderBar(); }
-  }
-  async function downloadUrl(path) {
-    const s = await call({ type: "settings" });
-    return s.serverUrl.replace(/\/+$/, "") + path + (s.apiKey ? `?key=${encodeURIComponent(s.apiKey)}` : "");
   }
   // Files are queued, not dropped, when one is already in flight.
   let fileQueue = Promise.resolve();
@@ -559,6 +571,7 @@
     if (!bar) {
       bar = document.createElement("div"); bar.id = "maskroom-bar";
       bar.innerHTML = `<span class="mr-brand">MASKROOM</span><span class="mr-meta"></span>
+        <button class="mr-primary" data-act="login" title="Sign in to the Maskroom server" hidden>sign in</button>
         <button class="mr-primary" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
         <button data-act="file" title="Mask a .xlsx/.pdf/.docx and attach the masked version">Mask file</button>
         <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf,.docx,.pptx,.csv,.tsv,.txt,.json" multiple hidden>
@@ -574,7 +587,8 @@
         const act = hit && hit.dataset.act;
         if (contextDead) { renderBar(); return; }
         try {
-          if (act === "mask") maskComposer();
+          if (act === "login") signIn();
+          else if (act === "mask") maskComposer();
           else if (act === "file") bar.querySelector("#maskroom-file").click();
           else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
           else if (act === "new") newSession();
@@ -594,15 +608,17 @@
       });
       document.body.appendChild(bar);
     }
-    bar.querySelector(".mr-meta").innerHTML = sessionId
-      ? `session <b>${sessionId.slice(0, 6)}</b> · <b>${entries}</b> pseudonyms`
-      : `no session yet`;
+    bar.querySelector(".mr-meta").innerHTML = signedOut
+      ? `signed out — sign in to mask`
+      : sessionId ? `session <b>${sessionId.slice(0, 6)}</b> · <b>${entries}</b> pseudonyms` : `no session yet`;
+    bar.querySelector('[data-act="login"]').hidden = !signedOut;
+    bar.dataset.signedOut = signedOut ? "1" : "";
     bar.dataset.session = sessionId || ""; bar.dataset.entries = String(entries);
     bar.dataset.vault = String(Object.keys(idx.vault).length);  // state for tests/debugging
-    bar.querySelector('[data-act="mask"]').disabled = busy;
+    bar.querySelector('[data-act="mask"]').disabled = busy || signedOut;
     bar.querySelector('[data-act="mask"]').textContent = busy ? "masking…" : "Mask";
-    bar.querySelector('[data-act="file"]').disabled = busy;
-    bar.querySelector('[data-act="unmaskfile"]').disabled = busy;
+    bar.querySelector('[data-act="file"]').disabled = busy || signedOut;
+    bar.querySelector('[data-act="unmaskfile"]').disabled = busy || signedOut;
     const gb = bar.querySelector('[data-act="guard"]');
     gb.textContent = guardLocked ? "guard: on 🔒" : "guard: " + (settings.guard ? "on" : "off");
     gb.title = guardLocked ? "Guard is locked on by your administrator" : "Guard: Enter/send and file drops go through Maskroom first — click to turn on/off";
@@ -650,7 +666,8 @@
     renderBar();
     const sessions = await storedSessions();
     sessionId = sessions[currentKey] || null;
-    await loadVault();
+    await api("/api/me");   // learn whether we are signed in (401 -> bar shows "sign in")
+    if (!signedOut) await loadVault();
     renderBar();
   })();
 })();

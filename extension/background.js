@@ -1,5 +1,8 @@
 /* Service worker: the only place that talks to the Maskroom server, so the
-   content script needs no CORS and the API key never enters the page. */
+   content script needs no CORS and no credential ever enters the page.
+   With single sign-on the server's session cookie authenticates every call
+   (login() opens the server's sign-in page once); with auth off, the legacy
+   API key from the options page is sent as a header. */
 const DEFAULTS = { serverUrl: "http://127.0.0.1:5170", apiKey: "", guard: true,
                    unmask: true, preamble: true, excelAttach: "xlsx", interceptDownloads: true,
                    keepMasked: false };
@@ -27,14 +30,20 @@ async function settings() {
   return s;
 }
 
-// Admin-set identity for the audit trail (read-only managed policy). Cached;
-// refreshed when the managed area changes.
+// Admin-set server URL (read-only managed policy). Cached; refreshed when the
+// managed area changes. userId/orgId are no longer read: identity comes from
+// the sign-in, not from a header the client asserts.
 let _managed = null;
 async function managed() {
   if (_managed) return _managed;
-  try { _managed = await chrome.storage.managed.get({ userId: "", orgId: "", serverUrl: "" }); }
-  catch (e) { _managed = { userId: "", orgId: "", serverUrl: "" }; }
+  try { _managed = await chrome.storage.managed.get({ serverUrl: "" }); }
+  catch (e) { _managed = { serverUrl: "" }; }
   return _managed;
+}
+// What the page may know: everything except the legacy key itself.
+async function publicSettings() {
+  const { apiKey, ...rest } = await settings();
+  return { ...rest, hasApiKey: !!apiKey };
 }
 chrome.storage.onChanged.addListener((changes, area) => { if (area === "managed") _managed = null; });
 
@@ -53,10 +62,9 @@ function bytesToB64(buf) {
 async function request(path, init) {
   const s = await settings();
   init.headers = init.headers || {};
-  if (s.apiKey) init.headers["X-API-Key"] = s.apiKey;
-  const m = await managed();
-  if (m.userId) init.headers["X-Maskroom-User"] = m.userId;
-  if (m.orgId) init.headers["X-Maskroom-Org"] = m.orgId;
+  init.credentials = "include";                       // the sign-on session cookie
+  init.headers["X-Requested-With"] = "maskroom";      // CSRF proof the server requires
+  if (s.apiKey) init.headers["X-API-Key"] = s.apiKey; // legacy shared key (auth off)
   try {
     return { res: await fetch(s.serverUrl + path, init) };
   } catch (e) {
@@ -230,6 +238,29 @@ chrome.downloads.onCreated.addListener((item) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => { delete tabVaults[tabId]; });
 
+// ---------------------------------------------------------------- sign-in
+// Opens the server's login page in the identity popup. The server sends the
+// browser through the identity provider and finally redirects to this
+// extension's chromiumapp.org URL, which closes the popup; the session
+// cookie it set is the one every later fetch() carries.
+async function login() {
+  const s = await settings();
+  const done = chrome.identity.getRedirectURL("done");
+  const url = `${s.serverUrl}/auth/login?next=${encodeURIComponent(done)}`;
+  try {
+    await chrome.identity.launchWebAuthFlow({ url, interactive: true });
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || "Sign-in was cancelled." };
+  }
+  const me = await api("/api/me");
+  if (!me.ok) return { ok: false, error: me.error || "Signed in, but the server did not recognise the session." };
+  return { ok: true, principal: me.data.principal, authMode: me.data.auth_mode };
+}
+async function logout() {
+  const r = await api("/auth/logout", "POST", {});
+  return { ok: r.ok, error: r.error };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return false;
   switch (msg.type) {
@@ -238,7 +269,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "fetchBinary": fetchBinary(msg.path).then(sendResponse); return true;
     case "restoreFile": restoreFile(msg.name, msg.b64, msg.sessionId).then(sendResponse); return true;
     case "saveFile": saveFile(msg.name, msg.b64, msg.mime).then(sendResponse); return true;
-    case "settings": settings().then(sendResponse); return true;
+    case "settings": publicSettings().then(sendResponse); return true;
+    case "me": api("/api/me").then(sendResponse); return true;
+    case "login": login().then(sendResponse); return true;
+    case "logout": logout().then(sendResponse); return true;
     case "setTabVault":
       if (sender.tab) {
         tabVaults[sender.tab.id] = msg.vault || {};

@@ -16,14 +16,14 @@ import os
 import threading
 import time
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import StaticPool
 
 from ._upsert import insert_ignore
 from .schema import metadata, schema_meta
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 (2026-09-22): users, login_sessions, api_keys, runs; sessions.owner_id
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _MEMORY_URLS = ("sqlite://", "sqlite:///:memory:")
 
@@ -90,8 +90,19 @@ def make_engine(url):
                          pool_recycle=1800)
 
 
+def _migrate(engine):
+    """Hand-written column additions for databases created by an older
+    version. create_all only adds whole tables. Each step is idempotent and
+    the same statement works on SQLite and Postgres."""
+    cols = {c["name"] for c in inspect(engine).get_columns("sessions")}
+    if "owner_id" not in cols:  # v1 -> v2
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN owner_id VARCHAR(32)"))
+
+
 def init_schema(engine):
     metadata.create_all(engine)
+    _migrate(engine)
     with engine.begin() as conn:
         insert_ignore(conn, schema_meta,
                       [{"version": SCHEMA_VERSION, "applied_at": time.time()}], keys=["version"])

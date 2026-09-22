@@ -13,4 +13,3 @@ Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\3rdparty\extensions\lcmdehcdpfddkjgajmlpgfholdekpgio\policy]
 "guardLocked"=dword:00000001
 "serverUrl"="https://maskroom.yourco.example"
-"orgId"="hsenidmobile"

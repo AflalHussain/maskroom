@@ -19,6 +19,8 @@ def client(tmp_path_factory, db_module):
     webapp.audit = AuditLog(db_module, os.path.join(runs, "audit"), ttl_days=0)
     webapp.ADMIN_KEY = None
     webapp.app.config["TESTING"] = True
+    webapp.configure_auth(webapp.app, db_module, mode="off",
+                          legacy_key=lambda: webapp.API_KEY, admin_key=lambda: webapp.ADMIN_KEY)
     return webapp.app.test_client()
 
 
@@ -127,6 +129,7 @@ def test_api_key_gate(client, monkeypatch):
     assert client.post("/api/session").status_code == 401
     assert client.get("/api/config").status_code == 200
     assert client.post("/api/session", headers={"X-API-Key": "secret"}).status_code == 200
+    assert client.post("/api/session?key=secret").status_code == 401   # query-string keys are gone
 
 
 def test_unmask_file_endpoint(client, tmp_path):

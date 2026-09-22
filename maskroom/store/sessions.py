@@ -32,9 +32,10 @@ from .schema import sessions as T_SESSIONS, vault_entries as T_ENTRIES
 
 
 class Session:
-    def __init__(self, store, session_id, base_salt):
+    def __init__(self, store, session_id, base_salt, owner_id=None):
         self.store = store
         self.id = session_id
+        self.owner_id = owner_id  # principal that created it; None with auth off
         self.vault = Vault()
         self.created = time.time()
         self.last_used = self.created
@@ -55,7 +56,8 @@ class Session:
             # Another process may have touched the row since we loaded it:
             # keep the newer last_used / higher calls rather than overwrite.
             ins = _insert_for(conn)(T_SESSIONS).values(
-                id=self.id, created=self.created, last_used=self.last_used, calls=self.calls)
+                id=self.id, created=self.created, last_used=self.last_used, calls=self.calls,
+                owner_id=self.owner_id)  # owner is set once (not in set_): first writer wins
             conn.execute(ins.on_conflict_do_update(index_elements=["id"], set_={
                 "last_used": case((T_SESSIONS.c.last_used > ins.excluded.last_used,
                                    T_SESSIONS.c.last_used), else_=ins.excluded.last_used),
@@ -88,7 +90,7 @@ class Session:
             row = conn.execute(select(T_SESSIONS).where(T_SESSIONS.c.id == session_id)).first()
             if row is None:
                 return None
-            sess = cls(store, session_id, base_salt)
+            sess = cls(store, session_id, base_salt, owner_id=row.owner_id)
             sess.created, sess.last_used, sess.calls = row.created, row.last_used, row.calls
             sess._hydrate(conn)
         return sess
@@ -126,7 +128,7 @@ class Session:
     def info(self):
         return {"session_id": self.id, "created": self.created,
                 "last_used": self.last_used, "calls": self.calls,
-                "vault_entries": len(self.vault)}
+                "vault_entries": len(self.vault), "owner_id": self.owner_id}
 
 
 class SessionStore:
@@ -154,8 +156,8 @@ class SessionStore:
         return isinstance(session_id, str) and 8 <= len(session_id) <= 64 \
             and all(c.isalnum() or c in "-_" for c in session_id)
 
-    def create(self):
-        sess = Session(self, uuid.uuid4().hex[:16], self.base_salt)
+    def create(self, owner_id=None):
+        sess = Session(self, uuid.uuid4().hex[:16], self.base_salt, owner_id=owner_id)
         sess.save()
         with self._lock:
             self._sessions[sess.id] = sess

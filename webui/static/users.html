@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskroom · Admin users</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b567d'/%3E%3Cstop offset='1' stop-color='%231e2e44'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7.5' fill='url(%23g)'/%3E%3Crect x='8' y='9.4' width='16' height='2.6' rx='1.3' fill='%23fff' opacity='.55'/%3E%3Crect x='8' y='14.4' width='16' height='3.2' rx='1.6' fill='%23fff'/%3E%3Crect x='8' y='19.8' width='10' height='2.6' rx='1.3' fill='%23fff' opacity='.55'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/auth.js"></script>
+<style>
+.top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
+.top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.wrap{max-width:1100px;margin:0 auto;padding:24px}
+.hide{display:none}
+.gate{max-width:420px;margin:80px auto;padding:28px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center}
+.gate h2{margin:0 0 8px}
+.muted{color:var(--text-3);font-size:13px}
+h2{font-size:15px;margin:22px 0 10px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border)}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
+tr:last-child td{border-bottom:0}
+select,input{font:inherit;padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text)}
+button{font:inherit;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+button.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+button.ghost{background:transparent}
+button.danger{color:var(--bad);border-color:var(--bad)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.secret{font-family:var(--mono);background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;word-break:break-all;margin:8px 0}
+.err{color:var(--bad);font-size:13px;min-height:18px}
+.ok{color:var(--ok);font-size:13px;min-height:18px}
+.disabled td{opacity:.55}
+code{font-family:var(--mono);font-size:12px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">Admin users</span></div>
+  <div class="right">
+    <span id="mr-auth" class="muted"></span>
+    <a class="ghost" href="/admin" style="padding:7px 12px;border-radius:8px">audit ↗</a>
+    <a class="ghost" href="/admin/rules" style="padding:7px 12px;border-radius:8px">rules ↗</a>
+    <button class="ghost" id="reload">reload</button>
+    <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
+  </div>
+</header>
+
+<div id="gate" class="gate hide">
+  <h2>Sign-in required</h2>
+  <p class="muted" id="gatemsg">Users and service keys are managed by administrators.</p>
+  <button class="primary" id="signin">Sign in</button>
+</div>
+
+<main id="app" class="wrap hide">
+  <h2>Users</h2>
+  <p class="muted">Everyone who signs in appears here with the <b>staff</b> role. Auditors can read the audit trail; administrators can also edit rules, users and keys. Disabling a user ends their sessions at once.</p>
+  <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead><tbody id="users"></tbody></table>
+  <div class="err" id="usererr"></div>
+
+  <h2>Service keys</h2>
+  <p class="muted">For scripts, gateways and MCP servers. Send <code>Authorization: Bearer mr_…</code>. The secret is shown once, at creation.</p>
+  <div class="row">
+    <input id="keyname" placeholder="name, e.g. finance-gateway" style="min-width:240px">
+    <select id="keyrole"><option value="staff">staff</option><option value="auditor">auditor</option><option value="admin">admin</option></select>
+    <button class="primary" id="keycreate">Create key</button>
+  </div>
+  <div id="newkey" class="hide"><div class="secret" id="secret"></div><div class="row"><button class="ghost" id="copysecret">copy</button><span class="muted">Store it now; it cannot be shown again.</span></div></div>
+  <table><thead><tr><th>Name</th><th>Role</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody id="keys"></tbody></table>
+  <div class="err" id="keyerr"></div>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("maskroom-theme",t)}catch(e){}const b=$("#themebtn");if(b)b.textContent=t==="light"?"◑":"◐";}
+let __t=null;try{__t=localStorage.getItem("maskroom-theme")}catch(e){}
+applyTheme(__t||"light");
+document.addEventListener("click",e=>{if(e.target&&e.target.id==="themebtn")applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light");});
+const esc=MaskroomAuth.esc;
+const when=t=>t?new Date(t*1000).toISOString().replace("T"," ").slice(0,16):"—";
+const api=(path,method="GET",body)=>MaskroomAuth.fetchJson(path,{method,headers:body!==undefined?{"Content-Type":"application/json"}:{},body:body!==undefined?JSON.stringify(body):undefined});
+let ROLES=["staff","auditor","admin"], ME=null;
+
+function showGate(msg){$("#gate").classList.remove("hide");$("#app").classList.add("hide");if(msg)$("#gatemsg").textContent=msg;}
+function showApp(){$("#gate").classList.add("hide");$("#app").classList.remove("hide");}
+
+async function loadUsers(){
+  const d=await api("/api/users"); ROLES=d.roles||ROLES;
+  $("#users").innerHTML=d.users.map(u=>{
+    const self=ME&&ME.id===u.id;
+    const sel=`<select data-role="${u.id}" ${self?"disabled":""}>${ROLES.map(r=>`<option value="${r}" ${r===u.role?"selected":""}>${r}</option>`).join("")}</select>`;
+    const btn=self?'<span class="muted">you</span>':`<button class="${u.disabled?"":"danger"}" data-toggle="${u.id}" data-disabled="${u.disabled?1:0}">${u.disabled?"enable":"disable"}</button>`;
+    return `<tr class="${u.disabled?"disabled":""}"><td>${esc(u.email)}</td><td>${esc(u.name)}</td><td>${sel}</td><td>${when(u.last_login)}</td><td>${btn}</td></tr>`;
+  }).join("")||'<tr><td colspan="5" class="muted">nobody has signed in yet</td></tr>';
+}
+async function loadKeys(){
+  const d=await api("/api/keys");
+  $("#keys").innerHTML=d.keys.map(k=>`<tr class="${k.revoked_at?"disabled":""}"><td>${esc(k.name)}</td><td>${esc(k.role)}</td><td>${when(k.created_at)}</td><td>${when(k.last_used)}</td><td>${k.revoked_at?"revoked "+when(k.revoked_at):"active"}</td><td>${k.revoked_at?"":`<button class="danger" data-revoke="${k.id}">revoke</button>`}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">no service keys</td></tr>';
+}
+async function load(){await Promise.all([loadUsers(),loadKeys()]);}
+
+async function boot(){
+  const {cfg,me}=await MaskroomAuth.boot(); ME=me;
+  if(cfg.auth_mode!=="oidc"){
+    if(!cfg.admin_auth_required){showGate("Users and keys are managed with MASKROOM_AUTH_MODE=oidc, or with an admin key for a local demo.");$("#signin").classList.add("hide");return;}
+    if(!MaskroomAuth.legacy("admin")){showGate("Enter the admin key (header link) to manage service keys.");$("#signin").classList.add("hide");return;}
+  } else {
+    const r=MaskroomAuth.requireRole("admin");
+    if(!r.ok){$("#signin").classList.add("hide");showGate(r.reason);return;}
+  }
+  try{await load();showApp();}catch(e){showGate(e.message||"Error");}
+}
+
+document.addEventListener("change",async e=>{
+  const sel=e.target.closest&&e.target.closest("select[data-role]"); if(!sel)return;
+  $("#usererr").textContent="";
+  try{await api(`/api/users/${sel.dataset.role}`,"PATCH",{role:sel.value});await loadUsers();}catch(err){$("#usererr").textContent=err.message;}
+});
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-toggle]");
+  if(t){$("#usererr").textContent="";const dis=t.dataset.disabled!=="1";
+    if(dis&&!confirm("Disable this user? Their sessions end immediately."))return;
+    try{await api(`/api/users/${t.dataset.toggle}`,"PATCH",{disabled:dis});await loadUsers();}catch(err){$("#usererr").textContent=err.message;}
+    return;}
+  const r=e.target.closest&&e.target.closest("[data-revoke]");
+  if(r){$("#keyerr").textContent="";if(!confirm("Revoke this key? Clients using it stop working immediately."))return;
+    try{await api(`/api/keys/${r.dataset.revoke}`,"DELETE");await loadKeys();}catch(err){$("#keyerr").textContent=err.message;}}
+});
+$("#keycreate").addEventListener("click",async()=>{
+  $("#keyerr").textContent="";
+  try{const d=await api("/api/keys","POST",{name:$("#keyname").value,role:$("#keyrole").value});
+    $("#secret").textContent=d.secret;$("#newkey").classList.remove("hide");$("#keyname").value="";await loadKeys();}
+  catch(err){$("#keyerr").textContent=err.message;}
+});
+$("#copysecret").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("#secret").textContent);}catch(e){}});
+$("#signin").addEventListener("click",()=>{location.href="/auth/login?next=/admin/users";});
+$("#reload").addEventListener("click",()=>load().catch(e=>$("#usererr").textContent=e.message));
+boot();
+</script>
+</body>
+</html>

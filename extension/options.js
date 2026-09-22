@@ -4,6 +4,7 @@ const status = (t, cls = "") => { $("status").textContent = t; $("status").class
 
 chrome.storage.local.get(DEFAULTS).then((s) => {
   $("serverUrl").value = s.serverUrl; $("apiKey").value = s.apiKey;
+  renderAccount();
   $("guard").checked = s.guard; $("unmask").checked = s.unmask; $("preamble").checked = s.preamble;
   $("excelAttach").value = s.excelAttach; $("interceptDownloads").checked = s.interceptDownloads;
   $("keepMasked").checked = s.keepMasked;
@@ -41,7 +42,7 @@ $("save").addEventListener("click", async () => {
   try {
     const serverUrl = $("serverUrl").value.trim().replace(/\/+$/, "") || DEFAULTS.serverUrl;
     await ensurePermission(serverUrl);
-    await chrome.storage.local.set({ serverUrl, apiKey: $("apiKey").value.trim(),
+    await chrome.storage.local.set({ serverUrl,
       guard: $("guard").checked, unmask: $("unmask").checked, preamble: $("preamble").checked,
       excelAttach: $("excelAttach").value, interceptDownloads: $("interceptDownloads").checked,
       keepMasked: $("keepMasked").checked });
@@ -52,8 +53,43 @@ $("save").addEventListener("click", async () => {
 $("test").addEventListener("click", async () => {
   status("Testing…");
   const r = await chrome.runtime.sendMessage({ type: "api", path: "/api/config" });
-  if (r && r.ok) status(`Connected · locale ${r.data.default_locale} · auth ${r.data.auth_required ? "required" : "off"}`, "ok");
+  if (r && r.ok) status(`Connected · locale ${r.data.default_locale} · sign-on ${r.data.auth_mode === "oidc" ? "on" : "off"}${r.data.auth_mode !== "oidc" && r.data.auth_required ? " (legacy API key required)" : ""}`, "ok");
   else status((r && r.error) || "No response", "bad");
+  renderAccount();
+});
+
+// ---------- account ----------
+async function renderAccount() {
+  const el = $("account");
+  const r = await chrome.runtime.sendMessage({ type: "me" });
+  if (!r) { el.textContent = "no response from the extension"; return; }
+  if (r.ok && r.data && r.data.auth_mode === "off") {
+    el.textContent = "This server runs without sign-on." + (r.data.principal ? ` Using ${r.data.principal.name}.` : "");
+    $("login").hidden = true; $("logout").hidden = true; $("legacy").open = true; return;
+  }
+  $("legacy").open = false;
+  if (r.ok && r.data && r.data.principal) {
+    const p = r.data.principal;
+    el.innerHTML = `Signed in as <b>${(p.email || p.name || "").replace(/</g, "&lt;")}</b> · ${p.role}`;
+    $("login").hidden = true; $("logout").hidden = false;
+  } else {
+    el.textContent = r.status === 401 ? "Not signed in." : (r.error || "Cannot reach the server.");
+    $("login").hidden = false; $("logout").hidden = true;
+  }
+}
+$("login").addEventListener("click", async () => {
+  status("Opening sign-in…");
+  const r = await chrome.runtime.sendMessage({ type: "login" });
+  status(r && r.ok ? "Signed in." : ((r && r.error) || "Sign-in failed"), r && r.ok ? "ok" : "bad");
+  renderAccount();
+});
+$("logout").addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "logout" });
+  status("Signed out.", "ok"); renderAccount();
+});
+$("savekey").addEventListener("click", async () => {
+  await chrome.storage.local.set({ apiKey: $("apiKey").value.trim() });
+  status("Legacy key saved.", "ok"); renderAccount();
 });
 
 

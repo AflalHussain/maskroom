@@ -110,8 +110,10 @@ On a managed machine, fully quit and reopen Chrome, then:
 3. Open `https://claude.ai`: the bar shows **`guard: on 🔒`**, clicking it does nothing, and
    the options page shows the Guard checkbox disabled and "locked by your administrator".
 4. The **Maskroom server URL** is pushed to every install by the `serverUrl` key in the
-   guard-lock config (Step 3), so users never type it and the options field is locked. Confirm
-   the extension reaches it — the bar shows a session id and a pseudonym count, not "no session".
+   guard-lock config (Step 3), so users never type it and the options field is locked. With
+   sign-on enabled the bar first shows **sign in**; after the popup completes it shows a
+   session id and a pseudonym count. Identity comes from that sign-in, so the old `userId`
+   and `orgId` policy keys are ignored (remove them from your policy).
 
 ---
 

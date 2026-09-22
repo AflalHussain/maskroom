@@ -9,11 +9,11 @@ API:     see docs in README.md "LLM staging" — /api/session, /api/mask,
 
 Engines are built once per option set and share one spaCy load; all analysis
 is serialized through the session store's engine lock (spaCy pipelines are
-not guaranteed thread-safe). Set MASKROOM_API_KEY to require an X-API-Key
-header on every /api route.
+not guaranteed thread-safe). Authentication lives in webui/auth.py: single
+sign-on (MASKROOM_AUTH_MODE=oidc) with roles and service keys, or the legacy
+shared secrets with MASKROOM_AUTH_MODE=off.
 """
 import base64
-import hmac
 import io
 import json
 import os
@@ -34,6 +34,9 @@ from maskroom.locale import DEFAULT_LOCALE, available_locales
 from maskroom.pipeline import SUPPORTED_EXTS as MASK_EXTS, mask_file
 from maskroom.restore import SUPPORTED_EXTS as RESTORE_EXTS, unmask_file
 from webui.audit import AuditLog
+from webui import auth as auth_mod
+from webui.auth import (configure_auth, current_principal, external_base as _external_base,
+                        client_ip as _ip, owned)
 
 try:
     import pymupdf as fitz
@@ -54,8 +57,10 @@ MAX_PREVIEW_COLS = 14
 MAX_PREVIEW_PAGES = 8
 MAX_TEXT_CHARS = int(os.environ.get("MAX_TEXT_CHARS", "200000"))
 MAX_MARKDOWN_ROWS = 2000
+# Legacy shared secrets (auth mode "off" only); read live by webui.auth so
+# tests can swap them on this module.
 API_KEY = os.environ.get("MASKROOM_API_KEY")
-ADMIN_KEY = os.environ.get("MASKROOM_ADMIN_KEY")  # gates /admin dashboard + /api/audit
+ADMIN_KEY = os.environ.get("MASKROOM_ADMIN_KEY")
 TTL_HOURS = float(os.environ.get("SESSION_TTL_HOURS", "24"))
 AUDIT_TTL_DAYS = float(os.environ.get("AUDIT_TTL_DAYS", "90"))  # 0 = keep forever
 EXT_DIR = os.path.join(REPO_ROOT, "extension")
@@ -72,22 +77,19 @@ sessions = SessionStore(_db, ttl=TTL_HOURS * 3600 or None)
 audit = AuditLog(_db, AUDIT_DIR, ttl_days=AUDIT_TTL_DAYS)
 _policy = PolicyStore(_db)
 
-# Admin pages served without a key (they prompt for it client-side); their APIs
-# demand the key. Kept together so check_api_key() gates them uniformly.
-ADMIN_PAGES = {"/admin": "admin.html", "/admin/rules": "rules.html"}
+# Admin pages are always served; their JS asks /api/me and shows the sign-in
+# or "role required" state. The APIs behind them are gated in webui/auth.py.
+ADMIN_PAGES = {"/admin": "admin.html", "/admin/rules": "rules.html", "/admin/users": "users.html"}
 
 
 def _user():
+    """Who to attribute this request to in the audit trail: the signed-in
+    user's email or the service key's name. With auth off, the header the
+    extension used to send is still honoured."""
+    p = current_principal()
+    if p.authenticated:
+        return p.label
     return request.headers.get("X-Maskroom-User") or "unknown"
-
-
-def _org():
-    return request.headers.get("X-Maskroom-Org") or ""
-
-
-def _ip():
-    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            or request.remote_addr or "")
 
 
 def _entity_counts(findings):
@@ -182,25 +184,10 @@ def get_engine(options):
     return eng
 
 
-# ------------------------------------------------------------------ auth
-def _admin_ok():
-    given = request.headers.get("X-Admin-Key") or request.args.get("admin_key") or ""
-    return bool(ADMIN_KEY) and hmac.compare_digest(given, ADMIN_KEY)
-
-
 # ------------------------------------------------ self-hosted extension
 import glob as _glob
 import re as _re
 import zipfile as _zipfile
-
-
-def _external_base():
-    """Absolute base URL as the client reached us, honouring a proxy/tunnel
-    (ngrok, load balancer) via X-Forwarded-* so the generated URLs are correct
-    wherever the server is exposed."""
-    scheme = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0].strip()
-    host = request.headers.get("X-Forwarded-Host", request.host).split(",")[0].strip()
-    return f"{scheme}://{host}"
 
 
 def _latest_crx():
@@ -244,33 +231,11 @@ def _extension_id():
         return None
 
 
-@app.before_request
-def check_api_key():
-    p = request.path
-    # Admin surfaces (audit dashboard + rules console) and their APIs: gated by
-    # the separate admin key (never the user key). They expose real PII and edit
-    # detection policy, so they are DISABLED unless an admin key is configured —
-    # never silently open. The pages load without a key and prompt for it
-    # client-side; the APIs demand it.
-    admin_page = ADMIN_PAGES.get(p)
-    admin_api = p.startswith("/api/audit") or p.startswith("/api/policy")
-    if admin_page or admin_api:
-        if not ADMIN_KEY:
-            if admin_page:
-                return send_from_directory(os.path.join(BASE, "static"), admin_page)
-            return jsonify({"error": "Admin surfaces are disabled. Set MASKROOM_ADMIN_KEY "
-                                     "on the server to enable them."}), 403
-        if not _admin_ok():
-            if admin_page:
-                return send_from_directory(os.path.join(BASE, "static"), admin_page)
-            return jsonify({"error": "Admin key required (X-Admin-Key header)."}), 401
-        return None
-    if not API_KEY or not p.startswith("/api/") or p == "/api/config":
-        return None
-    given = request.headers.get("X-API-Key") or request.args.get("key") or ""
-    if not hmac.compare_digest(given, API_KEY):
-        return jsonify({"error": "Missing or invalid API key (X-API-Key header)."}), 401
-    return None
+# Authentication and the access matrix: webui/auth.py. Configured here so the
+# legacy keys are read from this module (tests set webapp.API_KEY/ADMIN_KEY).
+configure_auth(app, _db, legacy_key=lambda: API_KEY, admin_key=lambda: ADMIN_KEY,
+               extension_ids=[x for x in (_extension_id(),) if x])
+app.before_request(auth_mod.authenticate)
 
 
 @app.after_request
@@ -299,6 +264,11 @@ def admin_page():
 @app.get("/admin/rules")
 def rules_page():
     return send_from_directory(os.path.join(BASE, "static"), "rules.html")
+
+
+@app.get("/admin/users")
+def admin_users_page():
+    return send_from_directory(os.path.join(BASE, "static"), "users.html")
 
 
 # ---- self-hosted extension install (open; Chrome sends no auth) ----
@@ -334,11 +304,13 @@ def ext_crx():
 
 @app.get("/api/config")
 def config():
-    return jsonify({"auth_required": bool(API_KEY), "default_locale": DEFAULT_LOCALE,
+    oidc = auth_mod.AUTH.mode == "oidc"
+    return jsonify({"auth_mode": auth_mod.AUTH.mode, "login_url": "/auth/login",
+                    "auth_required": oidc or bool(API_KEY), "default_locale": DEFAULT_LOCALE,
                     "locales": available_locales(), "session_ttl_hours": TTL_HOURS,
                     "preamble": rules.LLM_TOKEN_PREAMBLE, "max_text_chars": MAX_TEXT_CHARS,
                     "restore_exts": list(RESTORE_EXTS),
-                    "admin_auth_required": bool(ADMIN_KEY),
+                    "admin_auth_required": oidc or bool(ADMIN_KEY),
                     "audit_ttl_days": AUDIT_TTL_DAYS})
 
 
@@ -348,15 +320,21 @@ def locales():
 
 
 # -------------------------------------------------------------- sessions
+def _owner():
+    """The principal id new sessions and runs are attributed to."""
+    return current_principal().id
+
+
 def _session_or_error(session_id, create=False):
-    """(session, error_response). Sweeps idle sessions as a side effect."""
+    """(session, error_response). Sweeps idle sessions as a side effect. A
+    session another principal owns is reported as unknown, not forbidden."""
     sessions.maybe_sweep()
     if not session_id:
         if create:
-            return sessions.create(), None
+            return sessions.create(owner_id=_owner()), None
         return None, (jsonify({"error": "session_id is required."}), 400)
     sess = sessions.get(session_id)
-    if sess is None:
+    if sess is None or not owned(sess.owner_id):
         return None, (jsonify({"error": "Unknown or expired session."}), 404)
     return sess, None
 
@@ -364,7 +342,7 @@ def _session_or_error(session_id, create=False):
 @app.post("/api/session")
 def session_create():
     sessions.maybe_sweep()
-    return jsonify(sessions.create().info())
+    return jsonify(sessions.create(owner_id=_owner()).info())
 
 
 @app.get("/api/session/<session_id>")
@@ -375,6 +353,9 @@ def session_info(session_id):
 
 @app.delete("/api/session/<session_id>")
 def session_delete(session_id):
+    sess = sessions.get(session_id)
+    if sess is not None and not owned(sess.owner_id):
+        return jsonify({"deleted": False})
     return jsonify({"deleted": sessions.delete(session_id)})
 
 
@@ -553,6 +534,7 @@ def process():
     run_id = uuid.uuid4().hex[:12]
     run_dir = os.path.join(RUNS, run_id)
     os.makedirs(run_dir)
+    auth_mod.AUTH.runs.create(run_id, owner_id=_owner(), session_id=sess.id if sess else None)
     in_path = os.path.join(run_dir, "input" + ext)
     f.save(in_path)
 
@@ -568,7 +550,7 @@ def process():
 
     # A run always has a scratch session so per-run state (vault/report) is
     # isolated; a real session makes the vault shared across the conversation.
-    scratch = sess or sessions.create()
+    scratch = sess or sessions.create(owner_id=_owner())
     kind = mode = None
     try:
         with sessions.bind(engine, scratch):
@@ -662,6 +644,7 @@ def unmask_file_route():
     run_id = uuid.uuid4().hex[:12]
     run_dir = os.path.join(RUNS, run_id)
     os.makedirs(run_dir)
+    auth_mod.AUTH.runs.create(run_id, owner_id=_owner(), session_id=sess.id if sess else None)
     in_path = os.path.join(run_dir, "input" + ext)
     f.save(in_path)
     out_name = "restored" + ext
@@ -684,7 +667,7 @@ def unmask_file_route():
 
 
 # ------------------------------------------------------------- audit API
-# All /api/audit routes are gated by the admin key in check_api_key().
+# All /api/audit routes are gated (auditor role, or the admin key with auth off) in webui/auth.py.
 @app.get("/api/audit")
 def audit_list():
     def _float(name):
@@ -828,21 +811,33 @@ def policy_test():
                     "findings": eng._last_findings, "by_entity": by_entity})
 
 
-@app.get("/api/download/<run_id>/<path:fname>")
-def download(run_id, fname):
+def _run_file(run_id, fname):
+    """Path of a run artefact the current principal may read, else None.
+    Unknown runs and other principals' runs look the same (not found)."""
     safe = os.path.basename(fname)
     path = os.path.join(RUNS, os.path.basename(run_id), safe)
     if not os.path.isfile(path):
+        return None
+    owner = auth_mod.AUTH.runs.owner_of(run_id)
+    if owner is auth_mod.MISSING:
+        # A run dir with no row (made before the upgrade): ownerless.
+        owner = None
+    return path if owned(owner) else None
+
+
+@app.get("/api/download/<run_id>/<path:fname>")
+def download(run_id, fname):
+    path = _run_file(run_id, fname)
+    if not path:
         return jsonify({"error": "File not found"}), 404
-    return send_file(path, as_attachment=True, download_name=safe)
+    return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
 @app.get("/api/text/<run_id>/<path:fname>")
 def run_text(run_id, fname):
     """A run's text output as JSON (for copy-to-clipboard in the UI)."""
-    safe = os.path.basename(fname)
-    path = os.path.join(RUNS, os.path.basename(run_id), safe)
-    if not os.path.isfile(path) or not safe.endswith((".md", ".txt")):
+    path = _run_file(run_id, fname)
+    if not path or not path.endswith((".md", ".txt")):
         return jsonify({"error": "File not found"}), 404
     with open(path, encoding="utf-8") as fh:
         return jsonify({"text": fh.read()})

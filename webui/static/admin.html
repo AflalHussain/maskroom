@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/auth.js"></script>
 <style>
 .top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
 .top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
@@ -46,7 +47,10 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
 <header class="top">
   <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">Admin audit</span></div>
   <div class="right">
+    <span id="mr-auth" class="muted"></span>
     <span id="who"></span>
+    <a class="ghost" href="/admin/rules" style="padding:7px 12px;border-radius:8px">rules ↗</a>
+    <a class="ghost" href="/admin/users" style="padding:7px 12px;border-radius:8px">users ↗</a>
     <button class="ghost" id="refresh">refresh</button>
     <button class="ghost" id="signout">sign out</button>
     <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
@@ -54,8 +58,8 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
 </header>
 
 <div id="gate" class="gate hide">
-  <h2>Admin sign-in</h2>
-  <p class="muted" style="font-size:13px">Enter the admin key (server <code>MASKROOM_ADMIN_KEY</code>) to view the audit trail.</p>
+  <h2>Sign-in required</h2>
+  <p class="muted" style="font-size:13px" id="gatemsg">The audit trail is available to auditors and administrators.</p>
   <input type="password" id="adminkey" placeholder="admin key" autocomplete="off">
   <button class="primary" id="signin">Sign in</button>
   <div class="err" id="gateerr"></div>
@@ -104,18 +108,9 @@ document.addEventListener("click",(e)=>{if(e.target&&e.target.id==="themebtn")ap
 const TOKEN_RE=/TOK_[A-Z0-9_]+_[0-9A-F]{8,}/g;
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const hl=s=>esc(s).replace(TOKEN_RE,m=>`<mark>${m}</mark>`);
-let KEY=""; try{KEY=localStorage.getItem("maskroom-admin-key")||""}catch(e){}
 let cfg={admin_auth_required:true};
 let offset=0, limit=50, total=0;
-
-async function api(path){
-  const h={}; if(KEY)h["X-Admin-Key"]=KEY;
-  const r=await fetch(path,{headers:h});
-  if(r.status===401)throw {code:401,message:"Admin key required or invalid."};
-  let d=null; try{d=await r.json()}catch(e){}
-  if(!r.ok)throw {code:r.status,message:(d&&d.error)||r.statusText};
-  return d;
-}
+const api=(path)=>MaskroomAuth.fetchJson(path);
 
 function showGate(msg){ $("#gate").classList.remove("hide"); $("#app").classList.add("hide"); if(msg)$("#gateerr").textContent=msg; }
 function showApp(){ $("#gate").classList.add("hide"); $("#app").classList.remove("hide"); }
@@ -123,15 +118,23 @@ function showApp(){ $("#gate").classList.add("hide"); $("#app").classList.remove
 function showDisabled(){
   $("#gate").classList.remove("hide"); $("#app").classList.add("hide");
   $("#gate").innerHTML='<h2>Audit dashboard disabled</h2>'+
-    '<p class="muted" style="font-size:13px">This dashboard holds sensitive data and is off until an admin key is configured. '+
-    'Set <code>MASKROOM_ADMIN_KEY</code> on the server and reload.</p>';
+    '<p class="muted" style="font-size:13px">This dashboard holds sensitive data and is off until sign-on is configured '+
+    '(<code>MASKROOM_AUTH_MODE=oidc</code>) or, for a local demo, an admin key (<code>MASKROOM_ADMIN_KEY</code>).</p>';
 }
 async function boot(){
-  try{ cfg=await (await fetch("/api/config")).json(); }catch(e){}
+  const {cfg:c, me}=await MaskroomAuth.boot(); cfg=c||cfg;
+  if(cfg.auth_mode==="oidc"){
+    $("#adminkey").classList.add("hide");
+    const r=MaskroomAuth.requireRole("auditor");
+    if(!r.ok){ $("#signin").classList.add("hide"); showGate(r.reason); return; }
+    $("#who").textContent="";
+    try{ await loadAll(); showApp(); }catch(e){ showGate(e.message||"Error"); }
+    return;
+  }
   if(!cfg.admin_auth_required){ showDisabled(); return; }   // server has no admin key configured
-  if(!KEY){ showGate(""); return; }
+  if(!MaskroomAuth.legacy("admin")){ showGate(""); return; }
   try{ await loadAll(); showApp(); }
-  catch(e){ if(e.code===401){ KEY=""; showGate("Invalid admin key."); }
+  catch(e){ if(e.code===401){ MaskroomAuth.setLegacy("admin",""); showGate("Invalid admin key."); }
             else if(e.code===403){ showDisabled(); } else showGate(e.message||"Error"); }
 }
 
@@ -182,7 +185,6 @@ async function loadList(){
 
 async function openDetail(id){
   let r; try{ r=await api("/api/audit/"+id); }catch(e){ $("#listerr").textContent=e.message; return; }
-  const q=KEY?"?admin_key="+encodeURIComponent(KEY):"";
   const hasFiles=r.input_file||r.output_file;
   // For restore/unmask operations the input is the masked file and the output
   // is the unmasked (restored) file; for mask operations it's the reverse.
@@ -195,8 +197,8 @@ async function openDetail(id){
       <div class="pane"><div class="cap out">output (${outLabel})</div><div class="box">${isRestore?esc(r.output_text):hl(r.output_text)}</div></div>
     </div>`:"";
   const fileBlock=hasFiles?`<div class="dl">
-      ${r.input_file?`<a href="/api/audit/${id}/file/input${q}" download>⬇ ${inLabel} file</a>`:""}
-      ${r.output_file?`<a href="/api/audit/${id}/file/output${q}" download>⬇ ${outLabel} file</a>`:""}
+      ${r.input_file?MaskroomAuth.link(`/api/audit/${id}/file/input`,r.input_file,`⬇ ${inLabel} file`):""}
+      ${r.output_file?MaskroomAuth.link(`/api/audit/${id}/file/output`,r.output_file,`⬇ ${outLabel} file`):""}
     </div>`:"";
   const chips=Object.entries(r.by_entity||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="chip">${esc(k)} ${v}</span>`).join("");
   const unres=(r.unresolved&&r.unresolved.length)?`<div class="pane"><div class="cap">unresolved tokens</div><div class="box">${r.unresolved.map(esc).join("\n")}</div></div>`:"";
@@ -221,9 +223,9 @@ async function openDetail(id){
 function closeDetail(){ $("#drawer").classList.remove("on"); $("#scrim").classList.remove("on"); }
 
 // events
-$("#signin").addEventListener("click",()=>{ KEY=$("#adminkey").value.trim(); try{localStorage.setItem("maskroom-admin-key",KEY)}catch(e){} boot(); });
+$("#signin").addEventListener("click",()=>{ if(cfg.auth_mode==="oidc"){ location.href="/auth/login?next="+encodeURIComponent(location.pathname); return; } MaskroomAuth.setLegacy("admin",$("#adminkey").value.trim()); boot(); });
 $("#adminkey").addEventListener("keydown",e=>{ if(e.key==="Enter")$("#signin").click(); });
-$("#signout").addEventListener("click",()=>{ KEY=""; try{localStorage.removeItem("maskroom-admin-key")}catch(e){} showGate(""); });
+$("#signout").addEventListener("click",async()=>{ if(cfg.auth_mode==="oidc"){ try{await fetch("/auth/logout",{method:"POST",credentials:"same-origin",headers:MaskroomAuth.headers()})}catch(e){} location.href="/auth/login?next=/admin"; return; } MaskroomAuth.setLegacy("admin",""); MaskroomAuth.boot(); showGate(""); });
 $("#refresh").addEventListener("click",()=>loadAll().catch(e=>$("#listerr").textContent=e.message));
 $("#apply").addEventListener("click",()=>{ offset=0; loadList().catch(e=>$("#listerr").textContent=e.message); });
 $("#clear").addEventListener("click",()=>{ ["#f-user","#f-q","#f-since","#f-until"].forEach(i=>$(i).value=""); $("#f-action").value=""; offset=0; loadList(); });

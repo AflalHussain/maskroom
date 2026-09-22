@@ -25,6 +25,7 @@ sessions = Table(
     Column("created", Float, nullable=False),
     Column("last_used", Float, nullable=False),
     Column("calls", Integer, nullable=False, server_default="0"),
+    Column("owner_id", String(32)),               # principal id; NULL = created with auth off (v1 rows)
     Index("ix_sessions_last_used", "last_used"),
 )
 
@@ -93,4 +94,56 @@ policy_revisions = Table(
     Column("user_id", String(255)),
     Column("fingerprint", String(16), nullable=False),
     Column("snapshot", JSON, nullable=False),
+)
+
+# ---------------------------------------------------------------- identity
+# Who may do what. Users come from single sign-on (one row per email, created
+# on first login); roles are managed here, never mapped from the provider.
+users = Table(
+    "users", metadata,
+    Column("id", String(32), primary_key=True),            # "usr_" + 12 hex
+    Column("email", String(255), nullable=False, unique=True),   # stored lower-cased
+    Column("name", String(255), nullable=False, server_default=""),
+    Column("role", String(16), nullable=False, server_default="staff"),
+    Column("disabled", Boolean, nullable=False, server_default=false()),
+    Column("created", Float, nullable=False),
+    Column("last_login", Float),
+    Column("provider_sub", String(255)),
+)
+
+# A browser or extension login. The cookie carries a random token; the row id
+# is its SHA-256, so a copy of the database cannot forge a session.
+login_sessions = Table(
+    "login_sessions", metadata,
+    Column("id", String(64), primary_key=True),
+    Column("user_id", String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("created", Float, nullable=False),
+    Column("expires", Float, nullable=False),
+    Column("last_seen", Float, nullable=False),
+    Column("ip", String(64), nullable=False, server_default=""),
+    Index("ix_login_sessions_expires", "expires"),
+    Index("ix_login_sessions_user", "user_id"),
+)
+
+# Named credentials for scripts, gateways and MCP servers. Only the hash is kept.
+api_keys = Table(
+    "api_keys", metadata,
+    Column("id", String(32), primary_key=True),            # "key_" + 12 hex
+    Column("name", String(80), nullable=False),
+    Column("key_hash", String(64), nullable=False, unique=True),
+    Column("role", String(16), nullable=False, server_default="staff"),
+    Column("created_by", String(255)),
+    Column("created_at", Float, nullable=False),
+    Column("last_used", Float),
+    Column("revoked_at", Float),
+)
+
+# One row per file run so downloads can be limited to the run's owner.
+runs = Table(
+    "runs", metadata,
+    Column("run_id", String(32), primary_key=True),
+    Column("owner_id", String(32)),
+    Column("session_id", String(64)),
+    Column("created", Float, nullable=False),
+    Index("ix_runs_created", "created"),
 )

@@ -71,8 +71,10 @@ staff browsers --443--> nginx (TLS, basic auth on UI, body cap, timeouts)
 - Audit records hold raw customer data. Keep `AUDIT_TTL_DAYS` at 90 or lower, restrict admin
   key holders, encrypt the volume. Encryption of values inside the database is still open
   work (ROADMAP item 6) and should be scheduled before onboarding regulated data.
-- `PII_TOKEN_SALT`, `MASKROOM_API_KEY` and `MASKROOM_ADMIN_KEY` belong in AWS Secrets
-  Manager or SSM Parameter Store, pulled at boot, never in the compose file or an image.
+- Run with `MASKROOM_AUTH_MODE=oidc` against the company identity provider (or the bundled
+  Keycloak). `PII_TOKEN_SALT`, `MASKROOM_SECRET_KEY` and `MASKROOM_OIDC_CLIENT_SECRET` belong
+  in AWS Secrets Manager or SSM Parameter Store, pulled at boot, never in the compose file
+  or an image.
 - Choose the region deliberately for data residency (no AWS region in Sri Lanka: Mumbai or
   Singapore) and record the choice.
 

@@ -6,6 +6,8 @@
 #   Everything in Docker:
 #       cp .env.example .env   # then set the secrets
 #       docker compose up -d --build
+#   With the bundled identity provider (see the keycloak service below):
+#       docker compose --profile keycloak up -d
 # Change POSTGRES_PASSWORD (and the URL) before exposing anything.
 services:
   db:
@@ -35,6 +37,20 @@ services:
       MASKROOM_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-maskroom}:${POSTGRES_PASSWORD:-maskroom}@db:5432/${POSTGRES_DB:-maskroom}
       MASKROOM_DATA_DIR: /data
       PII_TOKEN_SALT: ${PII_TOKEN_SALT:-}   # REQUIRED for real use: set it in .env
+      # Sign-on. "oidc" needs the three MASKROOM_OIDC_* values (any OpenID
+      # Connect provider, or the keycloak service below); "off" keeps the legacy
+      # shared keys for local demos only.
+      MASKROOM_AUTH_MODE: ${MASKROOM_AUTH_MODE:-off}
+      MASKROOM_OIDC_ISSUER: ${MASKROOM_OIDC_ISSUER:-}
+      MASKROOM_OIDC_CLIENT_ID: ${MASKROOM_OIDC_CLIENT_ID:-maskroom}
+      MASKROOM_OIDC_CLIENT_SECRET: ${MASKROOM_OIDC_CLIENT_SECRET:-}
+      MASKROOM_OIDC_SCOPES: ${MASKROOM_OIDC_SCOPES:-openid email profile}
+      MASKROOM_SECRET_KEY: ${MASKROOM_SECRET_KEY:-}
+      MASKROOM_SESSION_HOURS: ${MASKROOM_SESSION_HOURS:-12}
+      MASKROOM_ADMIN_EMAILS: ${MASKROOM_ADMIN_EMAILS:-}
+      MASKROOM_PUBLIC_URL: ${MASKROOM_PUBLIC_URL:-}
+      # Legacy shared keys (auth mode "off"; MASKROOM_API_KEY is also accepted
+      # as a deprecated service key in oidc mode during a rollout).
       MASKROOM_API_KEY: ${MASKROOM_API_KEY:-}
       MASKROOM_ADMIN_KEY: ${MASKROOM_ADMIN_KEY:-}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
@@ -44,6 +60,27 @@ services:
     ports:
       - "${MASKROOM_PORT:-8080}:8080"
     stop_grace_period: 320s    # let a long OCR request finish
+
+  # Fallback identity provider for organisations without one:
+  #   docker compose --profile keycloak up -d db keycloak
+  # Admin console: http://localhost:8180 (KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD).
+  # The realm "maskroom" is imported from deploy/keycloak/realm-maskroom.json
+  # with client "maskroom" and two example users (staff/staff, admin/admin).
+  # start-dev is for development; production runs `start --optimized` with
+  # its own Postgres, KC_HOSTNAME and TLS in front (see README).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    profiles: ["keycloak"]
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HTTP_PORT: 8180
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:8180:8180"
 
 volumes:
   pgdata:
