@@ -6,27 +6,27 @@ import pytest
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
+def client(tmp_path_factory, db_module):
     os.environ.pop("MASKROOM_API_KEY", None)
     from webui import app as webapp
-    from maskroom import overlay as overlay_mod
+    from maskroom.store import PolicyStore, SessionStore
     runs = str(tmp_path_factory.mktemp("runs"))
     webapp.RUNS = runs
     from webui.audit import AuditLog
-    webapp.audit = AuditLog(os.path.join(runs, "audit"), ttl_days=0)
-    # isolate the overlay file and start from empty. These are module globals,
-    # so save and restore them — otherwise a saved overlay (e.g. an allow-list)
-    # leaks into every engine built by a later test module.
-    saved = (overlay_mod.DEFAULT_PATH, webapp._overlay, webapp._overlay_fp)
-    overlay_mod.DEFAULT_PATH = os.path.join(runs, "custom_policy.yaml")
-    webapp._overlay = overlay_mod.load()
-    webapp._overlay_fp = overlay_mod.fingerprint(webapp._overlay)
-    webapp._engines.clear()
+    webapp.audit = AuditLog(db_module, os.path.join(runs, "audit"), ttl_days=0)
+    webapp.sessions = SessionStore(db_module, ttl=None, base_salt="t")
+    # isolate the policy store and start from empty. The overlay globals are
+    # module state, so swap the store and force a reload on entry and exit —
+    # otherwise a saved overlay (e.g. an allow-list) leaks into every engine
+    # built by a later test module.
+    saved_policy = webapp._policy
+    webapp._policy = PolicyStore(db_module)
+    webapp._refresh_overlay(force=True)
     webapp.ADMIN_KEY = "sekret"
     webapp.app.config["TESTING"] = True
     yield webapp.app.test_client()
-    overlay_mod.DEFAULT_PATH, webapp._overlay, webapp._overlay_fp = saved
-    webapp._engines.clear()
+    webapp._policy = saved_policy
+    webapp._refresh_overlay(force=True)
 
 
 H = {"X-Admin-Key": "sekret"}
@@ -93,3 +93,16 @@ def test_test_endpoint_previews_candidate(client):
     # empty text is a 400
     assert client.post("/api/policy/test", headers=H, data=json.dumps({"text": "  "}),
                        content_type="application/json").status_code == 400
+
+
+def test_change_from_another_process_is_picked_up(client, db_module):
+    """A save through a second PolicyStore (another worker) reaches this one
+    without a restart: the revision poll notices and rebuilds the engines."""
+    from webui import app as webapp
+    from maskroom.store import PolicyStore
+    PolicyStore(db_module).save({"deny_terms": [{"term": "Operation Kite"}]}, user_id="other")
+    webapp._overlay_checked = 0.0          # skip the 5 s poll interval
+    assert client.get("/api/policy", headers=H).get_json()["overlay"]["deny_terms"][0]["term"] == "Operation Kite"
+    masked = client.post("/api/mask", data=json.dumps({"text": "Operation Kite starts Monday."}),
+                         content_type="application/json").get_json()["masked"]
+    assert "Operation Kite" not in masked

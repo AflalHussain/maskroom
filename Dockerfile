@@ -18,13 +18,19 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn==23.0.0 \
     && python -m spacy download en_core_web_lg
 
 COPY webui ./webui
+# Only the manifest: /ext/update.xml derives the extension id from its key.
+COPY extension/manifest.json ./extension/manifest.json
 
 # Set PII_TOKEN_SALT as a platform secret; never bake it into the image.
-ENV HOST=0.0.0.0 PORT=8080 PYTHONUNBUFFERED=1
+# Runtime files (uploads, audit copies, ext/*.crx, the default SQLite db) live
+# under /data; mount a volume there. Set MASKROOM_DATABASE_URL for Postgres.
+ENV HOST=0.0.0.0 PORT=8080 PYTHONUNBUFFERED=1 MASKROOM_DATA_DIR=/data
+VOLUME /data
 EXPOSE 8080
 
 # One worker: the spaCy model is loaded once per process (~1 GB RAM each).
 # Threads serve concurrent requests; the session store's engine lock serializes
 # analysis. Set MASKROOM_API_KEY to protect /api, MASKROOM_ADMIN_KEY to gate the /admin
 # audit dashboard, SESSION_TTL_HOURS for vault expiry and AUDIT_TTL_DAYS for audit retention.
-CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 4 --timeout 300 --bind 0.0.0.0:${PORT} webui.app:app"]
+# graceful-timeout matches --timeout so a redeploy lets an in-flight OCR job finish.
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 4 --timeout 300 --graceful-timeout 300 --bind 0.0.0.0:${PORT} webui.app:app"]

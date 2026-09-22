@@ -50,8 +50,9 @@ replace the `update_url` with Google's URL above and skip Step 2.
 
 2. **Host the `.crx` and its update manifest.** The Maskroom server does this for you — no
    manual `update.xml` editing per host:
-   - **Drop the packaged `.crx` where the server looks for it.** By default that is the
-     `local/` folder in the source tree; override with the `EXT_DIST_DIR` environment
+   - **Drop the packaged `.crx` where the server looks for it.** That is `ext/` under
+     `MASKROOM_DATA_DIR` (`/data/ext` in the container image), or the `local/` folder of a
+     source checkout run without a data dir; override with the `EXT_DIST_DIR` environment
      variable. The server picks the highest-versioned `maskroom-*.crx` (or any `*.crx`) there.
    - The server then serves, over whatever host/scheme the request arrives on:
      - **`GET /ext/update.xml`** — generated on the fly; its `codebase` and the app id are
@@ -118,7 +119,7 @@ On a managed machine, fully quit and reopen Chrome, then:
 
 1. Bump `version` in `extension/manifest.json`.
 2. Web Store: re-upload. Self-hosted: repackage with the **same** `.pem` and drop the new
-   `maskroom-<version>.crx` in `EXT_DIST_DIR` (default `local/`) — the server picks the
+   `maskroom-<version>.crx` in `EXT_DIST_DIR` (default `$MASKROOM_DATA_DIR/ext`) — the server picks the
    highest version and regenerates `/ext/update.xml` automatically; no file edits. (Manual
    hosting: upload the new `.crx` and edit `update.xml`'s `version` + `codebase`.) Version
    must increase.

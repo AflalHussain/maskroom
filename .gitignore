@@ -5,6 +5,10 @@ __pycache__/
 
 # runtime output — contains PII / re-identification data, never commit
 webui/runs/
+data/
+*.db
+*.db-wal
+*.db-shm
 vault*.json
 *_MASKED.*
 *_RESTORED.*
@@ -15,7 +19,7 @@ salary_masked_*.xlsx
 local/
 *.egg-info/
 
-# admin policy overlay — may hold sensitive terms (client/person names)
+# admin policy overlay exports — may hold sensitive terms (client/person names)
 config/custom_policy.yaml
 
 # office lock files

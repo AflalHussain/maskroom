@@ -7,6 +7,11 @@ openpyxl==3.1.5
 pymupdf==1.28.2
 pyyaml>=6
 
+# Runtime state (sessions, audit trail, admin rules): SQLite by default,
+# Postgres when MASKROOM_DATABASE_URL is set.
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.1
+
 # Web UI
 flask==3.1.3
 

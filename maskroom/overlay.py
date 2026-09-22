@@ -1,8 +1,8 @@
 """Admin-editable policy overlay: exact-term deny lists, never-mask allow
-lists, and custom regex rules layered on top of the locale policy. Stored as
-one YAML file (MASKROOM_POLICY_FILE, default config/custom_policy.yaml) and
-edited only through the admin API — never a model or network dependency, so it
-imports cleanly and is easy to review as a policy document.
+lists, and custom regex rules layered on top of the locale policy. Lives in
+the database (maskroom.store.policy) and is edited through the admin API or
+`maskroom-admin policy import`; YAML is the interchange format for review and
+version control. Never a model or network dependency, so it imports cleanly.
 
 The overlay affects free-text and per-cell detection (anything that flows
 through FinancialPrivacyEngine.analyze_text). Whole-column header shortcuts in
@@ -16,12 +16,6 @@ import re
 import yaml
 
 from presidio_analyzer import Pattern, PatternRecognizer
-
-# Where the overlay lives. Kept out of the source tree by default (it can hold
-# sensitive terms like real client or person names) — see .gitignore.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_PATH = os.environ.get(
-    "MASKROOM_POLICY_FILE", os.path.join(_REPO_ROOT, "config", "custom_policy.yaml"))
 
 DEFAULT_ENTITY = "CUSTOM_TERM"
 EMPTY = {"version": 1, "deny_terms": [], "allow_terms": [], "regex_rules": []}
@@ -137,25 +131,39 @@ def validate(data):
 
 
 # ------------------------------------------------------------------ storage
+def _store():
+    from .store import PolicyStore, connect
+    return PolicyStore(connect())
+
+
 def load(path=None):
-    """Normalized overlay from disk; the empty overlay if the file is absent."""
-    path = path or DEFAULT_PATH
-    if not os.path.isfile(path):
+    """The normalized overlay. With `path`: read that YAML file (the empty
+    overlay if it is absent). Without: the database. A library caller with no
+    database configured (a bare CLI run) gets the empty overlay and no
+    database is created as a side effect."""
+    if path is not None:
+        if not os.path.isfile(path):
+            return validate(None)
+        with open(path, encoding="utf-8") as f:
+            return validate(yaml.safe_load(f))
+    from .store import db as _db
+    if not _db.is_configured():
         return validate(None)
-    with open(path, encoding="utf-8") as f:
-        return validate(yaml.safe_load(f))
+    return _store().load()
 
 
-def save(data, path=None):
-    """Validate then persist. Returns the normalized dict actually written."""
-    path = path or DEFAULT_PATH
+def save(data, path=None, user_id=None):
+    """Validate then persist. With `path`: write YAML (atomic). Without: the
+    database, recording a revision. Returns the normalized dict written."""
     norm = validate(data)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        yaml.safe_dump(norm, f, sort_keys=False, allow_unicode=True)
-    os.replace(tmp, path)
-    return norm
+    if path is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.safe_dump(norm, f, sort_keys=False, allow_unicode=True)
+        os.replace(tmp, path)
+        return norm
+    return _store().save(norm, user_id=user_id)[0]
 
 
 # --------------------------------------------------------------- engine glue

@@ -1,6 +1,14 @@
 pii_env/
 local/
 webui/runs/
+data/
+*.db
+*.db-wal
+*.db-shm
+model_training/
+deploy/
+enterprise/
+samples/
 tests/
 docs/
 scripts/

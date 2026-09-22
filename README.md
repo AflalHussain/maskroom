@@ -44,14 +44,17 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
 extension/           Chrome extension for claude.ai (mask the composer, unmask replies on screen)
 samples/             demo/test prompt sets with generated workbooks and a PDF (samples/README.md)
 webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
-                     static/staging.html = LLM staging page; runs and session vaults
-                     land in webui/runs/ (ignored)
-  session.py         (in maskroom/) per-conversation vault store used by the API
+                     static/staging.html = LLM staging page; per-run scratch files
+                     land in webui/runs/ (ignored) or $MASKROOM_DATA_DIR/runs
+  store/             (in maskroom/) runtime state in a database: session vaults,
+                     audit trail, admin rules (SQLite by default, Postgres in prod)
+  admin.py           (in maskroom/) the `maskroom-admin` command: db init, rules import/export
 tests/               pytest suite; tests/data/ holds the test corpus and the stress answer key
 scripts/             gen_stress.py (regenerate the stress workbook), time_excel.py (timing)
 docs/                technical design and technologies documents
 setup.sh             one-shot environment setup
-Dockerfile           container image for the web UI (gunicorn); render.yaml / fly.toml deploy configs
+Dockerfile           container image for the web UI (gunicorn); docker-compose.yml runs it
+                     beside Postgres; render.yaml / fly.toml deploy configs
 ```
 
 ---
@@ -269,12 +272,14 @@ up to a minute while the model loads.
 
 ```bash
 docker build -t maskroom .
-docker run --rm -p 8080:8080 -e PII_TOKEN_SALT="choose-a-long-random-secret" maskroom
+docker run --rm -p 8080:8080 -v maskroom-data:/data \
+  -e PII_TOKEN_SALT="choose-a-long-random-secret" maskroom
 # → open http://127.0.0.1:8080
 ```
 
 The container runs gunicorn with one worker (each worker would load its own copy of the
-model) and reads `HOST` / `PORT` from the environment. Ready-made configs:
+model), keeps files and its default SQLite database under `/data`, and reads `PORT` from
+the environment. Ready-made configs:
 
 | Platform | Config | Deploy |
 |---|---|---|
@@ -289,9 +294,47 @@ Before exposing it publicly:
   auth proxy (Cloudflare Access, oauth2-proxy, your platform's SSO) or a private network.
 - **Choose the region deliberately.** Uploads contain PII; both configs default to
   Singapore — change `region` / `primary_region` to match your data-residency needs.
-- **Treat `webui/runs/` as ephemeral.** It lives on the container filesystem and is lost
-  on redeploy; download masked files and vaults promptly.
+- **Give it a database and a data volume.** Sessions, the audit trail and admin rules
+  live in the database (`MASKROOM_DATABASE_URL`; SQLite under the data dir when unset).
+  Uploaded and masked files, audit file copies and the extension package live under
+  `MASKROOM_DATA_DIR` (`/data` in the image). Mount a volume there or both are lost on
+  redeploy. `docker-compose.yml` wires the image to a Postgres container:
+
+  ```bash
+  cp .env.example .env            # set PII_TOKEN_SALT (and the keys)
+  docker compose up -d --build    # app on :8080, Postgres on 127.0.0.1:5432
+  ```
+
+  For local development run only the database in Docker and the app on the host:
+
+  ```bash
+  docker compose up -d db
+  export MASKROOM_DATABASE_URL=postgresql+psycopg://maskroom:maskroom@localhost:5432/maskroom
+  pii_env/bin/python webui/app.py
+  ```
 - **Skip the transformer model** unless the instance has 4 GB+ RAM.
+
+### Configuration reference
+
+All settings are environment variables, read when the server starts.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PII_TOKEN_SALT` | built-in (testing only) | Secret behind every token; see [Configure the token salt](#configure-the-token-salt). Changing it orphans every existing vault. |
+| `MASKROOM_DATABASE_URL` | SQLite file under the data dir | Where sessions, the audit trail and admin rules live. `postgresql+psycopg://user:pass@host/db` for Postgres (`postgres://` is accepted). |
+| `MASKROOM_DATA_DIR` | `webui/runs` (repo checkout), `/data` (image) | Root for files: `runs/` scratch, `audit/` file copies, `ext/` extension package, `maskroom.db`. |
+| `MASKROOM_API_KEY` | unset (API open) | Require `X-API-Key` on `/api/*` (except `/api/config`). |
+| `MASKROOM_ADMIN_KEY` | unset (admin surfaces disabled) | Require `X-Admin-Key` on `/admin*`, `/api/audit*`, `/api/policy*`. |
+| `SESSION_TTL_HOURS` | `24` | Idle time after which a session vault is deleted (`0` = never). |
+| `AUDIT_TTL_DAYS` | `90` | Retention of audit records, which hold raw PII (`0` = forever). |
+| `MAX_TEXT_CHARS` | `200000` | Largest text body accepted by `/api/mask`, `/api/unmask`. |
+| `EXT_DIST_DIR` | `<data dir>/ext` or `local/` | Where `/ext/maskroom.crx` looks for the packaged extension. |
+| `PII_LOCALE` | `lk` | Default locale for detection. |
+| `HOST`, `PORT` | `127.0.0.1`, `5170` | Dev-server bind (the image binds `0.0.0.0:8080`). |
+
+`maskroom-admin db init` creates the schema up front (the server also does it on start);
+`maskroom-admin policy export` / `policy import file.yaml` move the admin rules between the
+database and YAML.
 
 ### Troubleshooting
 
@@ -349,8 +392,9 @@ Upload a workbook or PDF, set every CLI option (threshold, NER model, date polic
 whitelist, restore-with-vault), and get: coverage stat tiles, a findings table with every
 detection's location, entity type, and confidence score, a highlighted before/after preview
 (Excel as tables, PDF as page renders), and download links for the masked file and vault.
-The server binds to localhost only — uploaded files and vaults land in `webui/runs/`;
-clear that directory as you would any sensitive working data.
+The server binds to localhost only. Uploaded files and per-run vaults land in `webui/runs/`
+(or `$MASKROOM_DATA_DIR/runs`); clear that directory as you would any sensitive working
+data. Session vaults live in the database and expire on their own.
 
 ### Python API
 
@@ -427,7 +471,7 @@ The page has three steps that share one **session vault**:
 Ready-made prompt sets and files for testing or demoing this workflow are in
 [`samples/README.md`](samples/README.md).
 
-A session lives in `webui/runs/sessions/<id>/vault.json`, is shared by every call that
+A session lives in the database (one row per pseudonym), is shared by every call that
 carries its id, gets its own token salt (tokens from two sessions never coincide), can be
 downloaded, and is deleted on *end session* or after `SESSION_TTL_HOURS` (default 24) of
 inactivity. What the staging area cannot do is enforce anything: a user can still type
@@ -459,7 +503,7 @@ user id the extension sends as `X-Maskroom-User` (set via managed policy — see
 
 The dashboard shows stat tiles, a filterable table (user, action, date range, search) and a
 per-record view with the original beside the masked version and file downloads. Set
-`MASKROOM_ADMIN_KEY` to require sign-in; without it the audit API is open (local demo only).
+`MASKROOM_ADMIN_KEY` to enable the dashboard; without it the admin API refuses every call.
 
 ### Admin rules console
 
@@ -472,11 +516,14 @@ layer custom detection rules on top of the locale policy without touching code:
 
 A **Test** box previews what would mask before you save. Saving validates every rule (bad or
 ReDoS-prone regex, too-short deny terms, and bad entity names are rejected), hot-swaps the
-running engines, and records the change to the audit trail. Rules live in one YAML file
-(`MASKROOM_POLICY_FILE`, default `config/custom_policy.yaml` — git-ignored as it can hold
-sensitive terms; see [`config/custom_policy.example.yaml`](config/custom_policy.example.yaml)).
-They apply to free-text and per-cell detection; whole-column header shortcuts are a separate
-layer.
+running engines, and records the change to the audit trail. Rules live in the database
+with a revision history (who changed what, when), so every server process sharing that
+database picks a change up within seconds. YAML is the interchange format:
+`maskroom-admin policy export rules.yaml` for review or version control and
+`maskroom-admin policy import rules.yaml` to load one (see
+[`config/custom_policy.example.yaml`](config/custom_policy.example.yaml); keep real rule files
+out of git, they can hold client and person names). Rules apply to free-text and per-cell
+detection; whole-column header shortcuts are a separate layer.
 
 ### JSON API
 

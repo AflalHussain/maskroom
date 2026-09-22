@@ -27,6 +27,7 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from maskroom import FinancialPrivacyEngine, SessionStore, build_nlp_engine
+from maskroom.store import PolicyStore, connect as db_connect
 from maskroom import overlay as overlay_mod
 from maskroom import rules
 from maskroom.locale import DEFAULT_LOCALE, available_locales
@@ -40,7 +41,12 @@ except ImportError:
     import fitz
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-RUNS = os.path.join(BASE, "runs")
+REPO_ROOT = os.path.dirname(BASE)
+# Files live under MASKROOM_DATA_DIR (runs/, audit/, ext/, the default SQLite
+# db); without it the legacy layout inside the source tree is used.
+DATA_DIR = os.environ.get("MASKROOM_DATA_DIR")
+RUNS = os.path.join(DATA_DIR, "runs") if DATA_DIR else os.path.join(BASE, "runs")
+AUDIT_DIR = os.path.join(DATA_DIR, "audit") if DATA_DIR else os.path.join(RUNS, "audit")
 os.makedirs(RUNS, exist_ok=True)
 
 MAX_PREVIEW_ROWS = 80
@@ -52,14 +58,19 @@ API_KEY = os.environ.get("MASKROOM_API_KEY")
 ADMIN_KEY = os.environ.get("MASKROOM_ADMIN_KEY")  # gates /admin dashboard + /api/audit
 TTL_HOURS = float(os.environ.get("SESSION_TTL_HOURS", "24"))
 AUDIT_TTL_DAYS = float(os.environ.get("AUDIT_TTL_DAYS", "90"))  # 0 = keep forever
-REPO_ROOT = os.path.dirname(BASE)
 EXT_DIR = os.path.join(REPO_ROOT, "extension")
 # Directory holding the packaged maskroom-<version>.crx for self-hosted install.
-EXT_DIST_DIR = os.environ.get("EXT_DIST_DIR", os.path.join(REPO_ROOT, "local"))
+EXT_DIST_DIR = os.environ.get(
+    "EXT_DIST_DIR", os.path.join(DATA_DIR, "ext") if DATA_DIR else os.path.join(REPO_ROOT, "local"))
 
 app = Flask(__name__, static_folder="static")
-sessions = SessionStore(os.path.join(RUNS, "sessions"), ttl=TTL_HOURS * 3600 or None)
-audit = AuditLog(os.path.join(RUNS, "audit"), ttl_days=AUDIT_TTL_DAYS)
+# Runtime state (sessions, audit trail, admin rules) lives in the database:
+# MASKROOM_DATABASE_URL, or SQLite under the data dir. Opened at import so a
+# missing database fails the process fast rather than the first request.
+_db = db_connect()
+sessions = SessionStore(_db, ttl=TTL_HOURS * 3600 or None)
+audit = AuditLog(_db, AUDIT_DIR, ttl_days=AUDIT_TTL_DAYS)
+_policy = PolicyStore(_db)
 
 # Admin pages served without a key (they prompt for it client-side); their APIs
 # demand the key. Kept together so check_api_key() gates them uniformly.
@@ -89,7 +100,7 @@ def _entity_counts(findings):
 def _audit(**kw):
     """Record an audit entry; never let auditing break the request."""
     try:
-        audit.sweep()
+        audit.maybe_sweep()
         audit.record(**kw)
     except Exception as e:  # noqa: BLE001
         app.logger.warning("audit record failed: %s", e)
@@ -99,11 +110,32 @@ _nlp_engines = {}
 _engines = {}
 _build_lock = threading.Lock()
 
-# Admin policy overlay (custom deny/allow/regex). Loaded once; the fingerprint
-# is folded into the engine cache key so a save via /api/policy hot-swaps every
-# warm engine. Guarded by _build_lock on write.
-_overlay = overlay_mod.load()
+# Admin policy overlay (custom deny/allow/regex). The fingerprint is folded
+# into the engine cache key so a save via /api/policy hot-swaps every warm
+# engine. Other processes (gunicorn workers, a second instance, the admin CLI)
+# save to the same database; _refresh_overlay polls the revision id so their
+# changes take effect here within _OVERLAY_POLL_S. Guarded by _build_lock.
+_overlay, _overlay_rev = _policy.current()
 _overlay_fp = overlay_mod.fingerprint(_overlay)
+_overlay_checked = time.monotonic()
+_OVERLAY_POLL_S = 5.0
+
+
+def _refresh_overlay(force=False):
+    """Reload the overlay if the database has a newer revision than the one
+    the warm engines were built from (checked at most every few seconds)."""
+    global _overlay, _overlay_fp, _overlay_rev, _overlay_checked
+    now = time.monotonic()
+    if not force and now - _overlay_checked < _OVERLAY_POLL_S:
+        return
+    with _build_lock:
+        if not force and now - _overlay_checked < _OVERLAY_POLL_S:
+            return
+        _overlay_checked = now
+        if force or _policy.latest_revision_id() != _overlay_rev:
+            _overlay, _overlay_rev = _policy.current()
+            _overlay_fp = overlay_mod.fingerprint(_overlay)
+            _engines.clear()
 
 
 def _bool(v, default=True):
@@ -132,7 +164,9 @@ def get_engine(options):
     """A warm engine for this option set. Engines share the spaCy model
     for their nlp_model, so a new option combination costs only recognizer
     setup, not a model load."""
-    key = tuple(sorted(options.items())) + (("overlay", _overlay_fp),)
+    _refresh_overlay()
+    overlay, fp = _overlay, _overlay_fp  # one snapshot, so a refresh can't mix them
+    key = tuple(sorted(options.items())) + (("overlay", fp),)
     eng = _engines.get(key)
     if eng is not None:
         return eng
@@ -144,7 +178,7 @@ def get_engine(options):
             if nlp is None:
                 nlp = _nlp_engines[model] = build_nlp_engine(model)
             kw = dict(options, entities=list(options["entities"]) if options["entities"] else None)
-            eng = _engines[key] = FinancialPrivacyEngine(nlp_engine=nlp, overlay=_overlay, **kw)
+            eng = _engines[key] = FinancialPrivacyEngine(nlp_engine=nlp, overlay=overlay, **kw)
     return eng
 
 
@@ -316,7 +350,7 @@ def locales():
 # -------------------------------------------------------------- sessions
 def _session_or_error(session_id, create=False):
     """(session, error_response). Sweeps idle sessions as a side effect."""
-    sessions.sweep()
+    sessions.maybe_sweep()
     if not session_id:
         if create:
             return sessions.create(), None
@@ -329,7 +363,7 @@ def _session_or_error(session_id, create=False):
 
 @app.post("/api/session")
 def session_create():
-    sessions.sweep()
+    sessions.maybe_sweep()
     return jsonify(sessions.create().info())
 
 
@@ -350,8 +384,9 @@ def session_vault(session_id):
     if err:
         return err
     with sess.lock:
-        sess.save()
-    return send_file(sess.vault_path, as_attachment=True,
+        doc = sess.export()
+    body = json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8")
+    return send_file(io.BytesIO(body), mimetype="application/json", as_attachment=True,
                      download_name=f"vault-{session_id}.json")
 
 
@@ -666,7 +701,7 @@ def audit_list():
         offset = max(0, int(request.args.get("offset", 0)))
     except ValueError:
         offset = 0
-    audit.sweep()
+    audit.maybe_sweep()
     return jsonify(audit.list(
         user=request.args.get("user") or None,
         action=request.args.get("action") or None,
@@ -735,6 +770,7 @@ def _builtin_view():
 
 @app.get("/api/policy")
 def policy_get():
+    _refresh_overlay()
     return jsonify({
         "overlay": _overlay,
         "builtins": _builtin_view(),
@@ -746,15 +782,16 @@ def policy_get():
 
 @app.put("/api/policy")
 def policy_put():
-    global _overlay, _overlay_fp
+    global _overlay, _overlay_fp, _overlay_rev, _overlay_checked
     data = request.get_json(silent=True) or {}
     try:
-        norm = overlay_mod.save(data)
+        norm, rev = _policy.save(data, user_id=_user())
     except overlay_mod.PolicyError as e:
         return jsonify({"error": str(e)}), 400
     with _build_lock:
-        _overlay = norm
+        _overlay, _overlay_rev = norm, rev
         _overlay_fp = overlay_mod.fingerprint(norm)
+        _overlay_checked = time.monotonic()
         _engines.clear()  # global change: drop every warm engine so it rebuilds
     counts = {"deny_terms": len(norm["deny_terms"]), "allow_terms": len(norm["allow_terms"]),
               "regex_rules": len(norm["regex_rules"])}
@@ -772,6 +809,7 @@ def policy_test():
     if not text.strip():
         return jsonify({"error": "Provide some text to test."}), 400
     # Preview against the candidate overlay if supplied, else the live one.
+    _refresh_overlay()
     candidate = data.get("overlay", _overlay)
     try:
         eng = _build_engine(engine_options({}), candidate)

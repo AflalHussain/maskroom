@@ -1,0 +1,50 @@
+# Maskroom with Postgres beside it.
+#   Local dev (app on the host, database in Docker):
+#       docker compose up -d db
+#       export MASKROOM_DATABASE_URL=postgresql+psycopg://maskroom:maskroom@localhost:5432/maskroom
+#       pii_env/bin/python webui/app.py
+#   Everything in Docker:
+#       cp .env.example .env   # then set the secrets
+#       docker compose up -d --build
+# Change POSTGRES_PASSWORD (and the URL) before exposing anything.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-maskroom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maskroom}
+      POSTGRES_DB: ${POSTGRES_DB:-maskroom}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"   # host access for local dev only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maskroom} -d ${POSTGRES_DB:-maskroom}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MASKROOM_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-maskroom}:${POSTGRES_PASSWORD:-maskroom}@db:5432/${POSTGRES_DB:-maskroom}
+      MASKROOM_DATA_DIR: /data
+      PII_TOKEN_SALT: ${PII_TOKEN_SALT:-}   # REQUIRED for real use: set it in .env
+      MASKROOM_API_KEY: ${MASKROOM_API_KEY:-}
+      MASKROOM_ADMIN_KEY: ${MASKROOM_ADMIN_KEY:-}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      AUDIT_TTL_DAYS: ${AUDIT_TTL_DAYS:-90}
+    volumes:
+      - appdata:/data          # uploads, audit files, the extension .crx (ext/)
+    ports:
+      - "${MASKROOM_PORT:-8080}:8080"
+    stop_grace_period: 320s    # let a long OCR request finish
+
+volumes:
+  pgdata:
+  appdata:

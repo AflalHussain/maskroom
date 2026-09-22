@@ -9,14 +9,14 @@ import pytest
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
+def client(tmp_path_factory, db_module):
     os.environ.pop("MASKROOM_API_KEY", None)
     from webui import app as webapp
     runs = str(tmp_path_factory.mktemp("runs"))
     webapp.RUNS = runs
-    webapp.sessions = webapp.SessionStore(os.path.join(runs, "sessions"), ttl=None, base_salt="t")
+    webapp.sessions = webapp.SessionStore(db_module, ttl=None, base_salt="t")
     from webui.audit import AuditLog
-    webapp.audit = AuditLog(os.path.join(runs, "audit"), ttl_days=0)
+    webapp.audit = AuditLog(db_module, os.path.join(runs, "audit"), ttl_days=0)
     webapp.ADMIN_KEY = None
     webapp.app.config["TESTING"] = True
     return webapp.app.test_client()

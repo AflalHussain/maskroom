@@ -9,16 +9,28 @@ you would the original PII.
 """
 from xml.sax.saxutils import escape
 
+_MISSING = object()
+
 
 class Vault:
     def __init__(self):
         self._map = {}              # token -> original value
         self._numeric_tokens = set()  # tokens whose source cell was numeric (fallback)
         self._numeric_cells = set()   # "Sheet!A1" cells that were numeric (per run)
+        self._dirty = set()           # tokens added / promoted since the last mark_clean()
 
     # ----------------------------------------------------------- storage
     def add(self, token, value):
+        if self._map.get(token, _MISSING) != value:
+            self._dirty.add(token)
         self._map[token] = value
+
+    def hydrate(self, token, value, numeric=False):
+        """Load an entry that is already persisted: set it without marking it
+        dirty. Stores use this when reading a vault back."""
+        self._map[token] = value
+        if numeric:
+            self._numeric_tokens.add(token)
 
     def get(self, token, default=None):
         return self._map.get(token, default)
@@ -47,7 +59,9 @@ class Vault:
     def mark_numeric(self, token, cell=None):
         """Record that `token` came from a numeric cell (and, if given, the
         "Sheet!A1" coordinate of that cell)."""
-        self._numeric_tokens.add(token)
+        if token not in self._numeric_tokens:
+            self._numeric_tokens.add(token)
+            self._dirty.add(token)
         if cell:
             self._numeric_cells.add(cell)
 
@@ -66,6 +80,17 @@ class Vault:
         shared session — SessionStore.bind calls this at the start of each run.
         Numeric *tokens* persist (they are session-scoped fallbacks)."""
         self._numeric_cells = set()
+
+    # ------------------------------------------------------- persistence
+    def dirty_rows(self):
+        """[(token, value, is_numeric)] for entries changed since mark_clean().
+        A store writes these, then calls mark_clean(); a failed write leaves
+        the set intact for the next attempt."""
+        return [(t, self._map[t], t in self._numeric_tokens)
+                for t in sorted(self._dirty) if t in self._map]
+
+    def mark_clean(self):
+        self._dirty = set()
 
     # ------------------------------------------------------------- views
     def escaped(self):
@@ -89,10 +114,13 @@ class Vault:
         {token: value} form."""
         if "mappings" in data:
             self._map.update(data["mappings"])
+            self._dirty.update(data["mappings"])
             self._numeric_tokens.update(data.get("numeric_tokens", []))
+            self._dirty.update(data.get("numeric_tokens", []))
             self._numeric_cells.update(data.get("numeric_cells", []))
         else:  # legacy flat {token: value}
             self._map.update(data)
+            self._dirty.update(data)
 
     @classmethod
     def from_dict(cls, data):

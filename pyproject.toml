@@ -16,6 +16,8 @@ dependencies = [
     "openpyxl==3.1.5",
     "pymupdf==1.28.2",
     "pyyaml>=6",
+    "sqlalchemy>=2.0,<3",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -25,13 +27,15 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 maskroom = "maskroom.cli:main"
+maskroom-admin = "maskroom.admin:main"
 
 [tool.setuptools]
-packages = ["maskroom"]
+packages = ["maskroom", "maskroom.store"]
 
 [tool.setuptools.package-data]
 maskroom = ["locales/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]   # so tests can import the unpackaged webui/
 filterwarnings = ["ignore"]
