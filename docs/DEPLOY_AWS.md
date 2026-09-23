@@ -12,46 +12,53 @@ browser / extension --443--> sovereign-ai-nginx-1 (existing container)
    sovereign-ai.hsenidmobile.com  -> platform, unchanged
    <MASKROOM_DOMAIN>              -> maskroom-app-1:8080      (deploy/aws/nginx/maskroom.conf)
    <MASKROOM_DOMAIN>/sso/         -> maskroom-keycloak-1:8180
-project maskroom: app (built from the Dockerfile), db (postgres:16), keycloak; data in ./data
+project maskroom: app (image shipped from a workstation), db (postgres:16), keycloak; data in ./data
 ```
 
-Files: `deploy/aws/docker-compose.server.yml` (override), `deploy/aws/nginx/maskroom.conf.template`,
-`deploy/aws/install.sh` (runs on the server), `deploy/aws/ship.sh` (runs on your machine).
+Files: `deploy/aws/docker-compose.server.yml` (standalone, uses the shipped image),
+`deploy/aws/nginx/maskroom.conf.template`, `deploy/aws/install.sh` (runs on the server),
+`deploy/aws/ship.sh` (runs on your machine and builds the image).
 
 ## 1. Prerequisites
 
-- A DNS A record for the subdomain (for example `maskroom.hsenidmobile.com`) pointing at the
+- A DNS A record for the subdomain (for example `safepii.hsenidmobile.com`) pointing at the
   server's public IP. Find the IP with:
   ```bash
   TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
   curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4
   ```
-- SSH access as the user that runs Docker (`sovereign`) with the server's `.pem` key, `rsync` on both ends.
-- Roughly 3 GB of free RAM and 5 GB of free disk on the server for the image build.
+- SSH access with the server's `.pem` key as a user that can run Docker (`ec2-user`), and a
+  deploy directory that user owns: `sudo mkdir -p /hms/apps/masking && sudo chown ec2-user:ec2-user /hms/apps/masking`.
+- Docker with buildx on **your machine** (the image is built here, never on the server).
+- Roughly 3 GB of free RAM and 3 GB of free disk on the server.
 
 ## 2. Ship and install
 
 From this checkout (branch with the auth work):
 
 ```bash
-deploy/aws/ship.sh -i ~/keys/server.pem sovereign@<server>      # or SSH_KEY=... deploy/aws/ship.sh sovereign@<server>
+deploy/aws/ship.sh -i ~/keys/server.pem ec2-user@<server>
 ```
 
-This rsyncs the source (no venv, data, git history or test corpus) to
-`/hms/apps/masking` and runs `deploy/aws/install.sh` there, which:
+This builds `maskroom:<git sha>` locally, streams it to the server with `docker save |
+ssh docker load` (about 2 GB, compressed in flight; skipped when that tag is already there),
+copies **only** the deploy files (`docker-compose.server.yml`, `install.sh`,
+`nginx/maskroom.conf.template`, `keycloak/realm-maskroom.json`) to `/hms/apps/masking`, and
+runs `install.sh` there, which:
 
 1. creates `.env` on first run (asks for the domain and the admin emails; generates every
-   secret; mode 600);
+   secret; mode 600) and records the shipped image tag;
 2. renders the Keycloak realm into `data/keycloak-import/` with the domain, the client
    secret and random passwords for the two example users;
-3. renders `deploy/aws/nginx/maskroom.conf` and creates a self-signed certificate in
-   `/hms/apps/masking/certs/maskroom.{crt,key}` (Maskroom's own directory) if none exists, then validates the
-   nginx config in a throwaway container;
+3. renders `nginx/maskroom.conf` and creates a self-signed certificate in
+   `/hms/apps/masking/certs/maskroom.{crt,key}` if none exists, then validates the nginx
+   config in a throwaway container;
 4. adds a 2 GB swapfile when it can (`sudo` without a password);
-5. builds the image and starts `app`, `db`, `keycloak`; waits for health; warms the NLP model;
+5. starts `app`, `db`, `keycloak` from the shipped image; waits for health; warms the model;
 6. prints the platform edit below and the example users' passwords.
 
-Re-run `ship.sh` for every update; `.env`, certificates and `data/` survive.
+Re-run `ship.sh` for every update; `.env`, certificates and `data/` survive. `SKIP_BUILD=1`
+reuses the local image, `MASKROOM_TAG=...` names it.
 
 ## 3. Connect the platform's nginx (once)
 
@@ -63,7 +70,7 @@ services:
     networks: [default, maskroom]                       # add
     volumes:
       # ... existing lines ...
-      - ../masking/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
+      - ../masking/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
       - ../masking/certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
       - ../masking/certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
 networks:                                               # top level; add
@@ -117,7 +124,7 @@ up -d nginx`. Nothing in Maskroom changes.
 
 | Task | Command |
 |---|---|
-| Update to a new build | `deploy/aws/ship.sh -i ~/keys/server.pem sovereign@<server>` (from your machine) |
+| Update to a new build | `deploy/aws/ship.sh -i ~/keys/server.pem ec2-user@<server>` (from your machine) |
 | Logs | `docker compose logs -f app` / `keycloak` / `db` |
 | Users, roles, keys | `docker compose exec app maskroom-admin user list` … `key create NAME` |
 | Rules import/export | `docker compose exec app maskroom-admin policy export` |
@@ -126,8 +133,7 @@ up -d nginx`. Nothing in Maskroom changes.
 | Keycloak console | `https://<domain>/sso/admin/` with `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` from `.env` |
 | Stop / start | `docker compose --profile keycloak stop` / `start` (in the masking dir) |
 
-Sizing on this server (2 vCPU, 7.7 GB RAM shared with the platform): the first build takes
-10 to 15 minutes; text masking answers in well under a second; scanned-PDF OCR takes several
+Sizing on this server (2 vCPU, 7.7 GB RAM shared with the platform): text masking answers in well under a second; scanned-PDF OCR takes several
 seconds a page. Memory limits in the override (app 2.5 GB, Keycloak 1 GB, db 512 MB) keep a
 runaway from affecting the platform.
 
