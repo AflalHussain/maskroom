@@ -58,7 +58,7 @@ services:
     volumes:
       - appdata:/data          # uploads, audit files, the extension .crx (ext/)
     ports:
-      - "${MASKROOM_PORT:-8080}:8080"
+      - "${MASKROOM_BIND:-0.0.0.0}:${MASKROOM_PORT:-8080}:8080"   # MASKROOM_BIND=127.0.0.1 behind a proxy
     stop_grace_period: 320s    # let a long OCR request finish
 
   # Fallback identity provider for organisations without one:

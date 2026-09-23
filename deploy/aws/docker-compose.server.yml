@@ -1,0 +1,37 @@
+# Server override: use together with the base file, from the repo directory:
+#   docker compose -f docker-compose.yml -f deploy/aws/docker-compose.server.yml --profile keycloak up -d --build
+# deploy/aws/install.sh does this for you. Values come from .env (see install.sh).
+#
+# Maskroom publishes nothing on the host except loopback bindings (MASKROOM_BIND);
+# the platform's nginx container joins this project's network ("maskroom_default")
+# and proxies https://$MASKROOM_DOMAIN to the containers by name.
+services:
+  app:
+    restart: unless-stopped
+    mem_limit: 2500m
+    environment:
+      MASKROOM_AUTH_MODE: ${MASKROOM_AUTH_MODE:-oidc}
+      # Back-channel discovery over the compose network; Keycloak still reports the
+      # public https issuer (KC_HOSTNAME_BACKCHANNEL_DYNAMIC below), which is what
+      # the id_token carries and what the browser is sent to.
+      MASKROOM_OIDC_ISSUER: ${MASKROOM_OIDC_ISSUER:-http://keycloak:8180/sso/realms/maskroom}
+      MASKROOM_PUBLIC_URL: https://${MASKROOM_DOMAIN:?set MASKROOM_DOMAIN in .env}
+    volumes:
+      - ./data:/data
+
+  db:
+    restart: unless-stopped
+    mem_limit: 512m
+
+  keycloak:
+    restart: unless-stopped
+    mem_limit: 1024m
+    environment:
+      KC_HOSTNAME: https://${MASKROOM_DOMAIN:?set MASKROOM_DOMAIN in .env}/sso
+      KC_HTTP_RELATIVE_PATH: /sso
+      KC_HTTP_PORT: 8180
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HOSTNAME_STRICT: "true"
+    volumes:
+      - ./data/keycloak-import:/opt/keycloak/data/import:ro   # realm rendered by install.sh

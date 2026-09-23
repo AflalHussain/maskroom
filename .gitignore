@@ -28,3 +28,7 @@ config/custom_policy.yaml
 # extension build artifacts / signing keys
 *.crx
 *.pem
+
+# rendered server deploy artefacts
+deploy/aws/nginx/maskroom.conf
+deploy/aws/*.env
