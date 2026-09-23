@@ -26,7 +26,7 @@ Files: `deploy/aws/docker-compose.server.yml` (override), `deploy/aws/nginx/mask
   TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
   curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4
   ```
-- SSH access as the user that runs Docker (`sovereign`), `rsync` on both ends.
+- SSH access as the user that runs Docker (`sovereign`) with the server's `.pem` key, `rsync` on both ends.
 - Roughly 3 GB of free RAM and 5 GB of free disk on the server for the image build.
 
 ## 2. Ship and install
@@ -34,7 +34,7 @@ Files: `deploy/aws/docker-compose.server.yml` (override), `deploy/aws/nginx/mask
 From this checkout (branch with the auth work):
 
 ```bash
-deploy/aws/ship.sh sovereign@<server>
+deploy/aws/ship.sh -i ~/keys/server.pem sovereign@<server>      # or SSH_KEY=... deploy/aws/ship.sh sovereign@<server>
 ```
 
 This rsyncs the source (no venv, data, git history or test corpus) to
@@ -117,7 +117,7 @@ up -d nginx`. Nothing in Maskroom changes.
 
 | Task | Command |
 |---|---|
-| Update to a new build | `deploy/aws/ship.sh sovereign@<server>` (from your machine) |
+| Update to a new build | `deploy/aws/ship.sh -i ~/keys/server.pem sovereign@<server>` (from your machine) |
 | Logs | `docker compose logs -f app` / `keycloak` / `db` |
 | Users, roles, keys | `docker compose exec app maskroom-admin user list` … `key create NAME` |
 | Rules import/export | `docker compose exec app maskroom-admin policy export` |
