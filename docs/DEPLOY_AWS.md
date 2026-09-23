@@ -45,7 +45,7 @@ This rsyncs the source (no venv, data, git history or test corpus) to
 2. renders the Keycloak realm into `data/keycloak-import/` with the domain, the client
    secret and random passwords for the two example users;
 3. renders `deploy/aws/nginx/maskroom.conf` and creates a self-signed certificate in
-   `/hms/apps/sovereign-ai/certs/maskroom.{crt,key}` if none exists, then validates the
+   `/hms/apps/masking/certs/maskroom.{crt,key}` (Maskroom's own directory) if none exists, then validates the
    nginx config in a throwaway container;
 4. adds a 2 GB swapfile when it can (`sudo` without a password);
 5. builds the image and starts `app`, `db`, `keycloak`; waits for health; warms the NLP model;
@@ -64,8 +64,8 @@ services:
     volumes:
       # ... existing lines ...
       - ../masking/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
-      - ./certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
-      - ./certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
+      - ../masking/certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
+      - ../masking/certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
 networks:                                               # top level; add
   maskroom:
     external: true
@@ -109,7 +109,7 @@ with no prompt, so each staff machine must import `maskroom.crt` as trusted (Win
 certmgr, Trusted Root; macOS: Keychain, Always Trust; Linux Chrome: `certutil -d
 sql:$HOME/.pki/nssdb -A -t "C,," -n maskroom -i maskroom.crt`).
 
-When the real certificate arrives: replace `/hms/apps/sovereign-ai/certs/maskroom.crt` and
+When the real certificate arrives: replace `/hms/apps/masking/certs/maskroom.crt` and
 `maskroom.key` (full chain in the `.crt`), then `cd /hms/apps/sovereign-ai && docker compose
 up -d nginx`. Nothing in Maskroom changes.
 

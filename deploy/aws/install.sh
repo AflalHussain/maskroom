@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO=$(pwd)
 PLATFORM_DIR=${PLATFORM_DIR:-/hms/apps/sovereign-ai}      # where the platform's compose + certs live
-CERT_DIR=${CERT_DIR:-$PLATFORM_DIR/certs}
+CERT_DIR=${CERT_DIR:-$REPO/certs}                        # Maskroom's own certificate directory
 COMPOSE="docker compose -f docker-compose.yml -f deploy/aws/docker-compose.server.yml --profile keycloak"
 
 say()  { printf '\n==> %s\n' "$*"; }
@@ -132,8 +132,8 @@ Next, ONCE, in $PLATFORM_DIR/docker-compose.yaml give the platform's nginx acces
       networks: [default, maskroom]          # add
       volumes:                               # add these three lines to the existing list
         - $REPO/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
-        - ./certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
-        - ./certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
+        - $CERT_DIR/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
+        - $CERT_DIR/maskroom.key:/etc/nginx/certs/maskroom.key:ro
   networks:                                  # top level; add
     maskroom:
       external: true
