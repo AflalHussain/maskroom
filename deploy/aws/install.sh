@@ -131,7 +131,7 @@ Next, ONCE, in $PLATFORM_DIR/docker-compose.yaml give the platform's nginx acces
     nginx:
       networks: [default, maskroom]          # add
       volumes:                               # add these three lines to the existing list
-        - ./masking/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
+        - $REPO/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
         - ./certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
         - ./certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
   networks:                                  # top level; add

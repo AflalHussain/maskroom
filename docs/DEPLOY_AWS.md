@@ -3,7 +3,7 @@
 The server already runs the sovereign-ai platform as compose project `sovereign-ai` from
 `/hms/apps/sovereign-ai/docker-compose.yaml`, including an nginx container that owns ports
 80 and 443. Maskroom runs as its own compose project **`maskroom`** in
-`/hms/apps/sovereign-ai/masking`, publishes nothing on the host, and is reached through that
+`/hms/apps/masking`, publishes nothing on the host, and is reached through that
 same nginx on its own subdomain. Maskroom's bundled Keycloak provides sign-on at
 `https://<domain>/sso/`.
 
@@ -38,7 +38,7 @@ deploy/aws/ship.sh -i ~/keys/server.pem sovereign@<server>      # or SSH_KEY=...
 ```
 
 This rsyncs the source (no venv, data, git history or test corpus) to
-`/hms/apps/sovereign-ai/masking` and runs `deploy/aws/install.sh` there, which:
+`/hms/apps/masking` and runs `deploy/aws/install.sh` there, which:
 
 1. creates `.env` on first run (asks for the domain and the admin emails; generates every
    secret; mode 600);
@@ -63,7 +63,7 @@ services:
     networks: [default, maskroom]                       # add
     volumes:
       # ... existing lines ...
-      - ./masking/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
+      - ../masking/deploy/aws/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
       - ./certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
       - ./certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
 networks:                                               # top level; add
@@ -84,7 +84,7 @@ platform's own `/auth` proxy could resolve to the wrong container.
 ## 4. Verify
 
 ```bash
-cd /hms/apps/sovereign-ai/masking
+cd /hms/apps/masking
 docker compose ps                                        # app, db, keycloak up / healthy
 curl -k https://<domain>/api/config                      # "auth_mode": "oidc"
 curl -k https://<domain>/sso/realms/maskroom/.well-known/openid-configuration | head -c 400

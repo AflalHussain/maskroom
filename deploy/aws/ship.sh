@@ -7,7 +7,7 @@ set -euo pipefail
 SSH_KEY=${SSH_KEY:-}
 if [ "${1:-}" = "-i" ]; then SSH_KEY=${2:?path to the .pem file}; shift 2; fi
 TARGET=${1:?usage: ship.sh [-i key.pem] user@host [--no-install]}
-REMOTE_DIR=${REMOTE_DIR:-/hms/apps/sovereign-ai/masking}
+REMOTE_DIR=${REMOTE_DIR:-/hms/apps/masking}
 SSH_CMD="ssh -o StrictHostKeyChecking=accept-new"
 if [ -n "$SSH_KEY" ]; then
   [ -r "$SSH_KEY" ] || { echo "cannot read key: $SSH_KEY"; exit 1; }
