@@ -166,3 +166,57 @@ tbody tr:hover { background: var(--surface-2); }
 .err:empty { display: none; }
 hr { border: 0; border-top: 1px solid var(--border); margin: 0; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---- shared header (rendered by auth.js: MaskroomAuth.nav("<page>")) ---- */
+.mr-nav { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 14px;
+  min-height: 56px; padding: 0 24px; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(10px); }
+.mr-nav .mr-brand { flex: none; }
+.mr-nav .mr-brand .tag { display: none; }
+.mr-nav-links { display: flex; align-items: center; gap: 2px; }
+.mr-nav-links a { position: relative; padding: 7px 11px; border-radius: var(--radius-sm); font-size: 13px;
+  font-weight: 600; color: var(--text-2); white-space: nowrap; transition: background .12s, color .12s; }
+.mr-nav-links a:hover { color: var(--text); background: var(--surface-2); }
+.mr-nav-links a.on { color: var(--brand); background: var(--brand-soft); }
+.mr-nav-links a.on::after { content: ""; position: absolute; left: 11px; right: 11px; bottom: -13px; height: 2px;
+  background: var(--brand); border-radius: 2px 2px 0 0; }
+.mr-nav-group { display: flex; align-items: center; gap: 2px; padding-left: 12px; margin-left: 4px;
+  border-left: 1px solid var(--border-strong); }
+.mr-nav-group .mr-nav-kicker { font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-3); padding: 0 8px 0 2px; }
+.mr-nav-tools { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 12px; color: var(--text-3); }
+.mr-nav-tools .id { color: var(--brand); font-weight: 700; } .mr-nav-tools .n { color: var(--text); font-weight: 700; }
+.mr-nav-tools a, .mr-nav-tools button { background: var(--surface); border: 1px solid var(--border-strong); color: var(--text-2);
+  border-radius: var(--radius-sm); padding: 6px 10px; cursor: pointer; font: 600 12px var(--mono); text-decoration: none; }
+.mr-nav-tools a:hover, .mr-nav-tools button:hover { background: var(--surface-2); color: var(--text); }
+.mr-nav-tools #who { color: var(--text-3); }
+.mr-nav-auth { display: flex; align-items: center; gap: 8px; padding-left: 12px; margin-left: 2px;
+  border-left: 1px solid var(--border-strong); font-family: var(--mono); font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.mr-nav-auth .who { color: var(--text-2); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.mr-nav-auth .role { padding: 2px 7px; border-radius: 999px; background: var(--brand-soft); color: var(--brand);
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.mr-nav-auth a { color: var(--text-2); font-weight: 600; } .mr-nav-auth a:hover { color: var(--brand); }
+.mr-nav #themebtn { width: 30px; height: 30px; padding: 0; display: inline-grid; place-items: center; font-size: 15px;
+  line-height: 1; background: var(--surface); border: 1px solid var(--border-strong); color: var(--text-2);
+  border-radius: var(--radius-sm); cursor: pointer; flex: none; }
+.mr-nav #themebtn:hover { background: var(--surface-2); color: var(--text); }
+.mr-nav-auth:empty { display: none; }
+.mr-nav-break { display: none; }
+@media (max-width: 960px) {
+  .mr-nav { flex-wrap: wrap; padding: 10px 16px; gap: 8px; min-height: 0; }
+  .mr-nav-links a.on::after { display: none; }
+  .mr-nav-break { display: block; flex-basis: 100%; height: 0; }   /* tools, auth and theme share row two */
+  .mr-nav-tools { margin-left: 0; flex: 1 1 0; min-width: 0; }
+  .mr-nav-auth { margin-left: auto; }
+}
+
+/* ---- sign-in / role gate card (admin pages) ---- */
+.gate { max-width: 400px; margin: 12vh auto; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 28px; display: flex; flex-direction: column; gap: 14px; box-shadow: var(--shadow-md); }
+.gate h2 { font-size: 18px; font-weight: 700; margin: 0; }
+.gate p { margin: 0; font-size: 13px; color: var(--text-3); }
+.gate input { font: inherit; padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); }
+.gate .err { color: var(--bad); font-size: 13px; min-height: 18px; }
+.hide { display: none !important; }

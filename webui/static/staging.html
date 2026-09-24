@@ -11,14 +11,6 @@
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/auth.js"></script>
 <style>
-.top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;position:sticky;top:0;z-index:5}
-.nav{font-size:13px} .nav a{color:var(--text-2);font-weight:600} .nav a:hover{color:var(--brand)}
-.session{margin-left:auto;display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--text-3);flex-wrap:wrap}
-.session .id{color:var(--brand);font-weight:700} .session .n{color:var(--text);font-weight:700}
-.session a,.session button{background:var(--surface);border:1px solid var(--border-strong);color:var(--text-2);border-radius:var(--radius-sm);padding:6px 10px;cursor:pointer;font:600 12px var(--mono);text-decoration:none}
-.session a:hover,.session button:hover{background:var(--surface-2);color:var(--text)}
-#themebtn{width:30px;height:30px;padding:0;font-size:15px;line-height:1;display:inline-grid;place-items:center}
-.keyrow{display:none;align-items:center;gap:8px} .keyrow input{width:200px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:22px 24px;align-items:start;max-width:1400px;margin:0 auto;width:100%}
 @media(max-width:1000px){.grid{grid-template-columns:1fr}}
 .col{display:flex;flex-direction:column;gap:20px;min-width:0}
@@ -58,17 +50,13 @@ details summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.05
 </head>
 <body>
 
-<header class="top">
-  <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">LLM staging</span></div>
-  <nav class="nav"><a href="/">file studio →</a></nav>
-  <div class="session">
-    <span id="mr-auth"></span>
+<header id="mr-nav">
+  <div class="mr-nav-tools">
     <span>session <span class="id" id="sid" title="click to copy this session id (use it in the extension’s “use session id” to share this vault)" style="cursor:pointer">—</span></span>
     <span><span class="n" id="entries">0</span> pseudonyms</span>
     <a id="vaultdl" href="#" data-dl="" data-name="">vault ⬇</a>
     <button id="newsess" title="Start a new conversation vault">new session</button>
     <button id="endsess" title="Delete this session's vault">end session</button>
-    <button id="themebtn" title="Toggle light/dark">◐</button>
   </div>
 </header>
 
@@ -157,6 +145,7 @@ details summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.05
   only way back from a token to a person. Sessions idle for longer than <span id="ttl">24</span> h are deleted.</p>
 
 <script>
+MaskroomAuth.nav("staging");
 const $=s=>document.querySelector(s);
 const TOKEN_RE=/TOK_[A-Z0-9_]+_[0-9A-F]{8,}/g;
 const esc=s=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));

@@ -78,12 +78,56 @@ window.MaskroomAuth = (() => {
     return { cfg, me };
   }
 
+  // ---- shared header -------------------------------------------------------
+  // Every page has <header id="mr-nav"> (optionally holding <div class="mr-nav-tools">
+  // with its own controls) and calls MaskroomAuth.nav("<page>") first thing.
+  const PAGES = [
+    { key: "studio", href: "/", label: "File studio" },
+    { key: "staging", href: "/staging", label: "LLM staging" },
+  ];
+  const ADMIN_PAGES = [
+    { key: "audit", href: "/admin", label: "Audit", role: "auditor" },
+    { key: "rules", href: "/admin/rules", label: "Rules", role: "admin" },
+    { key: "users", href: "/admin/users", label: "Users", role: "admin" },
+  ];
+  let navPage = null;
+  function canSee(role) {
+    if (cfg.auth_mode !== "oidc") return true;            // the pages gate themselves with the admin key
+    return !!me && (RANK[me.role] ?? -1) >= (RANK[role] ?? 99);
+  }
+  function renderNavLinks() {
+    const el = document.getElementById("mr-nav-links");
+    if (!el) return;
+    const link = (p) => `<a href="${p.href}" class="${p.key === navPage ? "on" : ""}">${p.label}</a>`;
+    const admin = ADMIN_PAGES.filter((p) => canSee(p.role)).map(link).join("");
+    el.innerHTML = PAGES.map(link).join("") +
+      (admin ? `<span class="mr-nav-group"><span class="mr-nav-kicker">admin</span>${admin}</span>` : "");
+  }
+  function nav(page) {
+    navPage = page;
+    const el = document.getElementById("mr-nav");
+    if (!el) return;
+    el.classList.add("mr-nav");
+    const tools = el.querySelector(".mr-nav-tools");
+    const toolsHtml = tools ? tools.outerHTML : "";
+    el.innerHTML =
+      `<a class="mr-brand" href="/" aria-label="Maskroom"><span class="mr-logo"></span><span class="name">Maskroom</span></a>` +
+      `<nav class="mr-nav-links" id="mr-nav-links" aria-label="Pages"></nav>` +
+      `<span class="mr-nav-break"></span>` +
+      (toolsHtml || `<div class="mr-nav-tools"></div>`) +
+      `<span class="mr-nav-auth" id="mr-auth"></span>` +
+      `<button id="themebtn" title="Toggle light/dark" aria-label="Toggle light or dark theme">◐</button>`;
+    renderNavLinks();
+    renderHeader();
+  }
+
   function renderHeader() {
+    renderNavLinks();
     const el = document.getElementById("mr-auth");
     if (!el) return;
     if (cfg.auth_mode === "oidc") {
       el.innerHTML = me
-        ? `<span title="${esc(me.email || "")}">${esc(me.name || me.email)} · ${esc(me.role)}</span> <a href="#" id="mr-signout">sign out</a>`
+        ? `<span class="who" title="${esc(me.email || "")}">${esc(me.name || me.email)}</span><span class="role">${esc(me.role)}</span><a href="#" id="mr-signout">sign out</a>`
         : `<a href="${loginUrl()}">sign in</a>`;
       const so = el.querySelector("#mr-signout");
       if (so) so.addEventListener("click", (e) => { e.preventDefault(); signOut(); });
@@ -111,6 +155,6 @@ window.MaskroomAuth = (() => {
     return { ok: true };
   }
 
-  return { fetchJson, download, link, boot, requireRole, headers, legacy, setLegacy, esc, signOut,
+  return { fetchJson, download, link, boot, requireRole, headers, legacy, setLegacy, esc, signOut, nav,
            get cfg() { return cfg; }, get me() { return me; } };
 })();

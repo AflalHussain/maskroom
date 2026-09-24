@@ -11,8 +11,6 @@
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/auth.js"></script>
 <style>
-.top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
-.top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
 .top .right #who{font-family:var(--mono);font-size:12px;color:var(--text-3)}
 .wrap{padding:22px 24px;display:flex;flex-direction:column;gap:18px;max-width:1100px;margin:0 auto;width:100%}
 .card>h2{font-size:13px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--text-2);margin:0 0 3px}
@@ -51,23 +49,16 @@ details.builtins[open] summary:before{content:"▾ "}
 .bi .list{font-family:var(--mono);font-size:11.5px;color:var(--text-2);line-height:1.7}
 .bi .list b{color:var(--brand);font-weight:600}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
-.gate{max-width:400px;margin:12vh auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-md)}
-.gate h2{font-size:18px;font-weight:700}
 .hide{display:none}
 .chipcount{font:600 11.5px var(--mono);color:var(--text-3);margin-left:8px}
 </style>
 </head>
 <body>
-<header class="top">
-  <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">Admin rules</span></div>
-  <div class="right">
-    <span id="mr-auth" class="muted"></span>
+<header id="mr-nav">
+  <div class="mr-nav-tools">
     <span id="who"></span>
-    <a class="ghost" href="/admin" style="padding:7px 12px;border-radius:8px">audit ↗</a>
-    <a class="ghost" href="/admin/users" style="padding:7px 12px;border-radius:8px">users ↗</a>
-    <button class="ghost" id="reload">reload</button>
-    <button class="ghost" id="signout">sign out</button>
-    <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
+    <button id="reload">reload</button>
+    <button id="signout" class="hide">sign out</button>
   </div>
 </header>
 
@@ -138,6 +129,7 @@ details.builtins[open] summary:before{content:"▾ "}
 </main>
 
 <script>
+MaskroomAuth.nav("rules");
 const $=s=>document.querySelector(s);
 function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("maskroom-theme",t)}catch(e){}const b=$("#themebtn");if(b)b.textContent=t==="light"?"◑":"◐";}
 let __t=null;try{__t=localStorage.getItem("maskroom-theme")}catch(e){}
@@ -217,6 +209,7 @@ function status(msg,cls){const s=$("#status");s.textContent=msg;s.className="sta
 
 async function boot(){
   const {cfg:c}=await MaskroomAuth.boot(); cfg=c||cfg;
+  $("#signout").classList.toggle("hide", cfg.auth_mode==="oidc");
   if(cfg.auth_mode==="oidc"){
     $("#adminkey").classList.add("hide");
     const r=MaskroomAuth.requireRole("admin");

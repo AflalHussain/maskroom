@@ -11,9 +11,6 @@
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/auth.js"></script>
 <style>
-.top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
-.top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
-.top .right #who{font-family:var(--mono);font-size:12px;color:var(--text-3)}
 .wrap{padding:22px 24px;display:flex;flex-direction:column;gap:18px;max-width:1400px;margin:0 auto;width:100%}
 .filters{display:flex;gap:12px;flex-wrap:wrap;align-items:end;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow-sm)}
 .filters .field{gap:5px}
@@ -38,22 +35,15 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
 .dl{display:flex;gap:10px;flex-wrap:wrap}
 .dl a{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:8px 13px;color:var(--text);background:var(--surface)}
 .dl a:hover{background:var(--surface-2);text-decoration:none}
-.gate{max-width:400px;margin:12vh auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-md)}
-.gate h2{font-size:18px;font-weight:700}
 .hide{display:none}
 </style>
 </head>
 <body>
-<header class="top">
-  <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">Admin audit</span></div>
-  <div class="right">
-    <span id="mr-auth" class="muted"></span>
+<header id="mr-nav">
+  <div class="mr-nav-tools">
     <span id="who"></span>
-    <a class="ghost" href="/admin/rules" style="padding:7px 12px;border-radius:8px">rules ↗</a>
-    <a class="ghost" href="/admin/users" style="padding:7px 12px;border-radius:8px">users ↗</a>
-    <button class="ghost" id="refresh">refresh</button>
-    <button class="ghost" id="signout">sign out</button>
-    <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
+    <button id="refresh">refresh</button>
+    <button id="signout" class="hide">sign out</button>
   </div>
 </header>
 
@@ -99,6 +89,7 @@ mark{background:var(--brand-soft);color:var(--text);border-radius:3px;padding:0 
 <aside class="drawer" id="drawer"></aside>
 
 <script>
+MaskroomAuth.nav("audit");
 const $=s=>document.querySelector(s);
 const themeBtn=()=>document.querySelector("#themebtn");
 function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("maskroom-theme",t)}catch(e){}const b=themeBtn();if(b)b.textContent=t==="light"?"◑":"◐";}
@@ -123,6 +114,7 @@ function showDisabled(){
 }
 async function boot(){
   const {cfg:c, me}=await MaskroomAuth.boot(); cfg=c||cfg;
+  $("#signout").classList.toggle("hide", cfg.auth_mode==="oidc");
   if(cfg.auth_mode==="oidc"){
     $("#adminkey").classList.add("hide");
     const r=MaskroomAuth.requireRole("auditor");

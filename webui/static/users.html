@@ -11,12 +11,8 @@
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/auth.js"></script>
 <style>
-.top{display:flex;align-items:center;gap:16px;padding:13px 24px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
-.top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
 .wrap{max-width:1100px;margin:0 auto;padding:24px}
 .hide{display:none}
-.gate{max-width:420px;margin:80px auto;padding:28px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center}
-.gate h2{margin:0 0 8px}
 .muted{color:var(--text-3);font-size:13px}
 h2{font-size:15px;margin:22px 0 10px}
 table{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
@@ -37,21 +33,19 @@ code{font-family:var(--mono);font-size:12px}
 </style>
 </head>
 <body>
-<header class="top">
-  <div class="mr-brand"><span class="mr-logo"></span><span class="name">Maskroom</span><span class="tag">Admin users</span></div>
-  <div class="right">
-    <span id="mr-auth" class="muted"></span>
-    <a class="ghost" href="/admin" style="padding:7px 12px;border-radius:8px">audit ↗</a>
-    <a class="ghost" href="/admin/rules" style="padding:7px 12px;border-radius:8px">rules ↗</a>
-    <button class="ghost" id="reload">reload</button>
-    <button class="icon-btn" id="themebtn" title="Toggle light/dark">◐</button>
+<header id="mr-nav">
+  <div class="mr-nav-tools">
+    <button id="reload">reload</button>
+    <button id="signout" class="hide">sign out</button>
   </div>
 </header>
 
 <div id="gate" class="gate hide">
   <h2>Sign-in required</h2>
-  <p class="muted" id="gatemsg">Users and service keys are managed by administrators.</p>
+  <p id="gatemsg">Users and service keys are managed by administrators.</p>
+  <input type="password" id="adminkey" placeholder="admin key" autocomplete="off">
   <button class="primary" id="signin">Sign in</button>
+  <div class="err" id="gateerr"></div>
 </div>
 
 <main id="app" class="wrap hide">
@@ -73,6 +67,7 @@ code{font-family:var(--mono);font-size:12px}
 </main>
 
 <script>
+MaskroomAuth.nav("users");
 const $=s=>document.querySelector(s);
 function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("maskroom-theme",t)}catch(e){}const b=$("#themebtn");if(b)b.textContent=t==="light"?"◑":"◐";}
 let __t=null;try{__t=localStorage.getItem("maskroom-theme")}catch(e){}
@@ -83,7 +78,7 @@ const when=t=>t?new Date(t*1000).toISOString().replace("T"," ").slice(0,16):"—
 const api=(path,method="GET",body)=>MaskroomAuth.fetchJson(path,{method,headers:body!==undefined?{"Content-Type":"application/json"}:{},body:body!==undefined?JSON.stringify(body):undefined});
 let ROLES=["staff","auditor","admin"], ME=null;
 
-function showGate(msg){$("#gate").classList.remove("hide");$("#app").classList.add("hide");if(msg)$("#gatemsg").textContent=msg;}
+function showGate(msg){$("#gate").classList.remove("hide");$("#app").classList.add("hide");if(msg)$("#gateerr").textContent=msg;}
 function showApp(){$("#gate").classList.add("hide");$("#app").classList.remove("hide");}
 
 async function loadUsers(){
@@ -101,16 +96,21 @@ async function loadKeys(){
 }
 async function load(){await Promise.all([loadUsers(),loadKeys()]);}
 
+let CFG={auth_mode:"off"};
 async function boot(){
-  const {cfg,me}=await MaskroomAuth.boot(); ME=me;
-  if(cfg.auth_mode!=="oidc"){
-    if(!cfg.admin_auth_required){showGate("Users and keys are managed with MASKROOM_AUTH_MODE=oidc, or with an admin key for a local demo.");$("#signin").classList.add("hide");return;}
-    if(!MaskroomAuth.legacy("admin")){showGate("Enter the admin key (header link) to manage service keys.");$("#signin").classList.add("hide");return;}
-  } else {
+  const {cfg,me}=await MaskroomAuth.boot(); ME=me; CFG=cfg||CFG;
+  $("#signout").classList.toggle("hide", CFG.auth_mode==="oidc");
+  if(CFG.auth_mode==="oidc"){
+    $("#adminkey").classList.add("hide");
     const r=MaskroomAuth.requireRole("admin");
     if(!r.ok){$("#signin").classList.add("hide");showGate(r.reason);return;}
+    try{await load();showApp();}catch(e){showGate(e.message||"Error");}
+    return;
   }
-  try{await load();showApp();}catch(e){showGate(e.message||"Error");}
+  if(!CFG.admin_auth_required){$("#adminkey").classList.add("hide");$("#signin").classList.add("hide");showGate("Users and keys need sign-on (MASKROOM_AUTH_MODE=oidc), or an admin key for a local demo.");return;}
+  if(!MaskroomAuth.legacy("admin")){showGate("");return;}
+  try{await load();showApp();}
+  catch(e){if(e.code===401){MaskroomAuth.setLegacy("admin","");showGate("Invalid admin key.");}else showGate(e.message||"Error");}
 }
 
 document.addEventListener("change",async e=>{
@@ -135,7 +135,9 @@ $("#keycreate").addEventListener("click",async()=>{
   catch(err){$("#keyerr").textContent=err.message;}
 });
 $("#copysecret").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("#secret").textContent);}catch(e){}});
-$("#signin").addEventListener("click",()=>{location.href="/auth/login?next=/admin/users";});
+$("#signin").addEventListener("click",()=>{if(CFG.auth_mode==="oidc"){location.href="/auth/login?next=/admin/users";return;}MaskroomAuth.setLegacy("admin",$("#adminkey").value.trim());boot();});
+$("#adminkey").addEventListener("keydown",e=>{if(e.key==="Enter")$("#signin").click();});
+$("#signout").addEventListener("click",()=>{MaskroomAuth.setLegacy("admin","");MaskroomAuth.boot();showGate("");});
 $("#reload").addEventListener("click",()=>load().catch(e=>$("#usererr").textContent=e.message));
 boot();
 </script>
