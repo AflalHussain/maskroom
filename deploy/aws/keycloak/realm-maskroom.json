@@ -1,6 +1,6 @@
 {
   "realm": "maskroom",
-  "displayName": "Maskroom",
+  "displayName": "SafePII",
   "enabled": true,
   "sslRequired": "none",
   "registrationAllowed": false,
@@ -9,7 +9,7 @@
   "clients": [
     {
       "clientId": "maskroom",
-      "name": "Maskroom",
+      "name": "SafePII",
       "protocol": "openid-connect",
       "enabled": true,
       "publicClient": false,

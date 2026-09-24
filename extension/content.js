@@ -1,8 +1,8 @@
-/* Maskroom for Claude — content script.
+/* SafePII for Claude — content script.
 
    What it does:
    - Adds a small bar to claude.ai. "Mask" replaces the text in the composer
-     with pseudonymized text from the Maskroom server. YOU still press send.
+     with pseudonymized text from the SafePII server. YOU still press send.
    - Guard mode: pressing Enter or the send button with unmasked text first
      masks it and stops the send, so you can read what will leave the
      browser, then press Enter again.
@@ -97,7 +97,7 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("mr-show"), bad ? 6000 : 3200);
   }
 
-  // Conversation key: one Maskroom session per claude.ai chat. A brand-new
+  // Conversation key: one SafePII session per claude.ai chat. A brand-new
   // chat starts as "new" and is re-keyed once the URL gains its id.
   const convKey = () => (location.pathname.match(/\/chat\/([0-9a-f-]{8,})/i) || [])[1] || "new";
   let currentKey = convKey();
@@ -150,7 +150,7 @@
     sessionId = null; lastMasked = "";
     await ensureSession();
     await loadVault();
-    toast("New Maskroom session for this chat.");
+    toast("New SafePII session for this chat.");
   }
 
   // Switch this chat to a different session id — from another chat or the
@@ -413,7 +413,7 @@
   }
 
   async function unmaskFile(file) {
-    if (!RESTORE_RE.test(file.name)) { toast(`${file.name}: not a type Maskroom can restore.`, true); return false; }
+    if (!RESTORE_RE.test(file.name)) { toast(`${file.name}: not a type SafePII can restore.`, true); return false; }
     if (file.size > MAX_UPLOAD) { toast(`${file.name}: larger than 25 MB.`, true); return false; }
     while (busy) await new Promise((r) => setTimeout(r, 150));  // a text mask may be running
     busy = true; renderBar();
@@ -473,7 +473,7 @@
     return false;
   };
   let dragHinted = false;
-  window.addEventListener("dragenter", (e) => { if (swallowDrag(e) && !dragHinted) { dragHinted = true; toast("Drop the file to mask it with Maskroom."); } }, true);
+  window.addEventListener("dragenter", (e) => { if (swallowDrag(e) && !dragHinted) { dragHinted = true; toast("Drop the file to mask it with SafePII."); } }, true);
   window.addEventListener("dragover", swallowDrag, true);
   window.addEventListener("dragleave", swallowDrag, true);
   window.addEventListener("dragend", () => { dragHinted = false; }, true);
@@ -486,7 +486,7 @@
     // Belt and suspenders: if claude did manage to show an overlay, clear it.
     for (const t of ["dragleave", "dragend"]) { try { window.dispatchEvent(new DragEvent(t, { bubbles: true })); } catch (_) { /* ignore */ } }
     const maskable = files.filter((f) => FILE_RE.test(f.name));
-    if (!maskable.length) { toast(`${files.map((f) => f.name).join(", ")}: not a type Maskroom can mask — not attached.`, true); return; }
+    if (!maskable.length) { toast(`${files.map((f) => f.name).join(", ")}: not a type SafePII can mask — not attached.`, true); return; }
     maskFiles(maskable);
     const rest = files.filter((f) => !FILE_RE.test(f.name));
     if (rest.length) toast(`${rest.map((f) => f.name).join(", ")}: not maskable, not attached.`, true);
@@ -570,17 +570,17 @@
     if (contextDead && bar) { const m = bar.querySelector(".mr-meta"); if (m) m.textContent = "reload this tab — extension was updated"; return; }
     if (!bar) {
       bar = document.createElement("div"); bar.id = "maskroom-bar";
-      bar.innerHTML = `<span class="mr-brand">MASKROOM</span><span class="mr-meta"></span>
-        <button class="mr-primary" data-act="login" title="Sign in to the Maskroom server" hidden>sign in</button>
+      bar.innerHTML = `<span class="mr-brand">SAFEPII</span><span class="mr-meta"></span>
+        <button class="mr-primary" data-act="login" title="Sign in to the SafePII server" hidden>sign in</button>
         <button class="mr-primary" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
         <button data-act="file" title="Mask a .xlsx/.pdf/.docx and attach the masked version">Mask file</button>
         <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf,.docx,.pptx,.csv,.tsv,.txt,.json" multiple hidden>
         <button data-act="unmaskfile" title="Restore the real values inside a file Claude produced (saved as *_restored)">Unmask file</button>
         <input type="file" id="maskroom-unmask-file" accept=".md,.txt,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.xlsx,.xlsm,.docx,.pptx" multiple hidden>
-        <button data-act="guard" title="Guard: Enter/send and file drops go through Maskroom first — click to turn on/off">guard: on</button>
+        <button data-act="guard" title="Guard: Enter/send and file drops go through SafePII first — click to turn on/off">guard: on</button>
         <button data-act="unmask" title="Show real values in replies (on screen only) — click to turn on/off">unmask: on</button>
         <button data-act="new" title="Start a new vault for this chat">new session</button>
-        <button data-act="adopt" title="Use a different session id — from another chat or the Maskroom staging page — so they share one vault">use session id…</button>
+        <button data-act="adopt" title="Use a different session id — from another chat or the SafePII staging page — so they share one vault">use session id…</button>
         <button data-act="opts" title="Settings">⚙</button>`;
       bar.addEventListener("click", async (e) => {
         const hit = e.target.closest && e.target.closest("[data-act]");
@@ -592,7 +592,7 @@
           else if (act === "file") bar.querySelector("#maskroom-file").click();
           else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
           else if (act === "new") newSession();
-          else if (act === "adopt") adoptSession(window.prompt("Enter a session id to use here (from another chat, or the Maskroom staging page):", sessionId || ""));
+          else if (act === "adopt") adoptSession(window.prompt("Enter a session id to use here (from another chat, or the SafePII staging page):", sessionId || ""));
           else if (act === "guard") { if (guardLocked) { toast("Guard is locked on by your administrator.", true); } else { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); } }
           else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
           else if (act === "opts") call({ type: "openOptions" });
@@ -621,7 +621,7 @@
     bar.querySelector('[data-act="unmaskfile"]').disabled = busy || signedOut;
     const gb = bar.querySelector('[data-act="guard"]');
     gb.textContent = guardLocked ? "guard: on 🔒" : "guard: " + (settings.guard ? "on" : "off");
-    gb.title = guardLocked ? "Guard is locked on by your administrator" : "Guard: Enter/send and file drops go through Maskroom first — click to turn on/off";
+    gb.title = guardLocked ? "Guard is locked on by your administrator" : "Guard: Enter/send and file drops go through SafePII first — click to turn on/off";
     gb.classList.toggle("mr-off", !settings.guard && !guardLocked);
     const ub = bar.querySelector('[data-act="unmask"]');
     ub.textContent = "unmask: " + (settings.unmask ? "on" : "off");

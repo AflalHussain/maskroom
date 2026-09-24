@@ -1,4 +1,4 @@
-/* Shared by every Maskroom page: who is signed in, how to call the API, how to
+/* Shared by every SafePII page: who is signed in, how to call the API, how to
    download a file. With single sign-on (auth_mode "oidc") the session cookie
    authenticates and a 401 sends the browser to /auth/login; with auth off the
    legacy keys (if the server sets them) are asked for once per tab and sent
@@ -56,7 +56,7 @@ window.MaskroomAuth = (() => {
     download(a.dataset.dl, a.dataset.name).catch((err) => { a.textContent = "✕ " + err.message; });
   });
 
-  // Ends the Maskroom session, then follows the server's instruction: the
+  // Ends the SafePII session, then follows the server's instruction: the
   // identity provider's logout (so SSO does not sign us straight back in) or
   // the signed-out page.
   async function signOut() {
@@ -111,7 +111,7 @@ window.MaskroomAuth = (() => {
     const tools = el.querySelector(".mr-nav-tools");
     const toolsHtml = tools ? tools.outerHTML : "";
     el.innerHTML =
-      `<a class="mr-brand" href="/" aria-label="Maskroom"><span class="mr-logo"></span><span class="name">Maskroom</span></a>` +
+      `<a class="mr-brand" href="/" aria-label="SafePII"><span class="mr-logo"></span><span class="name">SafePII</span></a>` +
       `<nav class="mr-nav-links" id="mr-nav-links" aria-label="Pages"></nav>` +
       `<span class="mr-nav-break"></span>` +
       (toolsHtml || `<div class="mr-nav-tools"></div>`) +

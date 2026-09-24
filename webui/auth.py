@@ -141,7 +141,7 @@ class OidcProvider(IdentityProvider):
         email = claims.get("email")
         if not email:
             raise AuthError("The identity provider returned no email address; "
-                            "grant the 'email' scope/claim to the Maskroom client.")
+                            "grant the 'email' scope/claim to the SafePII client.")
         if claims.get("email_verified") is False:
             raise AuthError("This email address is not verified at the identity provider.")
         name = claims.get("name") or claims.get("preferred_username") or ""
@@ -390,7 +390,7 @@ def authenticate():
 def _html(status, title, body):
     return Response(f"<!doctype html><meta charset=utf-8><title>{title}</title>"
                     f"<body style='font-family:system-ui;margin:3rem'><h2>{title}</h2><p>{body}</p>"
-                    f"<p><a href='/'>Back to Maskroom</a></p></body>", status=status, mimetype="text/html")
+                    f"<p><a href='/'>Back to SafePII</a></p></body>", status=status, mimetype="text/html")
 
 
 # ---------------------------------------------------------------- routes
@@ -427,7 +427,7 @@ def callback():
 
 @auth_bp.post("/auth/logout")
 def logout():
-    """End the Maskroom session and say where the browser should go next:
+    """End the SafePII session and say where the browser should go next:
     the provider's end-session endpoint when it has one (so single sign-on
     does not log the user straight back in), else the signed-out page. An
     optional `next` (same rules as login) is honoured after that."""
@@ -458,7 +458,7 @@ def signed_out():
     if nxt.startswith("https://"):   # the extension's chromiumapp.org callback
         return redirect(nxt)
     return _html(200, "Signed out",
-                 "You have been signed out of Maskroom. "
+                 "You have been signed out of SafePII. "
                  f"<a href='/auth/login?next={nxt}'>Sign in again</a>")
 
 

@@ -1,4 +1,4 @@
-/* Service worker: the only place that talks to the Maskroom server, so the
+/* Service worker: the only place that talks to the SafePII server, so the
    content script needs no CORS and no credential ever enters the page.
    With single sign-on the server's session cookie authenticates every call
    (login() opens the server's sign-in page once); with auth off, the legacy
@@ -68,7 +68,7 @@ async function request(path, init) {
   try {
     return { res: await fetch(s.serverUrl + path, init) };
   } catch (e) {
-    return { error: `Cannot reach Maskroom at ${s.serverUrl} (${e.message}). Is the server running?` };
+    return { error: `Cannot reach SafePII at ${s.serverUrl} (${e.message}). Is the server running?` };
   }
 }
 
@@ -210,7 +210,7 @@ async function intercept(item) {
   }
   try {
     const sr = await askTabs({ type: "sessionId" }, tabId);
-    if (!sr || !sr.sessionId) throw new Error("no Maskroom session in the claude.ai tab");
+    if (!sr || !sr.sessionId) throw new Error("no SafePII session in the claude.ai tab");
     const r = await restoreFile(name, b64, sr.sessionId);
     if (!r.ok) throw new Error(r.error);
     await saveFile(r.name, r.b64);
@@ -256,7 +256,7 @@ async function login() {
   if (!me.ok) return { ok: false, error: me.error || "Signed in, but the server did not recognise the session." };
   return { ok: true, principal: me.data.principal, authMode: me.data.auth_mode };
 }
-// Ends the Maskroom session, then lets the provider end its own session in a
+// Ends the SafePII session, then lets the provider end its own session in a
 // silent popup that closes when the chain reaches our chromiumapp.org URL.
 async function logout() {
   const done = chrome.identity.getRedirectURL("done");
