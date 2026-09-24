@@ -84,8 +84,10 @@ services:
       KC_STAFF_PASSWORD: ${KC_STAFF_PASSWORD:-staff}
       KC_ADMIN_USER_PASSWORD: ${KC_ADMIN_USER_PASSWORD:-admin}
     volumes:
+      # The volume sits on a path the image owns (uid 1000); mounting at data/h2 alone
+      # would be created root-owned and Keycloak could not write its database.
+      - kcdata:/opt/keycloak/data
       - ./keycloak:/opt/keycloak/data/import:ro
-      - kcdata:/opt/keycloak/data/h2
 
 volumes:
   pgdata:
