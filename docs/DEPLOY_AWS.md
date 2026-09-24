@@ -12,12 +12,13 @@ browser / extension --443--> sovereign-ai-nginx-1 (existing container)
    sovereign-ai.hsenidmobile.com  -> platform, unchanged
    <MASKROOM_DOMAIN>              -> maskroom-app-1:8080      (deploy/aws/nginx/maskroom.conf)
    <MASKROOM_DOMAIN>/sso/         -> maskroom-keycloak-1:8180
-project maskroom: app (image shipped from a workstation), db (postgres:16), keycloak; data in ./data
+project maskroom: app (pulled from repo.hsenidmobile.com), db (postgres:16), keycloak; data in ./data
 ```
 
 Files: `deploy/aws/docker-compose.server.yml` (standalone, uses the shipped image),
 `deploy/aws/nginx/maskroom.conf.template`, `deploy/aws/install.sh` (runs on the server),
-`deploy/aws/ship.sh` (runs on your machine and builds the image).
+`deploy/aws/ship.sh` (runs on your machine: build, publish, deploy), `docker-build.sh`,
+`docker-publish.sh` (registry image, same convention as `/hms/apps/llm_router`).
 
 ## 1. Prerequisites
 
@@ -29,35 +30,42 @@ Files: `deploy/aws/docker-compose.server.yml` (standalone, uses the shipped imag
   ```
 - SSH access with the server's `.pem` key as a user that can run Docker (`ec2-user`), and a
   deploy directory that user owns: `sudo mkdir -p /hms/apps/masking && sudo chown ec2-user:ec2-user /hms/apps/masking`.
-- Docker with buildx on **your machine** (the image is built here, never on the server).
+- Docker with buildx on **your machine** and the registry robot credentials (the image is
+  built and published here, never on the server).
 - Roughly 3 GB of free RAM and 3 GB of free disk on the server.
 
-## 2. Ship and install
+## 2. Publish the image and install
 
-From this checkout (branch with the auth work):
+Images live in the HMS registry, `repo.hsenidmobile.com/hms_data/maskroom:v<version>`,
+built and published from a workstation exactly like `/hms/apps/llm_router`:
 
 ```bash
+export HMS_REPO_WORKBENCH_REGISTRY_ROBOT_USER=...   # registry robot account
+export HMS_REPO_WORKBENCH_REGISTRY_ROBOT_PWD=...
 deploy/aws/ship.sh -i ~/keys/server.pem ec2-user@<server>
 ```
 
-This builds `maskroom:<git sha>` locally, streams it to the server with `docker save |
-ssh docker load` (about 2 GB, compressed in flight; skipped when that tag is already there),
-copies **only** the deploy files (`docker-compose.server.yml`, `install.sh`,
-`nginx/maskroom.conf.template`, `keycloak/realm-maskroom.json`) to `/hms/apps/masking`, and
-runs `install.sh` there, which:
+`ship.sh` runs `docker-build.sh` (tag `v<version>` from `pyproject.toml`, plus `latest`),
+`docker-publish.sh` (login with the robot account, push both tags), copies **only** the deploy
+files (`docker-compose.server.yml`, `install.sh`, `nginx/maskroom.conf.template`,
+`keycloak/realm-maskroom.json`) to `/hms/apps/masking`, and runs `install.sh` there, which:
 
 1. creates `.env` on first run (asks for the domain and the admin emails; generates every
-   secret; mode 600) and records the shipped image tag;
-2. renders the Keycloak realm into `data/keycloak-import/` with the domain, the client
+   secret; mode 600) and records the image tag;
+2. pulls the image from the registry if it is not present (the server needs a one-time
+   `docker login repo.hsenidmobile.com`; the platform's images already come from there);
+3. renders the Keycloak realm into `data/keycloak-import/` with the domain, the client
    secret and random passwords for the two example users;
-3. renders `nginx/maskroom.conf`, picks the certificate from `/hms/apps/masking/certs/`
+4. renders `nginx/maskroom.conf`, picks the certificate from `/hms/apps/masking/certs/`
    (see section 5), then validates the nginx config in a throwaway container;
-4. adds a 2 GB swapfile when it can (`sudo` without a password);
-5. starts `app`, `db`, `keycloak` from the shipped image; waits for health; warms the model;
-6. prints the platform edit below and the example users' passwords.
+5. adds a 2 GB swapfile when it can (`sudo` without a password);
+6. starts `app`, `db`, `keycloak`; waits for health; warms the model;
+7. prints the platform edit below and the example users' passwords.
 
-Re-run `ship.sh` for every update; `.env`, certificates and `data/` survive. `SKIP_BUILD=1`
-reuses the local image, `MASKROOM_TAG=...` names it.
+Releases: bump `version` in `pyproject.toml`, run `ship.sh`; `.env`, certificates and
+`data/` survive. `SKIP_BUILD=1` / `SKIP_PUBLISH=1` reuse what is already built or pushed;
+`TAG=v0.2.1` overrides the tag. If the server cannot reach the registry,
+`deploy/aws/ship.sh --load ...` streams the image over SSH instead (about 700 MB).
 
 ## 3. Connect the platform's nginx (once)
 

@@ -306,6 +306,10 @@ Before exposing it publicly:
   docker compose up -d --build    # app on :8080, Postgres on 127.0.0.1:5432
   ```
 
+  Releases go to the HMS registry as `repo.hsenidmobile.com/hms_data/maskroom:v<version>`
+  (`docker-build.sh` + `docker-publish.sh`, same convention as the other `/hms/apps`
+  projects); the server deployment pulls that image, see `docs/DEPLOY_AWS.md`.
+
   For local development run only the database in Docker and the app on the host:
 
   ```bash
