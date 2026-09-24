@@ -30,7 +30,11 @@ $SSH_CMD "$TARGET" "mkdir -p $REMOTE_DIR/nginx $REMOTE_DIR/keycloak"
 if $SSH_CMD "$TARGET" "docker image inspect $IMAGE >/dev/null 2>&1"; then
   echo "    image already present on the server, skipping transfer"
 else
-  docker save "$IMAGE" | gzip -1 | $SSH_CMD "$TARGET" "gunzip | docker load"
+  if command -v pv >/dev/null; then
+    docker save "$IMAGE" | gzip -1 | pv -brt | $SSH_CMD "$TARGET" "gunzip | docker load"
+  else
+    docker save "$IMAGE" | gzip -1 | dd bs=4M status=progress | $SSH_CMD "$TARGET" "gunzip | docker load"
+  fi
 fi
 
 echo "==> copying deploy files -> $TARGET:$REMOTE_DIR"
