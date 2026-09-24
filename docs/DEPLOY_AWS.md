@@ -56,8 +56,11 @@ The tag is `v<version>` from `pyproject.toml`; bump it for a release. `NO_CACHE=
 Copy the deploy directory from the repo (workstation):
 
 ```bash
-scp -i ~/keys/server.pem -r deploy/aws/. ec2-user@<server>:/hms/apps/masking/
+rsync -av -e "ssh -i ~/keys/server.pem" deploy/aws/ ec2-user@<server>:/hms/apps/masking/
 ```
+
+(Contents of the directory, dotfiles included; `.env`, `certs/` and `data/` on the server are
+left alone. Newer OpenSSH rejects `scp -r dir/.`, hence rsync.)
 
 On the server:
 
