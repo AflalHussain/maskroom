@@ -11,6 +11,8 @@ RUN apt-get update \
 WORKDIR /app
 
 # Dependencies and the spaCy model first so code edits don't invalidate this layer.
+# Fail fast and retry on a stalled PyPI connection instead of hanging the build.
+ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
 COPY requirements.txt pyproject.toml README.md ./
 COPY maskroom ./maskroom
 RUN pip install --no-cache-dir -r requirements.txt gunicorn==23.0.0 \
