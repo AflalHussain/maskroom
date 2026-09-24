@@ -50,9 +50,8 @@ runs `install.sh` there, which:
    secret; mode 600) and records the shipped image tag;
 2. renders the Keycloak realm into `data/keycloak-import/` with the domain, the client
    secret and random passwords for the two example users;
-3. renders `nginx/maskroom.conf` and creates a self-signed certificate in
-   `/hms/apps/masking/certs/maskroom.{crt,key}` if none exists, then validates the nginx
-   config in a throwaway container;
+3. renders `nginx/maskroom.conf`, picks the certificate from `/hms/apps/masking/certs/`
+   (see section 5), then validates the nginx config in a throwaway container;
 4. adds a 2 GB swapfile when it can (`sudo` without a password);
 5. starts `app`, `db`, `keycloak` from the shipped image; waits for health; warms the model;
 6. prints the platform edit below and the example users' passwords.
@@ -71,8 +70,8 @@ services:
     volumes:
       # ... existing lines ...
       - ../masking/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
-      - ../masking/certs/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
-      - ../masking/certs/maskroom.key:/etc/nginx/certs/maskroom.key:ro
+      - ../masking/certs/safepii.hsenidmobile.com.cer:/etc/nginx/certs/maskroom.crt:ro
+      - ../masking/certs/safepii.hsenidmobile.com.key:/etc/nginx/certs/maskroom.key:ro
 networks:                                               # top level; add
   maskroom:
     external: true
@@ -110,15 +109,18 @@ Extension: on a machine that **trusts** `maskroom.crt` (see below), set the serv
 
 ## 5. Certificates
 
-The self-signed certificate is a bridge. Browser visits show a warning that can be clicked
-through, but **the Chrome extension's background requests fail on an untrusted certificate**
-with no prompt, so each staff machine must import `maskroom.crt` as trusted (Windows:
-certmgr, Trusted Root; macOS: Keychain, Always Trust; Linux Chrome: `certutil -d
-sql:$HOME/.pki/nssdb -A -t "C,," -n maskroom -i maskroom.crt`).
+The installer looks in `/hms/apps/masking/certs/` for a CA-issued pair named after the domain,
+`<domain>.cer` (or `.crt`/`.pem`) and `<domain>.key`, for example
+`safepii.hsenidmobile.com.cer` + `safepii.hsenidmobile.com.key`. It converts a DER `.cer` to
+PEM, checks that the key matches, and warns when the file holds a single certificate (nginx
+needs the intermediate chain appended to it). Only when nothing is there does it generate a
+self-signed pair, which browsers warn about and which **the Chrome extension cannot use**
+unless each machine trusts it.
 
-When the real certificate arrives: replace `/hms/apps/masking/certs/maskroom.crt` and
-`maskroom.key` (full chain in the `.crt`), then `cd /hms/apps/sovereign-ai && docker compose
-up -d nginx`. Nothing in Maskroom changes.
+To install or renew a certificate later: put the new files in `/hms/apps/masking/certs/`
+under the same names and run `cd /hms/apps/sovereign-ai && docker compose up -d nginx`
+(the nginx mount points at those files). If the file names change, re-run
+`/hms/apps/masking/install.sh` and apply the mount lines it prints.
 
 ## 6. Day-2
 

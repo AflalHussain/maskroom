@@ -77,20 +77,39 @@ chmod 600 data/keycloak-import/realm-maskroom.json
 say "Rendering nginx config"
 sed "s#__MASKROOM_DOMAIN__#${MASKROOM_DOMAIN}#g" nginx/maskroom.conf.template > nginx/maskroom.conf
 
-if [ ! -f "$CERT_DIR/maskroom.crt" ]; then
-  say "Creating a self-signed certificate for $MASKROOM_DOMAIN in $CERT_DIR (replace with the real one later)"
-  mkdir -p "$CERT_DIR"
-  openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-    -keyout "$CERT_DIR/maskroom.key" -out "$CERT_DIR/maskroom.crt" \
+# Certificate: a CA-issued pair named after the domain wins (<domain>.cer|.crt + <domain>.key),
+# then the legacy maskroom.crt/.key; a self-signed pair is generated only when nothing exists.
+mkdir -p "$CERT_DIR"
+CRT=""; KEY=""
+for c in "$CERT_DIR/$MASKROOM_DOMAIN.cer" "$CERT_DIR/$MASKROOM_DOMAIN.crt" "$CERT_DIR/$MASKROOM_DOMAIN.pem" "$CERT_DIR/maskroom.crt"; do
+  [ -f "$c" ] && { CRT=$c; break; }
+done
+if [ -n "$CRT" ]; then
+  KEY="${CRT%.*}.key"
+  [ -f "$KEY" ] || { echo "found $CRT but no matching key $KEY"; exit 1; }
+  if ! openssl x509 -in "$CRT" -noout 2>/dev/null; then       # DER-encoded .cer: convert to PEM
+    say "Converting $CRT from DER to PEM"
+    openssl x509 -inform der -in "$CRT" -out "$CERT_DIR/$MASKROOM_DOMAIN.crt" && CRT="$CERT_DIR/$MASKROOM_DOMAIN.crt"
+  fi
+  if [ "$(openssl x509 -in "$CRT" -noout -pubkey | openssl md5)" != "$(openssl pkey -in "$KEY" -pubout 2>/dev/null | openssl md5)" ]; then
+    echo "certificate $CRT and key $KEY do not match"; exit 1
+  fi
+  n=$(grep -c "BEGIN CERTIFICATE" "$CRT")
+  say "Using certificate $CRT ($(openssl x509 -in "$CRT" -noout -subject -enddate | tr '\n' ' '))"
+  [ "$n" -gt 1 ] || echo "note: the file holds one certificate; if browsers report an incomplete chain, append the CA's intermediate certificate(s) to it"
+else
+  CRT="$CERT_DIR/$MASKROOM_DOMAIN.crt"; KEY="$CERT_DIR/$MASKROOM_DOMAIN.key"
+  say "No certificate found: creating a self-signed one for $MASKROOM_DOMAIN in $CERT_DIR (replace with the real one later)"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 825 -keyout "$KEY" -out "$CRT" \
     -subj "/CN=${MASKROOM_DOMAIN}" -addext "subjectAltName=DNS:${MASKROOM_DOMAIN}" 2>/dev/null
-  chmod 600 "$CERT_DIR/maskroom.key"
 fi
+chmod 600 "$KEY" 2>/dev/null || true
 
 say "Validating the nginx config"
 docker run --rm \
   -v "$DEPLOY/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro" \
-  -v "$CERT_DIR/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro" \
-  -v "$CERT_DIR/maskroom.key:/etc/nginx/certs/maskroom.key:ro" \
+  -v "$CRT:/etc/nginx/certs/maskroom.crt:ro" \
+  -v "$KEY:/etc/nginx/certs/maskroom.key:ro" \
   nginx:1.31-alpine nginx -t 2>&1 | grep -E "syntax|test|emerg|error" || true
 
 mkdir -p data
@@ -138,8 +157,8 @@ Next, ONCE, in $PLATFORM_DIR/docker-compose.yaml give the platform's nginx acces
       networks: [default, maskroom]          # add
       volumes:                               # add these three lines to the existing list
         - $DEPLOY/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
-        - $CERT_DIR/maskroom.crt:/etc/nginx/certs/maskroom.crt:ro
-        - $CERT_DIR/maskroom.key:/etc/nginx/certs/maskroom.key:ro
+        - $CRT:/etc/nginx/certs/maskroom.crt:ro
+        - $KEY:/etc/nginx/certs/maskroom.key:ro
   networks:                                  # top level; add
     maskroom:
       external: true
