@@ -1,11 +1,13 @@
-# Standalone compose file for the server (no source tree, no build): the image is
-# pulled from repo.hsenidmobile.com (docker-build.sh + docker-publish.sh), or loaded
-# over SSH by deploy/aws/ship.sh --load when the server cannot reach the registry. Run from the deploy
-# directory on the server (deploy/aws/install.sh does it):
-#   docker compose -f docker-compose.server.yml --profile keycloak up -d
-# Values come from .env next to this file. Maskroom publishes nothing on the host
-# except loopback bindings; the platform's nginx container joins this project's
-# network ("maskroom_default") and proxies https://$MASKROOM_DOMAIN by name.
+# Maskroom on the server: images from the HMS registry, nothing built here.
+#
+#   cd /hms/apps/masking
+#   cp .env.example .env && $EDITOR .env         # once
+#   docker login repo.hsenidmobile.com          # once
+#   docker compose pull && docker compose --profile keycloak up -d
+#
+# Publishes only loopback ports; the platform's nginx container joins this
+# project's network ("maskroom_default") and proxies https://$MASKROOM_DOMAIN to
+# the containers by name (nginx/safepii.conf). See docs/DEPLOY_AWS.md.
 services:
   db:
     image: postgres:16
@@ -18,7 +20,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maskroom -d maskroom"]
       interval: 5s
@@ -26,7 +28,7 @@ services:
       retries: 10
 
   app:
-    image: ${MASKROOM_IMAGE:-repo.hsenidmobile.com/hms_data/maskroom:latest}   # published by docker-publish.sh
+    image: repo.hsenidmobile.com/hms_data/maskroom:${MASKROOM_VERSION:-latest}
     restart: unless-stopped
     mem_limit: 2500m
     depends_on:
@@ -39,22 +41,20 @@ services:
       MASKROOM_AUTH_MODE: ${MASKROOM_AUTH_MODE:-oidc}
       # Back-channel discovery over the compose network; Keycloak still reports the
       # public https issuer (KC_HOSTNAME_BACKCHANNEL_DYNAMIC below).
-      MASKROOM_OIDC_ISSUER: ${MASKROOM_OIDC_ISSUER:-http://keycloak:8180/sso/realms/maskroom}
-      MASKROOM_OIDC_CLIENT_ID: ${MASKROOM_OIDC_CLIENT_ID:-maskroom}
-      MASKROOM_OIDC_CLIENT_SECRET: ${MASKROOM_OIDC_CLIENT_SECRET:-}
-      MASKROOM_OIDC_SCOPES: ${MASKROOM_OIDC_SCOPES:-openid email profile}
-      MASKROOM_SECRET_KEY: ${MASKROOM_SECRET_KEY:-}
+      MASKROOM_OIDC_ISSUER: http://keycloak:8180/sso/realms/maskroom
+      MASKROOM_OIDC_CLIENT_ID: maskroom
+      MASKROOM_OIDC_CLIENT_SECRET: ${MASKROOM_OIDC_CLIENT_SECRET:?set MASKROOM_OIDC_CLIENT_SECRET in .env}
+      MASKROOM_SECRET_KEY: ${MASKROOM_SECRET_KEY:?set MASKROOM_SECRET_KEY in .env}
       MASKROOM_SESSION_HOURS: ${MASKROOM_SESSION_HOURS:-12}
       MASKROOM_ADMIN_EMAILS: ${MASKROOM_ADMIN_EMAILS:-}
       MASKROOM_PUBLIC_URL: https://${MASKROOM_DOMAIN:?set MASKROOM_DOMAIN in .env}
       MASKROOM_API_KEY: ${MASKROOM_API_KEY:-}
-      MASKROOM_ADMIN_KEY: ${MASKROOM_ADMIN_KEY:-}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
       AUDIT_TTL_DAYS: ${AUDIT_TTL_DAYS:-90}
     volumes:
       - ./data:/data
     ports:
-      - "127.0.0.1:${MASKROOM_PORT:-8080}:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/config',timeout=5)"]
       interval: 30s
@@ -78,8 +78,13 @@ services:
       KC_HOSTNAME_STRICT: "true"
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_PROXY_HEADERS: xforwarded
+      # Substituted into keycloak/realm-maskroom.json by the import (${VAR} placeholders).
+      MASKROOM_DOMAIN: ${MASKROOM_DOMAIN}
+      MASKROOM_OIDC_CLIENT_SECRET: ${MASKROOM_OIDC_CLIENT_SECRET}
+      KC_STAFF_PASSWORD: ${KC_STAFF_PASSWORD:-staff}
+      KC_ADMIN_USER_PASSWORD: ${KC_ADMIN_USER_PASSWORD:-admin}
     volumes:
-      - ./data/keycloak-import:/opt/keycloak/data/import:ro   # realm rendered by install.sh
+      - ./keycloak:/opt/keycloak/data/import:ro
       - kcdata:/opt/keycloak/data/h2
 
 volumes:

@@ -64,7 +64,7 @@ services:
   # Fallback identity provider for organisations without one:
   #   docker compose --profile keycloak up -d db keycloak
   # Admin console: http://localhost:8180 (KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD).
-  # The realm "maskroom" is imported from deploy/keycloak/realm-maskroom.json
+  # The realm "maskroom" is imported from deploy/aws/keycloak/realm-maskroom.json
   # with client "maskroom" and two example users (staff/staff, admin/admin).
   # start-dev is for development; production runs `start --optimized` with
   # its own Postgres, KC_HOSTNAME and TLS in front (see README).
@@ -77,8 +77,13 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HTTP_PORT: 8180
+      # ${VAR} placeholders in deploy/aws/keycloak/realm-maskroom.json (dev defaults)
+      MASKROOM_DOMAIN: ${MASKROOM_DOMAIN:-localhost}
+      MASKROOM_OIDC_CLIENT_SECRET: ${MASKROOM_OIDC_CLIENT_SECRET:-change-me-maskroom-dev-secret}
+      KC_STAFF_PASSWORD: ${KC_STAFF_PASSWORD:-staff}
+      KC_ADMIN_USER_PASSWORD: ${KC_ADMIN_USER_PASSWORD:-admin}
     volumes:
-      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+      - ./deploy/aws/keycloak:/opt/keycloak/data/import:ro
     ports:
       - "127.0.0.1:8180:8180"
 

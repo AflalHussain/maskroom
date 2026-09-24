@@ -308,7 +308,7 @@ Before exposing it publicly:
 
   Releases go to the HMS registry as `repo.hsenidmobile.com/hms_data/maskroom:v<version>`
   (`docker-build.sh` + `docker-publish.sh`, same convention as the other `/hms/apps`
-  projects); the server deployment pulls that image, see `docs/DEPLOY_AWS.md`.
+  projects); the server deployment in `deploy/aws/` pulls that image, see `docs/DEPLOY_AWS.md`.
 
   For local development run only the database in Docker and the app on the host:
 
@@ -545,7 +545,7 @@ export MASKROOM_AUTH_MODE=oidc \
 pii_env/bin/python webui/app.py                           # sign in as admin/admin or staff/staff
 ```
 
-The realm in `deploy/keycloak/realm-maskroom.json` imports a `maskroom` client and two example
+The realm in `deploy/aws/keycloak/realm-maskroom.json` imports a `maskroom` client and two example
 users; change the client secret and the passwords before real use. The issuer URL must be the
 same host the browser and the app both reach (with everything in Docker, add `127.0.0.1
 keycloak` to `/etc/hosts` and use `http://keycloak:8180/realms/maskroom`). `start-dev` is a

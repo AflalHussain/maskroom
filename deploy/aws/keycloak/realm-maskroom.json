@@ -13,7 +13,7 @@
       "protocol": "openid-connect",
       "enabled": true,
       "publicClient": false,
-      "secret": "change-me-maskroom-dev-secret",
+      "secret": "${MASKROOM_OIDC_CLIENT_SECRET}",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "implicitFlowEnabled": false,
@@ -22,13 +22,13 @@
         "http://localhost:5170/auth/*",
         "http://127.0.0.1:5170/auth/*",
         "http://localhost:8080/auth/*",
-        "https://REPLACE_HOST/auth/*"
+        "https://${MASKROOM_DOMAIN}/auth/*"
       ],
       "webOrigins": [
         "http://localhost:5170",
         "http://127.0.0.1:5170",
         "http://localhost:8080",
-        "https://REPLACE_HOST"
+        "https://${MASKROOM_DOMAIN}"
       ],
       "defaultClientScopes": ["profile", "email"],
       "attributes": { "post.logout.redirect.uris": "+" }
@@ -42,7 +42,7 @@
       "enabled": true,
       "firstName": "Staff",
       "lastName": "Example",
-      "credentials": [{ "type": "password", "value": "staff", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "${KC_STAFF_PASSWORD}", "temporary": false }]
     },
     {
       "username": "admin",
@@ -51,7 +51,7 @@
       "enabled": true,
       "firstName": "Admin",
       "lastName": "Example",
-      "credentials": [{ "type": "password", "value": "admin", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "${KC_ADMIN_USER_PASSWORD}", "temporary": false }]
     }
   ]
 }

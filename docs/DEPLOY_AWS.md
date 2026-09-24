@@ -1,73 +1,82 @@
 # Deploying Maskroom on the AWS server (beside the sovereign-ai stack)
 
-The server already runs the sovereign-ai platform as compose project `sovereign-ai` from
-`/hms/apps/sovereign-ai/docker-compose.yaml`, including an nginx container that owns ports
-80 and 443. Maskroom runs as its own compose project **`maskroom`** in
-`/hms/apps/masking`, publishes nothing on the host, and is reached through that
-same nginx on its own subdomain. Maskroom's bundled Keycloak provides sign-on at
-`https://<domain>/sso/`.
+Same shape as the other `/hms/apps` deployments: images are pulled from the HMS registry,
+**nothing builds on the server**, and the deployment is a directory with a compose file,
+an `.env`, and the configs it mounts.
 
 ```
-browser / extension --443--> sovereign-ai-nginx-1 (existing container)
+browser / extension --443--> sovereign-ai-nginx-1 (the platform's existing container)
    sovereign-ai.hsenidmobile.com  -> platform, unchanged
-   <MASKROOM_DOMAIN>              -> maskroom-app-1:8080      (deploy/aws/nginx/maskroom.conf)
-   <MASKROOM_DOMAIN>/sso/         -> maskroom-keycloak-1:8180
-project maskroom: app (pulled from repo.hsenidmobile.com), db (postgres:16), keycloak; data in ./data
+   safepii.hsenidmobile.com       -> maskroom-app-1:8080         (nginx/safepii.conf)
+   safepii.hsenidmobile.com/sso/  -> maskroom-keycloak-1:8180    (Maskroom's own Keycloak)
+
+/hms/apps/masking/            compose project "maskroom", network "maskroom_default"
+├── docker-compose.yml        from deploy/aws/ in the repo
+├── .env                      secrets and the domain (from .env.example)
+├── nginx/safepii.conf        server block the platform's nginx mounts
+├── keycloak/realm-maskroom.json   realm import; ${VAR} placeholders filled from .env
+├── certs/                    safepii.hsenidmobile.com.cer + .key (CA-issued)
+└── data/                     runtime: uploads, audit files, extension .crx
 ```
 
-Files: `deploy/aws/docker-compose.server.yml` (standalone, uses the shipped image),
-`deploy/aws/nginx/maskroom.conf.template`, `deploy/aws/install.sh` (runs on the server),
-`deploy/aws/ship.sh` (runs on your machine: build, publish, deploy), `docker-build.sh`,
-`docker-publish.sh` (registry image, same convention as `/hms/apps/llm_router`).
+The app talks to Keycloak over the compose network (`http://keycloak:8180/sso/...`) while
+Keycloak reports the public https issuer to browsers (`KC_HOSTNAME_BACKCHANNEL_DYNAMIC`), so
+no hairpin to the public hostname and no certificate trust inside the container.
 
-## 1. Prerequisites
+## 1. Publish the image (workstation)
 
-- A DNS A record for the subdomain (for example `safepii.hsenidmobile.com`) pointing at the
-  server's public IP. Find the IP with:
+```bash
+export HMS_REPO_WORKBENCH_REGISTRY_ROBOT_USER=...
+export HMS_REPO_WORKBENCH_REGISTRY_ROBOT_PWD=...
+./docker-build.sh && ./docker-publish.sh          # repo.hsenidmobile.com/hms_data/maskroom:v<version>
+```
+
+The tag is `v<version>` from `pyproject.toml`; bump it for a release. `NO_CACHE=1
+./docker-build.sh` refreshes the OS package layer.
+
+## 2. Server prerequisites (once)
+
+- DNS A record `safepii.hsenidmobile.com` -> the server's public IP (IMDSv2):
   ```bash
   TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
   curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4
   ```
-- SSH access with the server's `.pem` key as a user that can run Docker (`ec2-user`), and a
-  deploy directory that user owns: `sudo mkdir -p /hms/apps/masking && sudo chown ec2-user:ec2-user /hms/apps/masking`.
-- Docker with buildx on **your machine** and the registry robot credentials (the image is
-  built and published here, never on the server).
-- Roughly 3 GB of free RAM and 3 GB of free disk on the server.
+- A deploy directory owned by the Docker user:
+  `sudo mkdir -p /hms/apps/masking && sudo chown ec2-user:ec2-user /hms/apps/masking`
+- Registry login: `docker login repo.hsenidmobile.com` (as `ec2-user`).
+- The CA certificate and key in `/hms/apps/masking/certs/` as
+  `safepii.hsenidmobile.com.cer` (PEM, full chain) and `safepii.hsenidmobile.com.key`
+  (`chmod 600`). If the CA delivered DER: `openssl x509 -inform der -in x.cer -out safepii.hsenidmobile.com.cer`.
+- Optional but recommended on 7.7 GB RAM: a 2 GB swapfile
+  (`sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`,
+  plus the `/etc/fstab` line).
 
-## 2. Publish the image and install
+## 3. Deploy
 
-Images live in the HMS registry, `repo.hsenidmobile.com/hms_data/maskroom:v<version>`,
-built and published from a workstation exactly like `/hms/apps/llm_router`:
+Copy the deploy directory from the repo (workstation):
 
 ```bash
-export HMS_REPO_WORKBENCH_REGISTRY_ROBOT_USER=...   # registry robot account
-export HMS_REPO_WORKBENCH_REGISTRY_ROBOT_PWD=...
-deploy/aws/ship.sh -i ~/keys/server.pem ec2-user@<server>
+scp -i ~/keys/server.pem -r deploy/aws/. ec2-user@<server>:/hms/apps/masking/
 ```
 
-`ship.sh` runs `docker-build.sh` (tag `v<version>` from `pyproject.toml`, plus `latest`),
-`docker-publish.sh` (login with the robot account, push both tags), copies **only** the deploy
-files (`docker-compose.server.yml`, `install.sh`, `nginx/maskroom.conf.template`,
-`keycloak/realm-maskroom.json`) to `/hms/apps/masking`, and runs `install.sh` there, which:
+On the server:
 
-1. creates `.env` on first run (asks for the domain and the admin emails; generates every
-   secret; mode 600) and records the image tag;
-2. pulls the image from the registry if it is not present (the server needs a one-time
-   `docker login repo.hsenidmobile.com`; the platform's images already come from there);
-3. renders the Keycloak realm into `data/keycloak-import/` with the domain, the client
-   secret and random passwords for the two example users;
-4. renders `nginx/maskroom.conf`, picks the certificate from `/hms/apps/masking/certs/`
-   (see section 5), then validates the nginx config in a throwaway container;
-5. adds a 2 GB swapfile when it can (`sudo` without a password);
-6. starts `app`, `db`, `keycloak`; waits for health; warms the model;
-7. prints the platform edit below and the example users' passwords.
+```bash
+cd /hms/apps/masking
+cp .env.example .env && chmod 600 .env
+nano .env                       # domain, MASKROOM_ADMIN_EMAILS, and every secret (openssl rand -hex 32)
+docker compose pull
+docker compose --profile keycloak up -d
+docker compose ps               # app healthy after the model loads (~1-2 min)
+```
 
-Releases: bump `version` in `pyproject.toml`, run `ship.sh`; `.env`, certificates and
-`data/` survive. `SKIP_BUILD=1` / `SKIP_PUBLISH=1` reuse what is already built or pushed;
-`TAG=v0.2.1` overrides the tag. If the server cannot reach the registry,
-`deploy/aws/ship.sh --load ...` streams the image over SSH instead (about 700 MB).
+The realm import reads `MASKROOM_DOMAIN`, `MASKROOM_OIDC_CLIENT_SECRET`, `KC_STAFF_PASSWORD`
+and `KC_ADMIN_USER_PASSWORD` straight from `.env`, so the same realm file works for every
+environment. Keycloak imports a realm only once; to re-import after changing those values,
+`docker compose --profile keycloak down -v` (this also drops the Postgres volume, so do it
+before real data exists, or export the realm from the console instead).
 
-## 3. Connect the platform's nginx (once)
+## 4. Connect the platform's nginx (once)
 
 Edit `/hms/apps/sovereign-ai/docker-compose.yaml`:
 
@@ -77,75 +86,57 @@ services:
     networks: [default, maskroom]                       # add
     volumes:
       # ... existing lines ...
-      - ../masking/nginx/maskroom.conf:/etc/nginx/conf.d/maskroom.conf:ro
-      - ../masking/certs/safepii.hsenidmobile.com.cer:/etc/nginx/certs/maskroom.crt:ro
-      - ../masking/certs/safepii.hsenidmobile.com.key:/etc/nginx/certs/maskroom.key:ro
+      - ../masking/nginx/safepii.conf:/etc/nginx/conf.d/safepii.conf:ro
+      - ../masking/certs/safepii.hsenidmobile.com.cer:/etc/nginx/certs/safepii.hsenidmobile.com.cer:ro
+      - ../masking/certs/safepii.hsenidmobile.com.key:/etc/nginx/certs/safepii.hsenidmobile.com.key:ro
 networks:                                               # top level; add
   maskroom:
     external: true
     name: maskroom_default
 ```
 
-Then `cd /hms/apps/sovereign-ai && docker compose up -d nginx`. Only nginx is recreated.
-The Maskroom stack must be up first (the external network has to exist). The nginx config
-resolves Maskroom's containers at request time, so nginx keeps starting even if Maskroom is
-down; requests then return 502 until it is back.
+Then `cd /hms/apps/sovereign-ai && docker compose config -q && docker compose up -d nginx`.
+Only nginx is recreated. Maskroom must be up first (the external network has to exist).
+`docker compose exec nginx nginx -t` checks the merged config.
 
 Why nginx joins Maskroom's network rather than the reverse: putting Maskroom's `keycloak`
 service on the platform network would register a second `keycloak` name there and the
 platform's own `/auth` proxy could resolve to the wrong container.
 
-## 4. Verify
+## 5. Verify
 
 ```bash
-cd /hms/apps/masking
-docker compose ps                                        # app, db, keycloak up / healthy
-curl -k https://<domain>/api/config                      # "auth_mode": "oidc"
-curl -k https://<domain>/sso/realms/maskroom/.well-known/openid-configuration | head -c 400
-   # issuer https://<domain>/sso/realms/maskroom ; token_endpoint http://keycloak:8180/... is expected
-curl -k -o /dev/null -w '%{http_code}\n' https://<domain>/ext/update.xml   # 200 or 503, never 401
-curl -sI https://sovereign-ai.hsenidmobile.com | head -1 # platform untouched
+curl https://safepii.hsenidmobile.com/api/config                      # "auth_mode": "oidc"
+curl https://safepii.hsenidmobile.com/sso/realms/maskroom/.well-known/openid-configuration | head -c 300
+curl -o /dev/null -w '%{http_code}\n' https://safepii.hsenidmobile.com/ext/update.xml   # 200 or 503, never 401
+openssl s_client -connect safepii.hsenidmobile.com:443 -servername safepii.hsenidmobile.com </dev/null 2>/dev/null | grep "Verify return code"
+curl -sI https://sovereign-ai.hsenidmobile.com | head -1              # platform untouched
 ```
 
-Browser (accept the certificate warning): `https://<domain>/` redirects to the Keycloak login
-under `/sso/`; sign in as `admin@example.com` (admin if listed in `MASKROOM_ADMIN_EMAILS`);
-mask a file and download it; `/admin/users` lists the user and can issue a service key;
-sign out lands on the signed-out page and the next visit asks for credentials again.
+Browser: `/` redirects to the Keycloak login under `/sso/`; sign in as `admin@example.com`
+with `KC_ADMIN_USER_PASSWORD` (admin if listed in `MASKROOM_ADMIN_EMAILS`); mask a file and
+download it; `/admin/users` lists the user and can issue a service key; sign out lands on
+the signed-out page and the next visit asks for credentials again. Extension: set the server
+URL to `https://safepii.hsenidmobile.com`, click Sign in, mask on claude.ai.
 
-Extension: on a machine that **trusts** `maskroom.crt` (see below), set the server URL to
-`https://<domain>`, click Sign in, mask on claude.ai; `/admin` attributes it to the email.
-
-## 5. Certificates
-
-The installer looks in `/hms/apps/masking/certs/` for a CA-issued pair named after the domain,
-`<domain>.cer` (or `.crt`/`.pem`) and `<domain>.key`, for example
-`safepii.hsenidmobile.com.cer` + `safepii.hsenidmobile.com.key`. It converts a DER `.cer` to
-PEM, checks that the key matches, and warns when the file holds a single certificate (nginx
-needs the intermediate chain appended to it). Only when nothing is there does it generate a
-self-signed pair, which browsers warn about and which **the Chrome extension cannot use**
-unless each machine trusts it.
-
-To install or renew a certificate later: put the new files in `/hms/apps/masking/certs/`
-under the same names and run `cd /hms/apps/sovereign-ai && docker compose up -d nginx`
-(the nginx mount points at those files). If the file names change, re-run
-`/hms/apps/masking/install.sh` and apply the mount lines it prints.
-
-## 6. Day-2
+## 6. Releases and day-2
 
 | Task | Command |
 |---|---|
-| Update to a new build | `deploy/aws/ship.sh -i ~/keys/server.pem ec2-user@<server>` (from your machine) |
+| New version | bump `pyproject.toml`, publish (§1), set `MASKROOM_VERSION` in `.env`, `docker compose pull && docker compose --profile keycloak up -d` |
+| Config change | edit `.env`, `docker compose --profile keycloak up -d` |
+| nginx change | edit `nginx/safepii.conf`, `cd /hms/apps/sovereign-ai && docker compose exec nginx nginx -s reload` |
+| Certificate renewal | replace the two files in `certs/`, reload nginx as above |
 | Logs | `docker compose logs -f app` / `keycloak` / `db` |
 | Users, roles, keys | `docker compose exec app maskroom-admin user list` … `key create NAME` |
 | Rules import/export | `docker compose exec app maskroom-admin policy export` |
-| Database backup | `docker compose exec -T db pg_dump -U maskroom maskroom | gzip > data/backup-$(date +%F).sql.gz` |
+| Database backup | `docker compose exec -T db pg_dump -U maskroom maskroom \| gzip > data/backup-$(date +%F).sql.gz` |
 | Disk | `docker system df`; `du -sh data/`; run scratch dirs under `data/runs` are not swept |
-| Keycloak console | `https://<domain>/sso/admin/` with `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` from `.env` |
-| Stop / start | `docker compose --profile keycloak stop` / `start` (in the masking dir) |
+| Keycloak console | `https://safepii.hsenidmobile.com/sso/admin/` with `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` |
 
-Sizing on this server (2 vCPU, 7.7 GB RAM shared with the platform): text masking answers in well under a second; scanned-PDF OCR takes several
-seconds a page. Memory limits in the override (app 2.5 GB, Keycloak 1 GB, db 512 MB) keep a
-runaway from affecting the platform.
+Sizing on this server (2 vCPU, 7.7 GB RAM shared with the platform): text masking answers
+in well under a second; scanned-PDF OCR takes several seconds a page. Memory limits (app
+2.5 GB, Keycloak 1 GB, db 512 MB) keep a runaway from affecting the platform.
 
 ## 7. Known limits and follow-ups
 
@@ -155,5 +146,4 @@ runaway from affecting the platform.
   (`MASKROOM_OIDC_ISSUER`, client id, client secret) plus a client in that realm; it would
   save about 0.8 GB of RAM.
 - The platform's `MASKING_SERVICE_URL` still points at the ai-guardrails service; wiring it
-  to Maskroom (`http://maskroom-app-1:8080` once the backend joins the network) is a separate
-  decision.
+  to Maskroom is a separate decision.
