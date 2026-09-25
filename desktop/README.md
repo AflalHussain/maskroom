@@ -21,7 +21,7 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 | **Unmask on hover** (default on) | Rest the mouse on a token in a reply and a tooltip shows that line with the real values. The helper keeps the session's vault locally (`GET /api/session/<id>/vault`, refreshed after each mask) and restores with the same tolerant rules as the extension's `tokens.js` (any case, spaced or escaped underscores, truncated ids; unknown tokens are left alone). Nothing on Claude's screen is changed. |
 | **Overlay** (experimental, default on) | Paints the real values over the tokens in replies, on a transparent click-through window that covers Claude. Tokens are located by character offset in the page text (one move per token, read back to verify; the text search the probe showed mis-aligning is not used), rectangles are refreshed every tick so scrolling is followed, and the page text is re-read twice a second for streaming. Each patch samples the pixel beside the token for its background, sizes the font from the line height, shrinks to fit, and ends with "…" when the real value is still wider. A dotted underline marks a restored value. The composer is never overlaid. Only exact `TOK_…` spellings are overlaid; lowercased or spaced ones still restore on hover and copy. **If it looks wrong, switch it off on the bar.** |
 | **Unmask on copy** (default on) | Copy text out of Claude and the clipboard is restored before you paste it anywhere; the bar reports the count. `Ctrl+Shift+U` does the same on demand through the server (`POST /api/unmask`). The helper's own masked paste is never "restored". |
-| **Sessions** | One current session (vault), remembered in the config file. *new session* on the bar starts a fresh vault. |
+| **Sessions** | One Maskroom session (vault) per Claude chat, as in the extension. The chat on screen is identified by its URL (Chromium exposes the page URL as the document's value), else by the tokens visible on the page (a token's random id names its session), else by the chat title (`<title> - Claude` on the document). Masking uses that chat's session, so switching chats switches sessions; a brand-new chat gets a new session on its first mask and is bound to its URL on the next. *new session* on the bar starts a fresh vault for the chat on screen. Restore (hover, copy, overlay) searches every known vault at once, so it works whichever chat is current; the last 25 sessions are kept. |
 | **Sign in** | Gear button → *Sign in* opens the server's login page in your browser. After the identity provider, the server sends the browser back to a loopback port on this PC with a one-time code, which the helper exchanges for its own session (`POST /auth/exchange`). *Sign out* ends it, and lets the provider end its session too. |
 | **Settings** | Gear button: server URL, optional service key, preamble toggle, *Test connection* (`GET /api/me`). Opens on first run. |
 
@@ -71,6 +71,10 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
 - **tkinter main thread** (`Bar`): the floating bar (`WS_EX_NOACTIVATE`, so clicking
   it leaves focus in Claude), toasts, and the settings window. Reads an event queue;
   never touches UIA.
+- **Sessions**: `chat_identity()` reads the page document's `Name` and `ValuePattern.Value`;
+  `resolve_session()` tries the url map, then the token→session map built from the cached
+  vaults, then the title; `bind_session()` records the choice. A 404 from the server
+  forgets the session and re-resolves.
 - **Hover and clipboard** run on the UIA worker's idle tick: when the mouse rests for
   0.35 s over the Claude window, `TextPattern.RangeFromPoint` on the page document (cached;
   found by walking the window for the element with the most text) expanded to a line,

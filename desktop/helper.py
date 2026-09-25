@@ -34,6 +34,14 @@ If it does not look right, switch it off on the bar; hover and copy remain.
 Run:   py -m pip install uiautomation
        py desktop\\helper.py
 
+Sessions follow the chat, as the extension's do. The chat is identified by
+the page URL that Chromium exposes as the document's value (claude.ai/chat/
+<id>), else by the tokens visible on the page (every token id is random, so
+a token names its session), else by the chat title. Each chat gets its own
+Maskroom session (vault); switching chats switches the session used for
+masking. Restore (hover, copy, overlay) searches every known vault at once,
+so it never depends on which chat is current.
+
 Sign-in: the gear button's "Sign in" opens the server's login page in the
 system browser. The server sends the browser through the identity provider and
 finally to http://127.0.0.1:<port>/done on this machine with a one-time code,
@@ -86,7 +94,9 @@ DEFAULTS = {
     "serverUrl": "http://127.0.0.1:5170",
     "apiKey": "",          # a named service key (mr_...) or the legacy shared key
     "token": "",           # login-session token from /auth/exchange (browser sign-in)
-    "sessionId": None,
+    "sessionId": None,     # the session used last (display only; chats decide)
+    "chats": {},           # chat url -> session id
+    "sessions": {},        # session id -> {"title", "chat", "last"}
     "preamble": True,
     "guard": True,
     "unmask": True,        # hover tooltip + clipboard restore
@@ -95,6 +105,7 @@ DEFAULTS = {
 }
 OVERLAY_TEXT_S = 0.5       # how often the page text is re-read for new tokens
 OVERLAY_MAX_TOKENS = 80
+MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 TIP_MAX_CHARS = 400
 SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
@@ -112,6 +123,11 @@ def load_config() -> dict:
                 cfg.update(data)
         except (OSError, ValueError):
             pass
+    cfg["chats"] = dict(cfg.get("chats") or {})
+    cfg["sessions"] = dict(cfg.get("sessions") or {})
+    sid = cfg.get("sessionId")
+    if sid and sid not in cfg["sessions"]:          # a session from before chats were tracked
+        cfg["sessions"][sid] = {"title": None, "chat": None, "last": time.time()}
     return cfg
 
 
@@ -333,8 +349,11 @@ class Automation(threading.Thread):
         self.last_seen = 0.0
         self.last_masked = ""         # composer text as it stood after the last check
         self.mask_done_at = 0.0       # when the last check finished (drops stale Enters)
-        self.index = TokenIndex({})   # the session vault, for local restore
+        self.index = TokenIndex({})   # union of every known session's vault, for local restore
+        self.vaults: dict[str, dict] = {}
+        self.token_owner: dict[str, str] = {}
         self.doc = None               # Claude's page document (TextPattern) for hover lookups
+        self.doc_ctrl = None          # the same element, for its Name (title) and Value (url)
         self.doc_checked = 0.0
         self.tip_text = None          # what the tooltip currently shows
         self.cursor = (0, 0)
@@ -456,18 +475,74 @@ class Automation(threading.Thread):
         auto.SendKeys("{Ctrl}v", waitTime=0.3)
         return "paste"
 
-    # ---- vault (local restore)
-    def load_vault(self) -> None:
-        sid = self.cfg.get("sessionId")
-        if not sid:
-            self.index = TokenIndex({})
-            return
-        r = self.server.api(f"/api/session/{sid}/vault")
-        if r["ok"] and isinstance(r["data"], dict):
-            self.index = TokenIndex(r["data"].get("mappings") or {})
-            log(f"vault loaded: {len(self.index.vault)} entries")
-        elif r["status"] == 404:
-            self.index = TokenIndex({})
+    # ---- vaults (local restore across every known session)
+    def known_sessions(self) -> list[str]:
+        meta = self.cfg.get("sessions") or {}
+        return sorted(meta, key=lambda s: meta[s].get("last", 0), reverse=True)[:MAX_KNOWN_SESSIONS]
+
+    def forget_session(self, sid: str) -> None:
+        self.cfg["sessions"].pop(sid, None)
+        self.cfg["chats"] = {k: v for k, v in self.cfg["chats"].items() if v != sid}
+        self.vaults.pop(sid, None)
+        if self.cfg.get("sessionId") == sid:
+            self.cfg["sessionId"] = None
+        save_config(self.cfg)
+
+    def load_vault(self, sid: str | None = None) -> None:
+        """Fetch one session's vault (or every known one) and rebuild the index."""
+        for s in ([sid] if sid else self.known_sessions()):
+            r = self.server.api(f"/api/session/{s}/vault")
+            if r["ok"] and isinstance(r["data"], dict):
+                self.vaults[s] = r["data"].get("mappings") or {}
+            elif r["status"] in (403, 404):
+                self.forget_session(s)
+        self.rebuild_index()
+
+    def rebuild_index(self) -> None:
+        union: dict[str, str] = {}
+        owner: dict[str, str] = {}
+        for s in self.known_sessions():
+            for tok, val in (self.vaults.get(s) or {}).items():
+                union.setdefault(tok, val)
+                owner.setdefault(tok, s)
+        self.index = TokenIndex(union)
+        self.token_owner = owner
+        log(f"vault index: {len(union)} tokens across {len(self.vaults)} sessions")
+
+    # ---- which chat is on screen
+    def chat_identity(self) -> tuple[str | None, str | None]:
+        """(url, title) of the chat on screen, from the page document."""
+        if self.page_document() is None or self.doc_ctrl is None:
+            return None, None
+        url = title = None
+        try:
+            title = (self.doc_ctrl.Name or "").strip() or None
+            if title and title.lower().endswith("- claude"):
+                title = title[:-8].strip() or None
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            vp = self.doc_ctrl.GetPattern(auto.PatternId.ValuePattern)
+            v = (vp.Value or "").strip() if vp is not None else ""
+            if v.startswith("http"):
+                url = v.split("#", 1)[0].split("?", 1)[0]
+        except Exception:  # noqa: BLE001
+            pass
+        return url, title
+
+    @staticmethod
+    def chat_key(url: str | None) -> str | None:
+        """A stable key for an existing chat; None for /new and unknown pages."""
+        return url if url and "/chat/" in url else None
+
+    def page_text(self) -> str:
+        if self.ov_text is not None and time.time() - self.ov_text_at < 1.0:
+            return self.ov_text
+        doc = self.page_document()
+        try:
+            return doc.DocumentRange.GetText(-1) or "" if doc else ""
+        except Exception:  # noqa: BLE001
+            return ""
 
     # ---- hover tooltip
     def page_document(self):
@@ -476,7 +551,7 @@ class Automation(threading.Thread):
         if self.doc is not None or now - self.doc_checked < 2.0:
             return self.doc
         self.doc_checked = now
-        best, best_n, best_win = None, -1, None
+        best, best_n, best_win, best_ctrl = None, -1, None, None
         for w in auto.GetRootControl().GetChildren():
             try:
                 if w.ClassName != "Chrome_WidgetWin_1" or process_exe(w.ProcessId) != CLAUDE_EXE:
@@ -498,15 +573,20 @@ class Automation(threading.Thread):
                     except Exception:  # noqa: BLE001
                         n = -1
                     if n > best_n:
-                        best, best_n, best_win = tp, n, w
+                        best, best_n, best_win, best_ctrl = tp, n, w, c
                     continue
                 try:
                     stack.extend((k, depth + 1) for k in c.GetChildren())
                 except Exception:  # noqa: BLE001
                     pass
         self.doc = best
+        self.doc_ctrl = best_ctrl
         self.claude_win = best_win if best is not None else None
-        log(f"page document {'found' if best else 'not found'} ({best_n} chars)")
+        if best is not None:
+            url, title = self.chat_identity()
+            log(f"page document found ({best_n} chars) url={url!r} title={title!r}")
+        else:
+            log("page document not found")
         return best
 
     def set_tip(self, text, x=0, y=0) -> None:
@@ -687,29 +767,78 @@ class Automation(threading.Thread):
         self.toast("Unmask on: hover a token, or copy from Claude." if self.cfg["unmask"]
                    else "Unmask off.")
 
-    # ---- sessions
-    def ensure_session(self) -> str:
-        sid = self.cfg.get("sessionId")
+    # ---- sessions follow the chat
+    def resolve_session(self, url, title, text) -> tuple[str | None, str]:
+        """(session id, how) for the chat on screen, or (None, reason)."""
+        key = self.chat_key(url)
+        sid = self.cfg["chats"].get(key) if key else None
         if sid:
-            r = self.server.api(f"/api/session/{sid}")
-            if r["ok"]:
-                return sid
-            if r["status"] not in (404, 403):
-                raise RuntimeError(r["error"])
+            return sid, "chat url"
+        hits: dict[str, int] = {}
+        for tok in set(EXACT_RE.findall(text or "")):
+            owner = self.token_owner.get(tok)
+            if owner:
+                hits[owner] = hits.get(owner, 0) + 1
+        if hits:
+            return max(hits, key=hits.get), "tokens on the page"
+        if title:
+            for s in self.known_sessions():
+                if (self.cfg["sessions"][s].get("title") or "") == title:
+                    return s, "chat title"
+        return None, "new chat"
+
+    def bind_session(self, sid: str, url, title) -> None:
+        key = self.chat_key(url)
+        if key:
+            self.cfg["chats"][key] = sid
+        meta = self.cfg["sessions"].setdefault(sid, {})
+        if title:
+            meta["title"] = title
+        if key:
+            meta["chat"] = key
+        meta["last"] = time.time()
+        self.cfg["sessionId"] = sid
+        # keep the maps bounded
+        keep = set(self.known_sessions())
+        self.cfg["sessions"] = {s: m for s, m in self.cfg["sessions"].items() if s in keep}
+        self.cfg["chats"] = {k: v for k, v in self.cfg["chats"].items() if v in keep}
+        save_config(self.cfg)
+
+    def create_session(self) -> str:
         r = self.server.api("/api/session", "POST", {})
         if not r["ok"]:
             raise RuntimeError(r["error"])
-        self.cfg["sessionId"] = r["data"]["session_id"]
-        save_config(self.cfg)
-        self.emit(type="session", id=self.cfg["sessionId"])
-        return self.cfg["sessionId"]
+        return r["data"]["session_id"]
+
+    def ensure_session(self) -> str:
+        """The session for the chat on screen, created if the chat has none."""
+        url, title = self.chat_identity()
+        sid, how = self.resolve_session(url, title, self.page_text())
+        if sid:
+            r = self.server.api(f"/api/session/{sid}")
+            if not r["ok"]:
+                if r["status"] not in (403, 404):
+                    raise RuntimeError(r["error"])
+                self.forget_session(sid)
+                sid = None
+        if not sid:
+            sid = self.create_session()
+            how = "new session"
+            self.vaults[sid] = {}
+        if self.cfg.get("sessionId") != sid:
+            log(f"session {sid[:8]} for chat url={url!r} title={title!r} ({how})")
+            self.emit(type="session", id=sid, title=title)
+        self.bind_session(sid, url, title)
+        return sid
 
     def cmd_new_session(self) -> None:
-        self.cfg["sessionId"] = None
-        save_config(self.cfg)
-        sid = self.ensure_session()
-        self.load_vault()
-        self.toast(f"New session {sid[:8]}…")
+        """A fresh vault for the chat on screen, replacing whatever it was bound to."""
+        url, title = self.chat_identity()
+        sid = self.create_session()
+        self.vaults[sid] = {}
+        self.bind_session(sid, url, title)
+        self.rebuild_index()
+        self.toast(f"New session {sid[:8]}… for {title or 'this chat'}")
 
     def cmd_sign_out(self) -> None:
         r = self.server.api("/auth/logout", "POST", {})
@@ -759,7 +888,7 @@ class Automation(threading.Thread):
             sid = self.ensure_session()
             r = self.server.api("/api/mask", "POST", {"text": text, "session_id": sid})
             if not r["ok"] and r["status"] == 404:
-                self.cfg["sessionId"] = None
+                self.forget_session(sid)
                 sid = self.ensure_session()
                 r = self.server.api("/api/mask", "POST", {"text": text, "session_id": sid})
             if not r["ok"]:
@@ -789,7 +918,7 @@ class Automation(threading.Thread):
                 self.toast("No PII detected — safe to send.")
             self.emit(type="vault", entries=d.get("vault_entries", 0))
             if d["changed"]:
-                self.load_vault()
+                self.load_vault(sid)
             result = {"done": True, "changed": bool(d["changed"])}
             return result
         finally:
@@ -848,6 +977,13 @@ class Automation(threading.Thread):
             text = ""
         if not text or "TOK_" not in text.upper():
             self.toast("Clipboard has no TOK_ tokens.")
+            return
+        restored, n = self.index.restore(text)
+        if n:
+            self.clip_ignore_until = time.time() + 1.0
+            auto.SetClipboardText(restored)
+            self.clip_seq = _user32.GetClipboardSequenceNumber()
+            self.toast(f"Clipboard restored: {n} value{'' if n == 1 else 's'}.")
             return
         sid = self.cfg.get("sessionId")
         if not sid:
@@ -1235,7 +1371,7 @@ class Bar:
                     if self.settings_win and self.settings_win.winfo_exists():
                         self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
                 elif t == "session":
-                    self.toast(f"Session {ev['id'][:8]}…")
+                    self.toast(f"Session {ev['id'][:8]}… for {ev.get('title') or 'this chat'}")
                 elif t == "guard":
                     self.set_guard_label(ev["on"])
                 elif t == "unmask":
@@ -1274,7 +1410,8 @@ class Bar:
         self.check_label = tk.Label(w, text="", anchor="w")
         self.check_label.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         self.commands.put(("check",))   # show who we are, if anyone
-        tk.Label(w, text=f"Session: {(self.cfg.get('sessionId') or 'none')[:8]}    "
+        tk.Label(w, text=f"Sessions: {len(self.cfg.get('sessions') or {})} known, "
+                         f"{len(self.cfg.get('chats') or {})} chats bound; current {(self.cfg.get('sessionId') or 'none')[:8]}    "
                          f"Hotkeys: Ctrl+Shift+M mask, Ctrl+Shift+U unmask clipboard\n"
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
             row=4, column=0, columnspan=2, sticky="w", **pad)
