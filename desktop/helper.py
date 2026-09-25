@@ -22,9 +22,14 @@ restores tokens two ways. Hover the mouse over a token in a reply and a
 tooltip shows that line with the real values (UI Automation RangeFromPoint,
 about a millisecond). Copy text out of Claude and the clipboard is restored
 before you paste it anywhere. Ctrl+Shift+U restores the clipboard on demand.
-Painting the real values over every token on screen is not done: a full sweep
-of a reply costs up to 1.4 s through UI Automation (scripts/desktop/
-uia_reply_probe.py), far too slow to follow scrolling and streaming.
+Overlay (experimental, default on): the real values are painted over the
+tokens in replies on a transparent, click-through window that covers Claude.
+Tokens are located by character offset in the page text (one move per token,
+verified by reading the range back; the text search that the probe showed
+mis-aligning is not used), their rectangles are refreshed every tick (one
+call per token, which is how scrolling is followed), and the page text is
+re-read twice a second to catch streaming. The composer is never overlaid.
+If it does not look right, switch it off on the bar; hover and copy remain.
 
 Run:   py -m pip install uiautomation
        py desktop\\helper.py
@@ -59,6 +64,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,13 +90,16 @@ DEFAULTS = {
     "preamble": True,
     "guard": True,
     "unmask": True,        # hover tooltip + clipboard restore
+    "overlay": True,       # paint real values over tokens in replies (experimental)
     "preambleSent": [],
 }
+OVERLAY_TEXT_S = 0.5       # how often the page text is re-read for new tokens
+OVERLAY_MAX_TOKENS = 80
 TIP_MAX_CHARS = 400
 SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
 COMPOSER_CLASS_HINT = "ProseMirror"
-POLL_S = 0.25
+POLL_S = 0.12
 HIDE_GRACE_S = 0.8
 
 # ----------------------------------------------------------------------------- config
@@ -252,7 +261,25 @@ if _IS_WIN:
     _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
     _user32.SetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_ssize_t]
     _user32.GetClipboardSequenceNumber.restype = wt.DWORD
+    _user32.GetDC.restype = wt.HDC
+    _user32.GetDC.argtypes = [wt.HWND]
+    _user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+    _gdi32 = ctypes.windll.gdi32
+    _gdi32.GetPixel.restype = wt.COLORREF
+    _gdi32.GetPixel.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def screen_pixel(x: int, y: int) -> str | None:
+    """'#rrggbb' of the screen pixel, or None."""
+    hdc = _user32.GetDC(None)
+    try:
+        c = _gdi32.GetPixel(hdc, x, y)
+    finally:
+        _user32.ReleaseDC(None, hdc)
+    if c == 0xFFFFFFFF:   # CLR_INVALID
+        return None
+    return f"#{c & 0xFF:02x}{(c >> 8) & 0xFF:02x}{(c >> 16) & 0xFF:02x}"
 _exe_cache: dict[int, str] = {}
 
 
@@ -314,6 +341,12 @@ class Automation(threading.Thread):
         self.cursor_since = 0.0
         self.clip_seq = _user32.GetClipboardSequenceNumber() if _IS_WIN else 0
         self.clip_ignore_until = 0.0
+        self.claude_win = None        # top-level Claude window (overlay covers it)
+        self.ov_text = None           # page text at the last token scan
+        self.ov_text_at = 0.0
+        self.ov_items: list[dict] = []   # {"range", "value", "rect", "bg"}
+        self.ov_last_frame = None     # what was last sent to the UI
+        self.ov_visible = False
 
     # ---- plumbing
     def emit(self, **ev) -> None:
@@ -335,6 +368,12 @@ class Automation(threading.Thread):
                             self.poll_clipboard()
                         except Exception as e:  # noqa: BLE001
                             log(f"unmask poll error {type(e).__name__}: {e}")
+                    if self.cfg.get("overlay", True):
+                        try:
+                            self.poll_overlay()
+                        except Exception as e:  # noqa: BLE001
+                            log(f"overlay poll error {type(e).__name__}: {e}")
+                            self.hide_overlay()
                     continue
                 try:
                     getattr(self, "cmd_" + cmd[0])(*cmd[1:])
@@ -437,7 +476,7 @@ class Automation(threading.Thread):
         if self.doc is not None or now - self.doc_checked < 2.0:
             return self.doc
         self.doc_checked = now
-        best, best_n = None, -1
+        best, best_n, best_win = None, -1, None
         for w in auto.GetRootControl().GetChildren():
             try:
                 if w.ClassName != "Chrome_WidgetWin_1" or process_exe(w.ProcessId) != CLAUDE_EXE:
@@ -459,13 +498,14 @@ class Automation(threading.Thread):
                     except Exception:  # noqa: BLE001
                         n = -1
                     if n > best_n:
-                        best, best_n = tp, n
+                        best, best_n, best_win = tp, n, w
                     continue
                 try:
                     stack.extend((k, depth + 1) for k in c.GetChildren())
                 except Exception:  # noqa: BLE001
                     pass
         self.doc = best
+        self.claude_win = best_win if best is not None else None
         log(f"page document {'found' if best else 'not found'} ({best_n} chars)")
         return best
 
@@ -526,6 +566,118 @@ class Automation(threading.Thread):
             auto.SetClipboardText(restored)
             self.clip_seq = _user32.GetClipboardSequenceNumber()
             self.toast(f"Clipboard restored: {n} value{'' if n == 1 else 's'}.")
+
+    # ---- overlay
+    def hide_overlay(self) -> None:
+        if self.ov_visible:
+            self.ov_visible = False
+            self.ov_last_frame = None
+            self.emit(type="overlay", items=None)
+
+    def scan_tokens(self, doc, text: str) -> None:
+        """Locate every known token in the page text by character offset: one
+        endpoint move per token, verified by reading the range back."""
+        items = []
+        comp = None
+        if self.composer is not None:
+            try:
+                comp = self.composer.BoundingRectangle
+            except Exception:  # noqa: BLE001
+                comp = None
+        t0 = time.perf_counter()
+        base = doc.DocumentRange
+        for m in list(EXACT_RE.finditer(text))[:OVERLAY_MAX_TOKENS]:
+            tok = m.group(0)
+            value = self.index.vault.get(tok)
+            if value is None:
+                continue
+            rng = base.Clone()
+            moved = rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start, auto.TextUnit.Character, m.start(), waitTime=0)
+            rng.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, rng, auto.TextPatternRangeEndpoint.Start, waitTime=0)
+            rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End, auto.TextUnit.Character, len(tok), waitTime=0)
+            got = (rng.GetText(-1) or "")
+            if got.upper() != tok.upper():
+                # Offsets drifted (embedded objects / line breaks count differently): nudge a few chars.
+                fixed = False
+                for d in (-1, 1, -2, 2, -3, 3):
+                    r2 = base.Clone()
+                    r2.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start, auto.TextUnit.Character, m.start() + d, waitTime=0)
+                    r2.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, r2, auto.TextPatternRangeEndpoint.Start, waitTime=0)
+                    r2.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End, auto.TextUnit.Character, len(tok), waitTime=0)
+                    if (r2.GetText(-1) or "").upper() == tok.upper():
+                        rng, fixed = r2, True
+                        break
+                if not fixed:
+                    log(f"overlay: could not place {tok} (got {got!r} at {m.start()}, moved {moved})")
+                    continue
+            items.append({"range": rng, "value": value, "rect": None, "bg": None, "comp": comp})
+        self.ov_items = items
+        log(f"overlay: scanned {len(items)} tokens in {(time.perf_counter() - t0) * 1000:.0f} ms")
+
+    def poll_overlay(self) -> None:
+        if foreground_exe() != CLAUDE_EXE or not self.index.vault:
+            self.hide_overlay()
+            return
+        doc = self.page_document()
+        if doc is None or self.claude_win is None:
+            self.hide_overlay()
+            return
+        now = time.time()
+        if now - self.ov_text_at >= OVERLAY_TEXT_S:
+            self.ov_text_at = now
+            try:
+                text = doc.DocumentRange.GetText(-1) or ""
+            except Exception:  # noqa: BLE001
+                self.doc = None
+                self.hide_overlay()
+                return
+            if text != self.ov_text:
+                self.ov_text = text
+                self.scan_tokens(doc, text)
+        if not self.ov_items:
+            self.hide_overlay()
+            return
+        try:
+            win = self.claude_win.BoundingRectangle
+        except Exception:  # noqa: BLE001
+            self.doc = None
+            self.hide_overlay()
+            return
+        frame = []
+        for it in self.ov_items:
+            try:
+                rects = it["range"].GetBoundingRectangles()
+            except Exception:  # noqa: BLE001
+                rects = []
+            if not rects:
+                it["rect"] = None
+                continue
+            r = rects[0]
+            rect = (r.left, r.top, r.right, r.bottom)
+            if r.right - r.left < 8 or r.bottom - r.top < 6:
+                continue
+            if r.top < win.top or r.bottom > win.bottom:
+                continue                              # outside the window
+            comp = it["comp"]
+            if comp is not None and not (r.bottom < comp.top or r.top > comp.bottom):
+                continue                              # never overlay the composer
+            if it["rect"] != rect or it["bg"] is None:
+                it["rect"] = rect
+                it["bg"] = screen_pixel(r.left - 2, (r.top + r.bottom) // 2) or it["bg"] or "#ffffff"
+            frame.append((rect, it["value"], it["bg"]))
+        if frame != self.ov_last_frame:
+            self.ov_last_frame = frame
+            self.ov_visible = bool(frame)
+            self.emit(type="overlay", items=frame or None,
+                      win=(win.left, win.top, win.right, win.bottom))
+
+    def cmd_toggle_overlay(self) -> None:
+        self.cfg["overlay"] = not self.cfg.get("overlay", True)
+        save_config(self.cfg)
+        self.hide_overlay()
+        self.emit(type="overlay_state", on=self.cfg["overlay"])
+        self.toast("Overlay on: real values are painted over tokens." if self.cfg["overlay"]
+                   else "Overlay off.")
 
     def cmd_toggle_unmask(self) -> None:
         self.cfg["unmask"] = not self.cfg.get("unmask", True)
@@ -862,11 +1014,87 @@ class Hotkeys(threading.Thread):
             _user32.DispatchMessageW(ctypes.byref(msg))
 
 
+# ----------------------------------------------------------------------------- overlay window
+class Overlay:
+    """One transparent, click-through, topmost window over Claude; a canvas
+    paints a background patch and the real value over each token rectangle."""
+
+    KEY = "#010203"          # the colour that is rendered as fully transparent
+
+    def __init__(self, root: tk.Tk):
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg=self.KEY)
+        try:
+            self.win.attributes("-transparentcolor", self.KEY)
+        except tk.TclError:
+            pass
+        self.canvas = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.win.withdraw()
+        self.win.update_idletasks()
+        # click-through + never activated + no taskbar entry
+        GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_EX_LAYERED = -20, 0x08000000, 0x80, 0x20, 0x80000
+        hwnd = _user32.GetParent(self.win.winfo_id()) or self.win.winfo_id()
+        style = _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+        _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+                                  style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+        self.fonts: dict[int, tkfont.Font] = {}
+        self.geom = None
+        self.visible = False
+
+    def font(self, px: int) -> tkfont.Font:
+        if px not in self.fonts:
+            self.fonts[px] = tkfont.Font(family="Segoe UI", size=-px)
+        return self.fonts[px]
+
+    @staticmethod
+    def text_colour(bg: str) -> str:
+        r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
+        return "#111827" if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else "#f3f4f6"
+
+    def render(self, items, win_rect) -> None:
+        if not items:
+            if self.visible:
+                self.win.withdraw()
+                self.visible = False
+            return
+        left, top, right, bottom = win_rect
+        geom = f"{right - left}x{bottom - top}+{left}+{top}"
+        if geom != self.geom:
+            self.win.geometry(geom)
+            self.geom = geom
+        c = self.canvas
+        c.delete("all")
+        for (l, t, r, b), value, bg in items:
+            x, y, w, h = l - left, t - top, r - l, b - t
+            bg = bg if bg and bg.lower() != self.KEY else "#ffffff"
+            fg = self.text_colour(bg)
+            px = max(9, int(h * 0.68))
+            f = self.font(px)
+            text = value
+            while f.measure(text) > w and px > 9:
+                px -= 1
+                f = self.font(px)
+            if f.measure(text) > w:
+                while text and f.measure(text + "…") > w:
+                    text = text[:-1]
+                text += "…"
+            # the patch hides the token; a dotted line marks a restored value, as the extension does
+            c.create_rectangle(x, y, x + w, y + h, fill=bg, outline=bg)
+            c.create_text(x, y + h / 2, text=text, anchor="w", fill=fg, font=f)
+            c.create_line(x, y + h - 1, x + w, y + h - 1, fill=fg, dash=(2, 3))
+        if not self.visible:
+            self.win.deiconify()
+            self.visible = True
+
+
 # ----------------------------------------------------------------------------- UI
 class Bar:
     """The floating bar above the composer, plus toast, settings and the event pump."""
 
-    W, H = 470, 34
+    W, H = 540, 34
     BG, FG, ACCENT, ERR = "#1f2937", "#e5e7eb", "#93a4c4", "#f87171"
 
     def __init__(self, cfg: dict, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
@@ -897,6 +1125,11 @@ class Bar:
                                     font=("Segoe UI", 8))
         self.unmask_btn.pack(side="left", padx=(6, 0))
         self.set_unmask_label(cfg.get("unmask", True))
+        self.overlay_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_overlay",)),
+                                     bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
+                                     font=("Segoe UI", 8))
+        self.overlay_btn.pack(side="left", padx=(6, 0))
+        self.set_overlay_label(cfg.get("overlay", True))
         tk.Button(f, text="new session", command=lambda: self.commands.put(("new_session",)),
                   bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
                   font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
@@ -916,6 +1149,8 @@ class Bar:
         self.tip_label.pack()
         make_no_activate(self.tip)
 
+        self.overlay = Overlay(self.root)
+
         self.toast_after = None
         self.settings_win = None
         self.visible = False
@@ -926,6 +1161,9 @@ class Bar:
 
     def set_guard_label(self, on: bool) -> None:
         self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+
+    def set_overlay_label(self, on: bool) -> None:
+        self.overlay_btn.configure(text=f"overlay: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
 
     def set_unmask_label(self, on: bool) -> None:
         self.unmask_btn.configure(text=f"unmask: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
@@ -1002,6 +1240,10 @@ class Bar:
                     self.set_guard_label(ev["on"])
                 elif t == "unmask":
                     self.set_unmask_label(ev["on"])
+                elif t == "overlay":
+                    self.overlay.render(ev["items"], ev.get("win"))
+                elif t == "overlay_state":
+                    self.set_overlay_label(ev["on"])
                 elif t == "tip":
                     self.show_tip(ev["text"], ev["x"], ev["y"])
         except queue.Empty:
