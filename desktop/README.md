@@ -54,6 +54,23 @@ An administrator can pre-set the server URL for everyone on a machine in
 `%ProgramData%\Maskroom\helper.json` (`{"serverUrl": "https://safepii.hsenidmobile.com"}`),
 which the helper reads before the user's file, like the extension's managed `serverUrl` key.
 
+## Developing: keep the Windows PC in sync
+
+The Linux dev box serves this folder over the office LAN and the Windows PC pulls it,
+restarting the helper on every change. Nothing to install on Windows.
+
+```bash
+./desktop/dev-serve.sh                      # on Linux: serves desktop/ at http://<ip>:8765/
+```
+```powershell
+# on Windows, once, from the folder where helper.py lives (copy dev-sync.ps1 there first):
+powershell -ExecutionPolicy Bypass -File dev-sync.ps1 -Source http://10.27.149.168:8765
+```
+
+The watcher fetches `helper.py` every 2 s, writes it when its hash changed, and restarts
+the helper as its own child process. Close the window to stop both. Plain HTTP with no
+auth, so LAN and dev only; `dev-serve.sh` serves only this folder, never the repo root.
+
 ## How it is built
 
 One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
