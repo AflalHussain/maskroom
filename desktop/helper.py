@@ -99,6 +99,22 @@ def load_config() -> dict:
     return cfg
 
 
+LOG_FILE = CONFIG_DIR / "helper.log"
+_log_lock = threading.Lock()
+
+
+def log(msg: str) -> None:
+    """Diagnostic trail (guard decisions, hook status). Paste it back when something misbehaves."""
+    line = f"{time.strftime('%H:%M:%S')} [{threading.current_thread().name}] {msg}\n"
+    try:
+        with _log_lock:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line)
+    except OSError:
+        pass
+
+
 def save_config(cfg: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2), "utf-8")
@@ -157,6 +173,19 @@ if _IS_WIN:
     _kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
     _kernel32.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)]
     _kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    _kernel32.GetModuleHandleW.restype = wt.HMODULE
+    _kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+    _user32.GetForegroundWindow.restype = wt.HWND
+    _user32.GetWindowThreadProcessId.restype = wt.DWORD
+    _user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+    _user32.GetParent.restype = wt.HWND
+    _user32.GetParent.argtypes = [wt.HWND]
+    _user32.GetAsyncKeyState.restype = ctypes.c_short
+    _user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
+    _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.SetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_ssize_t]
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _exe_cache: dict[int, str] = {}
 
@@ -184,8 +213,8 @@ def make_no_activate(tk_toplevel: tk.Toplevel) -> None:
     GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = -20, 0x08000000, 0x00000080
     tk_toplevel.update_idletasks()
     hwnd = _user32.GetParent(tk_toplevel.winfo_id()) or tk_toplevel.winfo_id()
-    style = _user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    _user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    style = _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+    _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
 
 
 # ----------------------------------------------------------------------------- UIA worker
@@ -241,10 +270,19 @@ class Automation(threading.Thread):
                 r = ctrl.BoundingRectangle
             except Exception:  # noqa: BLE001
                 return
+            if self.composer is None:
+                log(f"composer focused: class={ctrl.ClassName!r} pid={ctrl.ProcessId}")
             self.composer = ctrl
             self.last_seen = time.time()
             self.emit(type="composer", visible=True, rect=(r.left, r.top, r.right, r.bottom))
         elif time.time() - self.last_seen > HIDE_GRACE_S:
+            if self.composer is not None:
+                try:
+                    where = f"{ctrl.ControlTypeName} class={ctrl.ClassName!r} pid={ctrl.ProcessId}" if ctrl else "none"
+                except Exception:  # noqa: BLE001
+                    where = "?"
+                log(f"composer lost; focus now: {where}")
+            self.composer = None
             self.emit(type="composer", visible=False)
 
     def current_composer(self):
@@ -401,18 +439,28 @@ class Automation(threading.Thread):
 
     def cmd_guard(self, pressed_at: float) -> None:
         """An Enter the hook swallowed while Claude was in front."""
+        log(f"guard: Enter received (queued {time.time() - pressed_at:.2f}s ago)")
         if pressed_at < self.mask_done_at:
+            log("guard: stale Enter (pressed before the last check finished) -> dropped")
             self.toast("Send dropped: masking finished after you pressed Enter. Review, then press Enter again.", error=True)
             return
         ctrl = self.current_composer()
         if ctrl is None:                      # Enter somewhere else in Claude: not ours
+            log("guard: focus is not the composer -> replay Enter")
             self.replay_enter()
             return
         text = self.read_text(ctrl)
-        if not text.strip() or text.strip() == self.last_masked.strip():
-            self.replay_enter()               # empty, or already checked: send as typed
+        if not text.strip():
+            log("guard: composer read as empty -> replay Enter")
+            self.replay_enter()
             return
+        if text.strip() == self.last_masked.strip():
+            log(f"guard: text already checked ({len(text)} chars) -> replay Enter")
+            self.replay_enter()
+            return
+        log(f"guard: unchecked text ({len(text)} chars) -> masking")
         r = self.mask_composer(ctrl)
+        log(f"guard: mask result {r}")
         if r["done"] and r["changed"]:
             self.toast("Masked — press Enter again to send.")
         elif r["done"]:
@@ -542,26 +590,34 @@ class Hotkeys(threading.Thread):
             return False
         pid = wt.DWORD(0)
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return process_exe(pid.value) == CLAUDE_EXE
+        exe = process_exe(pid.value)
+        if exe != CLAUDE_EXE:
+            log(f"hook: foreground is {exe or '?'} (pid {pid.value}), not {CLAUDE_EXE}")
+        return exe == CLAUDE_EXE
 
     def hook_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         try:
-            if n_code >= 0 and self.cfg.get("guard", True):
+            if n_code >= 0:
                 kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                if kb.vkCode == self.VK_RETURN and not (kb.flags & self.LLKHF_INJECTED):
-                    if w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
-                        plain = not (kb.flags & self.LLKHF_ALTDOWN) \
-                            and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) \
-                            and not (_user32.GetAsyncKeyState(self.VK_CONTROL) & 0x8000)
-                        if plain and self.claude_in_front():
-                            self.swallow_up = True
-                            self.commands.put(("guard", time.time()))
-                            return 1
-                    elif w_param in (self.WM_KEYUP, self.WM_SYSKEYUP) and self.swallow_up:
+                if kb.vkCode == self.VK_RETURN and w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
+                    injected = bool(kb.flags & self.LLKHF_INJECTED)
+                    plain = not (kb.flags & self.LLKHF_ALTDOWN) \
+                        and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) \
+                        and not (_user32.GetAsyncKeyState(self.VK_CONTROL) & 0x8000)
+                    front = self.claude_in_front()
+                    guard = self.cfg.get("guard", True)
+                    log(f"hook: Enter down injected={injected} plain={plain} claude_in_front={front} guard={guard}")
+                    if guard and not injected and plain and front:
+                        self.swallow_up = True
+                        self.commands.put(("guard", time.time()))
+                        log("hook: swallowed")
+                        return 1
+                elif kb.vkCode == self.VK_RETURN and not (kb.flags & self.LLKHF_INJECTED):
+                    if w_param in (self.WM_KEYUP, self.WM_SYSKEYUP) and self.swallow_up:
                         self.swallow_up = False
                         return 1
-        except Exception:  # noqa: BLE001 - never let the hook die
-            pass
+        except Exception as e:  # noqa: BLE001 - never let the hook die
+            log(f"hook: error {type(e).__name__}: {e}")
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     def run(self) -> None:
@@ -577,8 +633,12 @@ class Hotkeys(threading.Thread):
         self._proc = _HOOKPROC(self.hook_proc)
         hook = _user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._proc, _kernel32.GetModuleHandleW(None), 0)
         if not hook:
+            err = ctypes.get_last_error() or ctypes.GetLastError()
+            log(f"hook: SetWindowsHookExW FAILED, error {err}")
             self.events.put({"type": "toast", "error": True,
-                             "msg": "Could not install the keyboard hook; the guard is unavailable."})
+                             "msg": f"Could not install the keyboard hook (error {err}); the guard is unavailable."})
+        else:
+            log(f"hook: installed (guard={'on' if self.cfg.get('guard', True) else 'off'})")
         msg = wt.MSG()
         while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
             if msg.message == self.WM_HOTKEY and msg.wParam in self.BINDINGS:
@@ -764,6 +824,7 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
     cfg = load_config()
+    log(f"start: server={cfg.get('serverUrl')} guard={cfg.get('guard', True)} log={LOG_FILE}")
     commands: "queue.Queue[tuple]" = queue.Queue()
     events: "queue.Queue[dict]" = queue.Queue()
     Automation(cfg, commands, events).start()
