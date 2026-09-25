@@ -18,13 +18,15 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 | **Bar** | When the Claude Desktop composer has keyboard focus, a small floating bar appears above it. It never takes focus away from Claude. |
 | **Mask** | Button on the bar, or `Ctrl+Shift+M` anywhere. Reads the composer, sends the text to your Maskroom server (`POST /api/mask`), writes the pseudonymized text back in place. **You still press send.** The first masked message of a session is prefixed with the token preamble, as the extension does. |
 | **Guard** (default on) | Pressing Enter while the composer holds text that has not been checked yet runs it through Maskroom first. If anything was masked the send is *held* so you can read what will leave the machine, then press Enter again. If nothing needed masking, Enter is replayed and your send goes through as typed. Shift+Enter is a newline and is never held; Enter outside the composer is passed straight through. The guard fails closed: if the server is unreachable the send is held and the bar says why — switch the guard off (bar button) to send anyway. Only the keyboard is hooked: the on-screen Send button is not guarded. |
-| **Unmask clipboard** | `Ctrl+Shift+U`. Restores `TOK_` tokens in the clipboard through `POST /api/unmask` with the current session, so text copied out of a reply pastes with the real values. |
+| **Unmask on hover** (default on) | Rest the mouse on a token in a reply and a tooltip shows that line with the real values. The helper keeps the session's vault locally (`GET /api/session/<id>/vault`, refreshed after each mask) and restores with the same tolerant rules as the extension's `tokens.js` (any case, spaced or escaped underscores, truncated ids; unknown tokens are left alone). Nothing on Claude's screen is changed. |
+| **Unmask on copy** (default on) | Copy text out of Claude and the clipboard is restored before you paste it anywhere; the bar reports the count. `Ctrl+Shift+U` does the same on demand through the server (`POST /api/unmask`). The helper's own masked paste is never "restored". |
 | **Sessions** | One current session (vault), remembered in the config file. *new session* on the bar starts a fresh vault. |
 | **Sign in** | Gear button → *Sign in* opens the server's login page in your browser. After the identity provider, the server sends the browser back to a loopback port on this PC with a one-time code, which the helper exchanges for its own session (`POST /auth/exchange`). *Sign out* ends it, and lets the provider end its session too. |
 | **Settings** | Gear button: server URL, optional service key, preamble toggle, *Test connection* (`GET /api/me`). Opens on first run. |
 
-Not covered yet: the Send button (mouse), file masking, on-screen unmask of replies
-(see research §5.4 for why that is impractical), macOS.
+Not covered: the Send button (mouse), file masking, macOS, and painting real values over
+every token on screen (a full sweep of a reply through UI Automation costs up to 1.4 s,
+research §5.4; hover and copy are the practical substitutes).
 
 ## Install
 
@@ -67,6 +69,12 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
 - **tkinter main thread** (`Bar`): the floating bar (`WS_EX_NOACTIVATE`, so clicking
   it leaves focus in Claude), toasts, and the settings window. Reads an event queue;
   never touches UIA.
+- **Hover and clipboard** run on the UIA worker's idle tick: when the mouse rests for
+  0.35 s over the Claude window, `TextPattern.RangeFromPoint` on the page document (cached;
+  found by walking the window for the element with the most text) expanded to a line,
+  restored locally, shown in a no-activate tooltip under the line. The clipboard is watched
+  through `GetClipboardSequenceNumber`; a change while Claude is in front that contains
+  tokens is restored in place.
 - **Sign-in thread** (`SignIn`): a one-request `http.server` on `127.0.0.1:<random>`,
   `webbrowser.open` to `/auth/login?next=<that URL>/done`, then `POST /auth/exchange`
   with the code the server redirected back with. The token is stored in the config file

@@ -593,6 +593,18 @@ the extension. Still no on-screen unmask of replies.
 
 ### 5.4 Screen / overlay unmasking of replies — impractical
 
+**Measured 2026-09-25** with `scripts/desktop/uia_reply_probe.py` on Claude Desktop
+(Windows). The page is one `DocumentControl` with `TextPattern` (2.4k chars read in 53 ms).
+Locating tokens for an overlay is the problem: `FindText` returned mis-aligned ranges on
+this document (hits offset by two characters, some with no rectangles), and a full sweep of
+a 5.9k-char reply with 22 tokens cost **0.6–1.4 s per pass**, far too slow to follow
+scrolling or streaming. `GetVisibleRanges` took 547 ms. So painting real values over every
+token on screen stays off the table. What *is* cheap and exact: `RangeFromPoint` under the
+mouse took **1 ms** and, expanded to a word, returned the token text and its rectangle
+precisely (`TOK_PERSON_2615D96E`, one 184×20 px rectangle); `ControlFromPoint` (6 ms) gave
+the list item with the whole line. The helper therefore restores on hover (tooltip with the
+line's real values) and on copy, not by overlay. See `desktop/README.md`.
+
 To restore tokens *visually* inside Claude Desktop you would: read the reply text and its
 line rectangles from the accessibility tree (possible: `GetBoundingRectangles` on Windows,
 `AXBoundsForRange` on macOS), then paint replacement text in an overlay window on top of the

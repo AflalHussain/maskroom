@@ -17,10 +17,14 @@ outside the composer are never held. It fails closed: if the server cannot be
 reached the send is held and the bar says why; switch the guard off to send
 anyway. The Send button is not guarded (only the keyboard is hooked).
 
-Ctrl+Shift+U restores TOK_ tokens in whatever is on the clipboard (POST
-/api/unmask) so text copied out of a Claude reply can be pasted elsewhere with
-the real values. There is no on-screen unmask of replies: see
-docs/DESKTOP_APP_RESEARCH.md section 5.4 for why.
+Unmask (default on): the helper keeps the session's vault locally and
+restores tokens two ways. Hover the mouse over a token in a reply and a
+tooltip shows that line with the real values (UI Automation RangeFromPoint,
+about a millisecond). Copy text out of Claude and the clipboard is restored
+before you paste it anywhere. Ctrl+Shift+U restores the clipboard on demand.
+Painting the real values over every token on screen is not done: a full sweep
+of a reply costs up to 1.4 s through UI Automation (scripts/desktop/
+uia_reply_probe.py), far too slow to follow scrolling and streaming.
 
 Run:   py -m pip install uiautomation
        py desktop\\helper.py
@@ -50,6 +54,7 @@ import ctypes.wintypes as wt
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -78,8 +83,10 @@ DEFAULTS = {
     "sessionId": None,
     "preamble": True,
     "guard": True,
+    "unmask": True,        # hover tooltip + clipboard restore
     "preambleSent": [],
 }
+TIP_MAX_CHARS = 400
 SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
 COMPOSER_CLASS_HINT = "ProseMirror"
@@ -164,6 +171,64 @@ def _json_or_none(raw: bytes):
         return None
 
 
+# ----------------------------------------------------------------------------- tokens
+EXACT_RE = re.compile(r"TOK_[A-Z0-9_]+_[0-9A-F]{8,}")
+LOOSE_RE = re.compile(r"\bTOK(?:[\s_\-\\]{1,3}[A-Z]{2,})+?[\s_\-\\]{1,3}([0-9A-F]{6,})", re.IGNORECASE)
+MIN_ID = 6
+
+
+def _key(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", s.upper())
+
+
+class TokenIndex:
+    """Port of extension/tokens.js: exact tokens first, then loose matches (any
+    case, spaces/hyphens/escaped underscores, truncated or extended id) through
+    a normalized index with unique-prefix matching. Unknown tokens stay as they are."""
+
+    def __init__(self, vault: dict[str, str]):
+        self.vault = vault
+        self.exact: dict[str, str] = {}
+        self.by_entity: dict[str, list[tuple[str, str]]] = {}
+        for tok in vault:
+            self.exact[_key(tok)] = tok
+            i = tok.rfind("_")
+            self.by_entity.setdefault(_key(tok[4:i]), []).append((tok[i + 1:], tok))
+
+    def restore(self, text: str) -> tuple[str, int]:
+        if not text or not re.search("tok", text, re.IGNORECASE):
+            return text, 0
+        n = 0
+
+        def exact(m):
+            nonlocal n
+            tok = m.group(0)
+            if tok in self.vault:
+                n += 1
+                return self.vault[tok]
+            return tok
+
+        def loose(m):
+            nonlocal n
+            k = _key(m.group(0))
+            tok = self.exact.get(k)
+            if not tok:
+                h = m.group(1).upper()
+                entity = k[3:len(k) - len(h)]
+                if len(h) >= MIN_ID:
+                    hits = [t for vh, t in self.by_entity.get(entity, []) if vh.startswith(h) or h.startswith(vh)]
+                    if len(hits) == 1:
+                        tok = hits[0]
+            if not tok:
+                return m.group(0)
+            n += 1
+            return self.vault[tok]
+
+        out = EXACT_RE.sub(exact, text)
+        out = LOOSE_RE.sub(loose, out)
+        return out, n
+
+
 # ----------------------------------------------------------------------------- win32 bits
 _IS_WIN = sys.platform.startswith("win")
 _kernel32 = ctypes.windll.kernel32 if _IS_WIN else None
@@ -186,6 +251,7 @@ if _IS_WIN:
     _user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
     _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
     _user32.SetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    _user32.GetClipboardSequenceNumber.restype = wt.DWORD
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _exe_cache: dict[int, str] = {}
 
@@ -206,6 +272,15 @@ def process_exe(pid: int) -> str:
             _kernel32.CloseHandle(h)
     _exe_cache[pid] = name
     return name
+
+
+def foreground_exe() -> str:
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    pid = wt.DWORD(0)
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return process_exe(pid.value)
 
 
 def make_no_activate(tk_toplevel: tk.Toplevel) -> None:
@@ -231,6 +306,14 @@ class Automation(threading.Thread):
         self.last_seen = 0.0
         self.last_masked = ""         # composer text as it stood after the last check
         self.mask_done_at = 0.0       # when the last check finished (drops stale Enters)
+        self.index = TokenIndex({})   # the session vault, for local restore
+        self.doc = None               # Claude's page document (TextPattern) for hover lookups
+        self.doc_checked = 0.0
+        self.tip_text = None          # what the tooltip currently shows
+        self.cursor = (0, 0)
+        self.cursor_since = 0.0
+        self.clip_seq = _user32.GetClipboardSequenceNumber() if _IS_WIN else 0
+        self.clip_ignore_until = 0.0
 
     # ---- plumbing
     def emit(self, **ev) -> None:
@@ -246,6 +329,12 @@ class Automation(threading.Thread):
                     cmd = self.commands.get(timeout=POLL_S)
                 except queue.Empty:
                     self.poll_focus()
+                    if self.cfg.get("unmask", True):
+                        try:
+                            self.poll_hover()
+                            self.poll_clipboard()
+                        except Exception as e:  # noqa: BLE001
+                            log(f"unmask poll error {type(e).__name__}: {e}")
                     continue
                 try:
                     getattr(self, "cmd_" + cmd[0])(*cmd[1:])
@@ -322,10 +411,129 @@ class Automation(threading.Thread):
             pass
         # Fallback proven by the probe: the same keystrokes a person would use.
         ctrl.SetFocus()
+        self.clip_ignore_until = time.time() + 2.0   # do not "restore" our own masked paste
         auto.SetClipboardText(text)
         auto.SendKeys("{Ctrl}a", waitTime=0.1)
         auto.SendKeys("{Ctrl}v", waitTime=0.3)
         return "paste"
+
+    # ---- vault (local restore)
+    def load_vault(self) -> None:
+        sid = self.cfg.get("sessionId")
+        if not sid:
+            self.index = TokenIndex({})
+            return
+        r = self.server.api(f"/api/session/{sid}/vault")
+        if r["ok"] and isinstance(r["data"], dict):
+            self.index = TokenIndex(r["data"].get("mappings") or {})
+            log(f"vault loaded: {len(self.index.vault)} entries")
+        elif r["status"] == 404:
+            self.index = TokenIndex({})
+
+    # ---- hover tooltip
+    def page_document(self):
+        """Claude's page document element (the one with the most text), cached."""
+        now = time.time()
+        if self.doc is not None or now - self.doc_checked < 2.0:
+            return self.doc
+        self.doc_checked = now
+        best, best_n = None, -1
+        for w in auto.GetRootControl().GetChildren():
+            try:
+                if w.ClassName != "Chrome_WidgetWin_1" or process_exe(w.ProcessId) != CLAUDE_EXE:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            stack = [(w, 0)]
+            while stack:
+                c, depth = stack.pop()
+                if depth > 12:
+                    continue
+                try:
+                    tp = c.GetPattern(auto.PatternId.TextPattern)
+                except Exception:  # noqa: BLE001
+                    tp = None
+                if tp is not None:
+                    try:
+                        n = len(tp.DocumentRange.GetText(-1) or "")
+                    except Exception:  # noqa: BLE001
+                        n = -1
+                    if n > best_n:
+                        best, best_n = tp, n
+                    continue
+                try:
+                    stack.extend((k, depth + 1) for k in c.GetChildren())
+                except Exception:  # noqa: BLE001
+                    pass
+        self.doc = best
+        log(f"page document {'found' if best else 'not found'} ({best_n} chars)")
+        return best
+
+    def set_tip(self, text, x=0, y=0) -> None:
+        if text != self.tip_text:
+            self.tip_text = text
+            self.emit(type="tip", text=text, x=x, y=y)
+
+    def poll_hover(self) -> None:
+        pos = auto.GetCursorPos()
+        now = time.time()
+        if pos != self.cursor:
+            self.cursor, self.cursor_since = pos, now
+            self.set_tip(None)
+            return
+        if self.tip_text is not None or now - self.cursor_since < 0.35:
+            return                                  # already shown, or still moving
+        if foreground_exe() != CLAUDE_EXE or not self.index.vault:
+            return
+        doc = self.page_document()
+        if doc is None:
+            return
+        try:
+            rng = doc.RangeFromPoint(*pos)
+        except Exception:  # noqa: BLE001
+            self.doc = None                         # stale: re-find next time
+            return
+        if rng is None:
+            return
+        line = rng.Clone()
+        line.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
+        text = (line.GetText(-1) or "").strip()
+        restored, n = self.index.restore(text)
+        if not n:
+            self.cursor_since = now + 3600          # nothing here; do not retry until the mouse moves
+            return
+        if len(restored) > TIP_MAX_CHARS:
+            restored = restored[:TIP_MAX_CHARS] + "…"
+        rects = line.GetBoundingRectangles()
+        r = rects[0] if rects else None
+        self.set_tip(restored, r.left if r else pos[0], (r.bottom + 4) if r else pos[1] + 18)
+
+    # ---- clipboard restore
+    def poll_clipboard(self) -> None:
+        seq = _user32.GetClipboardSequenceNumber()
+        if seq == self.clip_seq:
+            return
+        self.clip_seq = seq
+        if time.time() < self.clip_ignore_until or foreground_exe() != CLAUDE_EXE:
+            return                                  # our own paste, or a copy from another app
+        try:
+            text = auto.GetClipboardText()
+        except Exception:  # noqa: BLE001
+            return
+        restored, n = self.index.restore(text or "")
+        if n:
+            self.clip_ignore_until = time.time() + 1.0
+            auto.SetClipboardText(restored)
+            self.clip_seq = _user32.GetClipboardSequenceNumber()
+            self.toast(f"Clipboard restored: {n} value{'' if n == 1 else 's'}.")
+
+    def cmd_toggle_unmask(self) -> None:
+        self.cfg["unmask"] = not self.cfg.get("unmask", True)
+        save_config(self.cfg)
+        self.set_tip(None)
+        self.emit(type="unmask", on=self.cfg["unmask"])
+        self.toast("Unmask on: hover a token, or copy from Claude." if self.cfg["unmask"]
+                   else "Unmask off.")
 
     # ---- sessions
     def ensure_session(self) -> str:
@@ -348,6 +556,7 @@ class Automation(threading.Thread):
         self.cfg["sessionId"] = None
         save_config(self.cfg)
         sid = self.ensure_session()
+        self.load_vault()
         self.toast(f"New session {sid[:8]}…")
 
     def cmd_sign_out(self) -> None:
@@ -358,6 +567,9 @@ class Automation(threading.Thread):
         if redirect and redirect.startswith("http"):
             webbrowser.open(redirect)    # let the identity provider end its session too
         self.emit(type="auth", ok=True, signed_in=False, msg="Signed out.")
+
+    def cmd_load_vault(self) -> None:
+        self.load_vault()
 
     def cmd_check(self) -> None:
         r = self.server.api("/api/me")
@@ -424,6 +636,8 @@ class Automation(threading.Thread):
             else:
                 self.toast("No PII detected — safe to send.")
             self.emit(type="vault", entries=d.get("vault_entries", 0))
+            if d["changed"]:
+                self.load_vault()
             result = {"done": True, "changed": bool(d["changed"])}
             return result
         finally:
@@ -487,6 +701,7 @@ class Automation(threading.Thread):
         if not sid:
             self.toast("No session yet — mask something first.", error=True)
             return
+        self.clip_ignore_until = time.time() + 1.0
         r = self.server.api("/api/unmask", "POST", {"text": text, "session_id": sid})
         if not r["ok"]:
             self.toast(r["error"], error=True)
@@ -651,7 +866,7 @@ class Hotkeys(threading.Thread):
 class Bar:
     """The floating bar above the composer, plus toast, settings and the event pump."""
 
-    W, H = 400, 34
+    W, H = 470, 34
     BG, FG, ACCENT, ERR = "#1f2937", "#e5e7eb", "#93a4c4", "#f87171"
 
     def __init__(self, cfg: dict, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
@@ -677,6 +892,11 @@ class Bar:
                                    font=("Segoe UI", 8))
         self.guard_btn.pack(side="left", padx=(6, 0))
         self.set_guard_label(cfg.get("guard", True))
+        self.unmask_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_unmask",)),
+                                    bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
+                                    font=("Segoe UI", 8))
+        self.unmask_btn.pack(side="left", padx=(6, 0))
+        self.set_unmask_label(cfg.get("unmask", True))
         tk.Button(f, text="new session", command=lambda: self.commands.put(("new_session",)),
                   bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
                   font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
@@ -685,6 +905,16 @@ class Bar:
         self.status = tk.Label(f, text="", bg=self.BG, fg=self.FG, font=("Segoe UI", 8), anchor="w")
         self.status.pack(side="left", padx=(8, 0), fill="x", expand=True)
         make_no_activate(self.win)
+
+        self.tip = tk.Toplevel(self.root)
+        self.tip.overrideredirect(True)
+        self.tip.attributes("-topmost", True)
+        self.tip.configure(bg="#111827")
+        self.tip.withdraw()
+        self.tip_label = tk.Label(self.tip, text="", bg="#111827", fg="#f9fafb", font=("Segoe UI", 10),
+                                  justify="left", wraplength=520, padx=10, pady=6)
+        self.tip_label.pack()
+        make_no_activate(self.tip)
 
         self.toast_after = None
         self.settings_win = None
@@ -696,6 +926,23 @@ class Bar:
 
     def set_guard_label(self, on: bool) -> None:
         self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+
+    def set_unmask_label(self, on: bool) -> None:
+        self.unmask_btn.configure(text=f"unmask: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+
+    def show_tip(self, text, x: int, y: int) -> None:
+        if not text:
+            self.tip.withdraw()
+            return
+        self.tip_label.configure(text=text)
+        self.tip.update_idletasks()
+        w, h = self.tip.winfo_reqwidth(), self.tip.winfo_reqheight()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        x = max(0, min(x, sw - w))
+        if y + h > sh:
+            y = max(0, y - h - 30)
+        self.tip.geometry(f"+{x}+{y}")
+        self.tip.deiconify()
 
     # ---- placement
     def place(self, rect) -> None:
@@ -753,6 +1000,10 @@ class Bar:
                     self.toast(f"Session {ev['id'][:8]}…")
                 elif t == "guard":
                     self.set_guard_label(ev["on"])
+                elif t == "unmask":
+                    self.set_unmask_label(ev["on"])
+                elif t == "tip":
+                    self.show_tip(ev["text"], ev["x"], ev["y"])
         except queue.Empty:
             pass
         self.root.after(100, self.pump)
@@ -829,6 +1080,7 @@ def main() -> int:
     events: "queue.Queue[dict]" = queue.Queue()
     Automation(cfg, commands, events).start()
     Hotkeys(cfg, commands, events).start()
+    commands.put(("load_vault",))
     Bar(cfg, commands, events).run()
     return 0
 
