@@ -42,6 +42,7 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
   pdf.py             PDF pipeline: OCR, two-pass detection, spatial redaction
   cli.py             the `maskroom` command
 extension/           Chrome extension for claude.ai (mask the composer, unmask replies on screen)
+desktop/             Windows helper for Claude Desktop (UI Automation; masks the composer in place)
 samples/             demo/test prompt sets with generated workbooks and a PDF (samples/README.md)
 webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
                      static/staging.html = LLM staging page; per-run scratch files

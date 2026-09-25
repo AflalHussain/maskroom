@@ -762,6 +762,8 @@ Grammarly's terms are irrelevant here beyond the mechanism and were not research
 3. **Prototype the C write-back before committing to it.** (b) Windows is **done**
    (2026-09-25, `scripts/desktop/uia_composer_probe.py`, §3.4): `ValuePattern.SetValue` on the
    composer is the in-place write path, with select-all + paste as the proven fallback.
+   The first prototype built on it is `desktop/helper.py` (bar above the composer, Mask
+   button and hotkey, clipboard unmask; no guard or files yet).
    (a) macOS is still open — set `AXManualAccessibility` on the app element, read the
    composer's `AXValue`, check `AXUIElementIsAttributeSettable` for `AXValue` and
    `AXSelectedText`, try both writes, watch what ProseMirror keeps. If the macOS write does
