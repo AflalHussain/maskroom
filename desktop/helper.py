@@ -31,7 +31,12 @@ call per token, which is how scrolling is followed), and the page text is
 re-read twice a second to catch streaming. Each token's font family, size,
 weight, italic and colour are read from the text range's attributes so the
 patch is drawn in the same style (a web font that is not installed falls
-back to Segoe UI). The composer is never overlaid.
+back to Segoe UI). The composer is never overlaid. Scrolling: a mouse
+hook notes wheel events over Claude; while the page scrolls, one anchor
+token's rectangle is read every 20 ms (a single call) and every patch is
+translated by that delta on the canvas, then, once the scroll settles, all
+rectangles are refreshed exactly. Set "overlayHideOnScroll" in the config
+(or the settings checkbox) to hide the overlay during scrolls instead.
 If it does not look right, switch it off on the bar; hover and copy remain.
 
 Run:   py -m pip install uiautomation
@@ -104,9 +109,13 @@ DEFAULTS = {
     "guard": True,
     "unmask": True,        # hover tooltip + clipboard restore
     "overlay": True,       # paint real values over tokens in replies (experimental)
+    "overlayHideOnScroll": False,   # hide while scrolling instead of tracking the scroll
     "preambleSent": [],
 }
 OVERLAY_TEXT_S = 0.5       # how often the page text is re-read for new tokens
+SCROLL_TICK_S = 0.02       # anchor poll while scrolling
+SCROLL_SETTLE_S = 0.15     # no movement for this long = scroll over
+SHARED = {"scroll_at": 0.0}   # written by the mouse hook, read by the worker
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 TIP_MAX_CHARS = 400
@@ -369,6 +378,10 @@ class Automation(threading.Thread):
         self.ov_items: list[dict] = []   # {"range", "value", "rect", "bg"}
         self.ov_last_frame = None     # what was last sent to the UI
         self.ov_visible = False
+        self.ov_win = None            # window rect of the last frame
+        self.scrolling = False
+        self.scroll_moved_at = 0.0
+        self.anchor = None            # item whose rect is polled while scrolling
 
     # ---- plumbing
     def emit(self, **ev) -> None:
@@ -381,8 +394,15 @@ class Automation(threading.Thread):
         with auto.UIAutomationInitializerInThread():
             while True:
                 try:
-                    cmd = self.commands.get(timeout=POLL_S)
+                    cmd = self.commands.get(timeout=SCROLL_TICK_S if self.scrolling else POLL_S)
                 except queue.Empty:
+                    if (self.cfg.get("overlay", True) and self.ov_visible) or self.scrolling:
+                        try:
+                            if self.track_scroll():
+                                continue          # mid-scroll: nothing else this tick
+                        except Exception as e:  # noqa: BLE001
+                            log(f"scroll track error {type(e).__name__}: {e}")
+                            self.scrolling = False
                     self.poll_focus()
                     if self.cfg.get("unmask", True):
                         try:
@@ -758,6 +778,7 @@ class Automation(threading.Thread):
                 rects = it["range"].GetBoundingRectangles()
             except Exception:  # noqa: BLE001
                 rects = []
+            it["on_screen"] = False
             if not rects:
                 it["rect"] = None
                 continue
@@ -767,6 +788,7 @@ class Automation(threading.Thread):
                 continue
             if r.top < win.top or r.bottom > win.bottom:
                 continue                              # outside the window
+            it["on_screen"] = True
             comp = it["comp"]
             if comp is not None and not (r.bottom < comp.top or r.top > comp.bottom):
                 continue                              # never overlay the composer
@@ -774,11 +796,61 @@ class Automation(threading.Thread):
                 it["rect"] = rect
                 it["bg"] = screen_pixel(r.left - 2, (r.top + r.bottom) // 2) or it["bg"] or "#ffffff"
             frame.append((rect, it["value"], it["bg"], it["style"]))
+        self.ov_win = (win.left, win.top, win.right, win.bottom)
         if frame != self.ov_last_frame:
             self.ov_last_frame = frame
             self.ov_visible = bool(frame)
-            self.emit(type="overlay", items=frame or None,
-                      win=(win.left, win.top, win.right, win.bottom))
+            self.emit(type="overlay", items=frame or None, win=self.ov_win)
+
+    def pick_anchor(self):
+        for it in self.ov_items:
+            if it.get("rect") and it.get("on_screen"):
+                return it
+        return None
+
+    def track_scroll(self) -> bool:
+        """Follow a scroll with one UIA call per tick. Returns True while a
+        scroll is in progress (the caller then skips the slower polls)."""
+        now = time.time()
+        wheel = now - SHARED["scroll_at"] < 0.4
+        if not self.scrolling:
+            if not wheel:
+                return False
+            self.scrolling = True
+            self.scroll_moved_at = now
+            self.anchor = self.pick_anchor()
+            self.set_tip(None)
+            if self.cfg.get("overlayHideOnScroll"):
+                self.emit(type="overlay", items=None)
+            log("scroll: start")
+        if self.anchor is None:
+            self.anchor = self.pick_anchor()
+        if self.anchor is not None and not self.cfg.get("overlayHideOnScroll"):
+            try:
+                rects = self.anchor["range"].GetBoundingRectangles()
+            except Exception:  # noqa: BLE001
+                rects = []
+            if rects:
+                r = rects[0]
+                ol, ot, _, _ = self.anchor["rect"]
+                dx, dy = r.left - ol, r.top - ot
+                if dx or dy:
+                    for it in self.ov_items:
+                        if it.get("rect"):
+                            l, t, rr, b = it["rect"]
+                            it["rect"] = (l + dx, t + dy, rr + dx, b + dy)
+                    self.emit(type="overlay_shift", dx=dx, dy=dy)
+                    self.scroll_moved_at = now
+            else:
+                self.anchor = None                    # scrolled off screen: pick another next tick
+        if now - self.scroll_moved_at > SCROLL_SETTLE_S and not wheel:
+            self.scrolling = False
+            self.anchor = None
+            self.ov_last_frame = None                 # force an exact refresh
+            log("scroll: settled")
+            self.poll_overlay()
+            return False
+        return True
 
     def cmd_toggle_overlay(self) -> None:
         self.cfg["overlay"] = not self.cfg.get("overlay", True)
@@ -1089,6 +1161,11 @@ class SignIn(threading.Thread):
 
 
 # ----------------------------------------------------------------------------- hotkeys
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD),
+                ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
 class KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [("vkCode", wt.DWORD), ("scanCode", wt.DWORD), ("flags", wt.DWORD),
                 ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
@@ -1127,6 +1204,17 @@ class Hotkeys(threading.Thread):
             log(f"hook: foreground is {exe or '?'} (pid {pid.value}), not {CLAUDE_EXE}")
         return exe == CLAUDE_EXE
 
+    WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL = 14, 0x020A, 0x020E
+
+    def mouse_proc(self, n_code: int, w_param: int, l_param: int) -> int:
+        """Never swallows anything; only notes wheel scrolling over Claude."""
+        try:
+            if n_code >= 0 and w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
+                SHARED["scroll_at"] = time.time()
+        except Exception:  # noqa: BLE001
+            pass
+        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
     def hook_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         try:
             if n_code >= 0:
@@ -1162,6 +1250,9 @@ class Hotkeys(threading.Thread):
         _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC, wt.HINSTANCE, wt.DWORD]
         _user32.CallNextHookEx.restype = ctypes.c_ssize_t
         _user32.CallNextHookEx.argtypes = [wt.HHOOK, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
+        self._mproc = _HOOKPROC(self.mouse_proc)
+        if not _user32.SetWindowsHookExW(self.WH_MOUSE_LL, self._mproc, _kernel32.GetModuleHandleW(None), 0):
+            log("hook: mouse hook FAILED; scroll tracking falls back to polling")
         self._proc = _HOOKPROC(self.hook_proc)
         hook = _user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._proc, _kernel32.GetModuleHandleW(None), 0)
         if not hook:
@@ -1231,6 +1322,10 @@ class Overlay:
     def text_colour(bg: str) -> str:
         r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
         return "#111827" if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else "#f3f4f6"
+
+    def shift(self, dx: int, dy: int) -> None:
+        if self.visible and (dx or dy):
+            self.canvas.move("all", dx, dy)
 
     def render(self, items, win_rect) -> None:
         if not items:
@@ -1339,7 +1434,7 @@ class Bar:
         self.settings_win = None
         self.visible = False
         self.rect = None
-        self.root.after(100, self.pump)
+        self.root.after(15, self.pump)
         if not ((cfg.get("apiKey") or "").strip() or (cfg.get("token") or "").strip()):
             self.root.after(300, self.open_settings)
 
@@ -1426,13 +1521,15 @@ class Bar:
                     self.set_unmask_label(ev["on"])
                 elif t == "overlay":
                     self.overlay.render(ev["items"], ev.get("win"))
+                elif t == "overlay_shift":
+                    self.overlay.shift(ev["dx"], ev["dy"])
                 elif t == "overlay_state":
                     self.set_overlay_label(ev["on"])
                 elif t == "tip":
                     self.show_tip(ev["text"], ev["x"], ev["y"])
         except queue.Empty:
             pass
-        self.root.after(100, self.pump)
+        self.root.after(15, self.pump)
 
     # ---- settings
     def open_settings(self) -> None:
@@ -1455,6 +1552,9 @@ class Bar:
         pre = tk.BooleanVar(value=self.cfg.get("preamble", True))
         tk.Checkbutton(w, text="Prefix the first masked message of a session with the token preamble",
                        variable=pre).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+        hide_scroll = tk.BooleanVar(value=self.cfg.get("overlayHideOnScroll", False))
+        tk.Checkbutton(w, text="Hide the overlay while scrolling (instead of following the scroll)",
+                       variable=hide_scroll).grid(row=6, column=0, columnspan=2, sticky="w", **pad)
         self.check_label = tk.Label(w, text="", anchor="w")
         self.check_label.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         self.commands.put(("check",))   # show who we are, if anyone
@@ -1464,12 +1564,13 @@ class Bar:
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
             row=4, column=0, columnspan=2, sticky="w", **pad)
         btns = tk.Frame(w)
-        btns.grid(row=5, column=0, columnspan=2, sticky="e", **pad)
+        btns.grid(row=7, column=0, columnspan=2, sticky="e", **pad)
 
         def apply():
             self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
             self.cfg["apiKey"] = key.get().strip()
             self.cfg["preamble"] = bool(pre.get())
+            self.cfg["overlayHideOnScroll"] = bool(hide_scroll.get())
             save_config(self.cfg)
 
         def test():
