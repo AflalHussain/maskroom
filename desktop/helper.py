@@ -7,6 +7,16 @@ Automation, sends the text to the Maskroom server (POST /api/mask), and writes
 the pseudonymized text back in place through ValuePattern.SetValue - the write
 path verified by scripts/desktop/uia_composer_probe.py. You still press send.
 
+Guard (default on, like the extension): a low-level keyboard hook sees Enter
+while Claude Desktop is in front. If the composer holds text that has not been
+checked yet, the keypress is swallowed and the text goes through /api/mask
+first. If anything was masked the send stays held so you can read what will
+leave the machine, then press Enter again; if nothing needed masking, Enter is
+replayed and the send goes through as typed. Shift+Enter (newline) and Enter
+outside the composer are never held. It fails closed: if the server cannot be
+reached the send is held and the bar says why; switch the guard off to send
+anyway. The Send button is not guarded (only the keyboard is hooked).
+
 Ctrl+Shift+U restores TOK_ tokens in whatever is on the clipboard (POST
 /api/unmask) so text copied out of a Claude reply can be pasted elsewhere with
 the real values. There is no on-screen unmask of replies: see
@@ -67,6 +77,7 @@ DEFAULTS = {
     "token": "",           # login-session token from /auth/exchange (browser sign-in)
     "sessionId": None,
     "preamble": True,
+    "guard": True,
     "preambleSent": [],
 }
 SIGNIN_TIMEOUT_S = 300
@@ -189,6 +200,8 @@ class Automation(threading.Thread):
         self.events = events
         self.composer = None          # last control that looked like the composer
         self.last_seen = 0.0
+        self.last_masked = ""         # composer text as it stood after the last check
+        self.mask_done_at = 0.0       # when the last check finished (drops stale Enters)
 
     # ---- plumbing
     def emit(self, **ev) -> None:
@@ -328,11 +341,18 @@ class Automation(threading.Thread):
         if ctrl is None:
             self.toast("Click into the Claude composer first.", error=True)
             return
+        self.mask_composer(ctrl)
+
+    def mask_composer(self, ctrl) -> dict:
+        """Check the composer's text with the server and rewrite it if needed.
+        Returns {"done": bool, "changed": bool}; done is False when the server
+        could not be reached or refused (the guard then holds the send)."""
         text = self.read_text(ctrl)
         if not text.strip():
             self.toast("Nothing to mask.")
-            return
+            return {"done": False, "changed": False}
         self.emit(type="busy", busy=True)
+        result = {"done": False, "changed": False}
         try:
             sid = self.ensure_session()
             r = self.server.api("/api/mask", "POST", {"text": text, "session_id": sid})
@@ -347,7 +367,7 @@ class Automation(threading.Thread):
                     self.toast("Sign-in required — open the gear button and sign in.", error=True)
                 else:
                     self.toast(r["error"], error=True)
-                return
+                return result
             d = r["data"]
             out = d["masked"]
             if d["changed"] and self.cfg.get("preamble", True) and sid not in self.cfg["preambleSent"]:
@@ -357,14 +377,55 @@ class Automation(threading.Thread):
             how = ""
             if d["changed"]:
                 how = self.write_text(ctrl, out)
+                self.last_masked = self.read_text(ctrl)
+            else:
+                self.last_masked = text
             n = len(d["findings"])
             if n:
                 self.toast(f"{n} value{'' if n == 1 else 's'} masked ({how}). Review, then press send.")
             else:
                 self.toast("No PII detected — safe to send.")
             self.emit(type="vault", entries=d.get("vault_entries", 0))
+            result = {"done": True, "changed": bool(d["changed"])}
+            return result
         finally:
+            self.mask_done_at = time.time()
             self.emit(type="busy", busy=False)
+
+    # ---- the guard
+    @staticmethod
+    def replay_enter() -> None:
+        """Send the Enter the user asked for. Synthetic input carries the
+        LLKHF_INJECTED flag, so the hook lets it through."""
+        auto.SendKeys("{Enter}", waitTime=0)
+
+    def cmd_guard(self, pressed_at: float) -> None:
+        """An Enter the hook swallowed while Claude was in front."""
+        if pressed_at < self.mask_done_at:
+            self.toast("Send dropped: masking finished after you pressed Enter. Review, then press Enter again.", error=True)
+            return
+        ctrl = self.current_composer()
+        if ctrl is None:                      # Enter somewhere else in Claude: not ours
+            self.replay_enter()
+            return
+        text = self.read_text(ctrl)
+        if not text.strip() or text.strip() == self.last_masked.strip():
+            self.replay_enter()               # empty, or already checked: send as typed
+            return
+        r = self.mask_composer(ctrl)
+        if r["done"] and r["changed"]:
+            self.toast("Masked — press Enter again to send.")
+        elif r["done"]:
+            self.replay_enter()
+        else:
+            self.toast("Send held: the text could not be checked. Fix the connection, or switch the guard off.", error=True)
+
+    def cmd_toggle_guard(self) -> None:
+        self.cfg["guard"] = not self.cfg.get("guard", True)
+        save_config(self.cfg)
+        self.emit(type="guard", on=self.cfg["guard"])
+        self.toast("Guard on: Enter checks the text first." if self.cfg["guard"]
+                   else "Guard off: Enter sends as typed.")
 
     def cmd_unmask_clipboard(self) -> None:
         try:
@@ -448,14 +509,60 @@ class SignIn(threading.Thread):
 
 
 # ----------------------------------------------------------------------------- hotkeys
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", wt.DWORD), ("scanCode", wt.DWORD), ("flags", wt.DWORD),
+                ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+_HOOKPROC = ctypes.CFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)
+
+
 class Hotkeys(threading.Thread):
+    """Global hotkeys and the guard's keyboard hook share one message loop:
+    RegisterHotKey delivers to the registering thread, and a WH_KEYBOARD_LL
+    hook needs a pumping thread too."""
+
     MOD_CONTROL, MOD_SHIFT, MOD_NOREPEAT, WM_HOTKEY = 0x0002, 0x0004, 0x4000, 0x0312
     BINDINGS = {1: ("M", "mask"), 2: ("U", "unmask_clipboard")}
+    WH_KEYBOARD_LL, VK_RETURN, VK_SHIFT, VK_CONTROL = 13, 0x0D, 0x10, 0x11
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
+    LLKHF_INJECTED, LLKHF_ALTDOWN = 0x10, 0x20
 
-    def __init__(self, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
+    def __init__(self, cfg: dict, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
         super().__init__(name="hotkeys", daemon=True)
+        self.cfg = cfg
         self.commands = commands
         self.events = events
+        self.swallow_up = False
+        self._proc = None            # keep the callback alive for the hook's lifetime
+
+    def claude_in_front(self) -> bool:
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        pid = wt.DWORD(0)
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return process_exe(pid.value) == CLAUDE_EXE
+
+    def hook_proc(self, n_code: int, w_param: int, l_param: int) -> int:
+        try:
+            if n_code >= 0 and self.cfg.get("guard", True):
+                kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if kb.vkCode == self.VK_RETURN and not (kb.flags & self.LLKHF_INJECTED):
+                    if w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
+                        plain = not (kb.flags & self.LLKHF_ALTDOWN) \
+                            and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) \
+                            and not (_user32.GetAsyncKeyState(self.VK_CONTROL) & 0x8000)
+                        if plain and self.claude_in_front():
+                            self.swallow_up = True
+                            self.commands.put(("guard", time.time()))
+                            return 1
+                    elif w_param in (self.WM_KEYUP, self.WM_SYSKEYUP) and self.swallow_up:
+                        self.swallow_up = False
+                        return 1
+        except Exception:  # noqa: BLE001 - never let the hook die
+            pass
+        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     def run(self) -> None:
         mods = self.MOD_CONTROL | self.MOD_SHIFT | self.MOD_NOREPEAT
@@ -463,17 +570,28 @@ class Hotkeys(threading.Thread):
             if not _user32.RegisterHotKey(None, hid, mods, ord(key)):
                 self.events.put({"type": "toast", "error": True,
                                  "msg": f"Ctrl+Shift+{key} is taken by another app; use the bar instead."})
+        _user32.SetWindowsHookExW.restype = wt.HHOOK
+        _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC, wt.HINSTANCE, wt.DWORD]
+        _user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        _user32.CallNextHookEx.argtypes = [wt.HHOOK, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
+        self._proc = _HOOKPROC(self.hook_proc)
+        hook = _user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._proc, _kernel32.GetModuleHandleW(None), 0)
+        if not hook:
+            self.events.put({"type": "toast", "error": True,
+                             "msg": "Could not install the keyboard hook; the guard is unavailable."})
         msg = wt.MSG()
         while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
             if msg.message == self.WM_HOTKEY and msg.wParam in self.BINDINGS:
                 self.commands.put((self.BINDINGS[msg.wParam][1],))
+            _user32.TranslateMessage(ctypes.byref(msg))
+            _user32.DispatchMessageW(ctypes.byref(msg))
 
 
 # ----------------------------------------------------------------------------- UI
 class Bar:
     """The floating bar above the composer, plus toast, settings and the event pump."""
 
-    W, H = 330, 34
+    W, H = 400, 34
     BG, FG, ACCENT, ERR = "#1f2937", "#e5e7eb", "#93a4c4", "#f87171"
 
     def __init__(self, cfg: dict, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
@@ -494,6 +612,11 @@ class Bar:
                                   bg="#374151", fg=self.FG, activebackground="#4b5563", relief="flat",
                                   padx=8, font=("Segoe UI", 9, "bold"))
         self.mask_btn.pack(side="left")
+        self.guard_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_guard",)),
+                                   bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
+                                   font=("Segoe UI", 8))
+        self.guard_btn.pack(side="left", padx=(6, 0))
+        self.set_guard_label(cfg.get("guard", True))
         tk.Button(f, text="new session", command=lambda: self.commands.put(("new_session",)),
                   bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
                   font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
@@ -510,6 +633,9 @@ class Bar:
         self.root.after(100, self.pump)
         if not ((cfg.get("apiKey") or "").strip() or (cfg.get("token") or "").strip()):
             self.root.after(300, self.open_settings)
+
+    def set_guard_label(self, on: bool) -> None:
+        self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
 
     # ---- placement
     def place(self, rect) -> None:
@@ -565,6 +691,8 @@ class Bar:
                         self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
                 elif t == "session":
                     self.toast(f"Session {ev['id'][:8]}…")
+                elif t == "guard":
+                    self.set_guard_label(ev["on"])
         except queue.Empty:
             pass
         self.root.after(100, self.pump)
@@ -639,7 +767,7 @@ def main() -> int:
     commands: "queue.Queue[tuple]" = queue.Queue()
     events: "queue.Queue[dict]" = queue.Queue()
     Automation(cfg, commands, events).start()
-    Hotkeys(commands, events).start()
+    Hotkeys(cfg, commands, events).start()
     Bar(cfg, commands, events).run()
     return 0
 

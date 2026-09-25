@@ -17,13 +17,14 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 |---|---|
 | **Bar** | When the Claude Desktop composer has keyboard focus, a small floating bar appears above it. It never takes focus away from Claude. |
 | **Mask** | Button on the bar, or `Ctrl+Shift+M` anywhere. Reads the composer, sends the text to your Maskroom server (`POST /api/mask`), writes the pseudonymized text back in place. **You still press send.** The first masked message of a session is prefixed with the token preamble, as the extension does. |
+| **Guard** (default on) | Pressing Enter while the composer holds text that has not been checked yet runs it through Maskroom first. If anything was masked the send is *held* so you can read what will leave the machine, then press Enter again. If nothing needed masking, Enter is replayed and your send goes through as typed. Shift+Enter is a newline and is never held; Enter outside the composer is passed straight through. The guard fails closed: if the server is unreachable the send is held and the bar says why — switch the guard off (bar button) to send anyway. Only the keyboard is hooked: the on-screen Send button is not guarded. |
 | **Unmask clipboard** | `Ctrl+Shift+U`. Restores `TOK_` tokens in the clipboard through `POST /api/unmask` with the current session, so text copied out of a reply pastes with the real values. |
 | **Sessions** | One current session (vault), remembered in the config file. *new session* on the bar starts a fresh vault. |
 | **Sign in** | Gear button → *Sign in* opens the server's login page in your browser. After the identity provider, the server sends the browser back to a loopback port on this PC with a one-time code, which the helper exchanges for its own session (`POST /auth/exchange`). *Sign out* ends it, and lets the provider end its session too. |
 | **Settings** | Gear button: server URL, optional service key, preamble toggle, *Test connection* (`GET /api/me`). Opens on first run. |
 
-Not covered yet: the send guard (Enter interception), file masking, on-screen unmask of
-replies (see research §5.4 for why that is impractical), macOS.
+Not covered yet: the Send button (mouse), file masking, on-screen unmask of replies
+(see research §5.4 for why that is impractical), macOS.
 
 ## Install
 
@@ -57,8 +58,12 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
   and recognises the composer by its `ProseMirror` class name inside `Claude.exe`.
   Runs every server call. Writes back with `ValuePattern.SetValue`, verifies by
   re-reading, and falls back to select-all + paste (also verified by the probe).
-- **Hotkey thread** (`Hotkeys`): `RegisterHotKey` for `Ctrl+Shift+M/U`; posts commands
-  to the worker.
+- **Hotkey thread** (`Hotkeys`): `RegisterHotKey` for `Ctrl+Shift+M/U`, plus the guard's
+  `WH_KEYBOARD_LL` hook. The hook swallows a plain Enter while `Claude.exe` is in front
+  and posts a `guard` command; the worker checks the text and either rewrites it (send
+  held) or replays Enter with `SendInput`, which the hook lets through because synthetic
+  input carries `LLKHF_INJECTED`. An Enter pressed while a check was still running is
+  dropped, as the extension does, so a masked text is never sent unread.
 - **tkinter main thread** (`Bar`): the floating bar (`WS_EX_NOACTIVATE`, so clicking
   it leaves focus in Claude), toasts, and the settings window. Reads an event queue;
   never touches UIA.
@@ -73,7 +78,7 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
 
 ## Next steps (from the research doc, §8.2)
 
-1. Send guard: a low-level keyboard hook that intercepts Enter in the composer when the
-   text has not been checked, mirroring the extension's guard.
+1. Guard the Send button too: a `WH_MOUSE_LL` hook hit-tested against the button's UIA
+   rectangle.
 2. File drop target → `/api/process`, and a Downloads watcher → `/api/unmask-file`.
 3. Package as a signed executable; macOS port after the `AXValue` experiment.
