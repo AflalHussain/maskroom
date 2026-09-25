@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maskroom"
-version = "0.2.1"
+version = "0.2.2"
 description = "PII pseudonymization for spreadsheets and redaction for PDFs (Presidio, Sri Lankan recognizers, OCR)"
 readme = "README.md"
 requires-python = ">=3.11"
