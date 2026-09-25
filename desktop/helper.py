@@ -28,7 +28,10 @@ Tokens are located by character offset in the page text (one move per token,
 verified by reading the range back; the text search that the probe showed
 mis-aligning is not used), their rectangles are refreshed every tick (one
 call per token, which is how scrolling is followed), and the page text is
-re-read twice a second to catch streaming. The composer is never overlaid.
+re-read twice a second to catch streaming. Each token's font family, size,
+weight, italic and colour are read from the text range's attributes so the
+patch is drawn in the same style (a web font that is not installed falls
+back to Segoe UI). The composer is never overlaid.
 If it does not look right, switch it off on the bar; hover and copy remain.
 
 Run:   py -m pip install uiautomation
@@ -654,6 +657,30 @@ class Automation(threading.Thread):
             self.ov_last_frame = None
             self.emit(type="overlay", items=None)
 
+    @staticmethod
+    def range_style(rng) -> dict:
+        """Font family / size (pt) / weight / italic / foreground of a text range,
+        from UIA text attributes. Missing or mixed values are left out."""
+        want = {"family": (auto.TextAttributeId.FontNameAttribute, str),
+                "size": (auto.TextAttributeId.FontSizeAttribute, (int, float)),
+                "weight": (auto.TextAttributeId.FontWeightAttribute, (int, float)),
+                "italic": (auto.TextAttributeId.IsItalicAttribute, bool),
+                "fg": (auto.TextAttributeId.ForegroundColorAttribute, (int,))}
+        style = {}
+        for key, (aid, types) in want.items():
+            try:
+                v = rng.GetAttributeValue(aid)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(v, bool) and key != "italic":
+                continue
+            if isinstance(v, types) and not (key == "fg" and isinstance(v, bool)):
+                style[key] = v
+        if "fg" in style:
+            c = int(style["fg"])
+            style["fg"] = f"#{c & 0xFF:02x}{(c >> 8) & 0xFF:02x}{(c >> 16) & 0xFF:02x}"
+        return style
+
     def scan_tokens(self, doc, text: str) -> None:
         """Locate every known token in the page text by character offset: one
         endpoint move per token, verified by reading the range back."""
@@ -690,9 +717,11 @@ class Automation(threading.Thread):
                 if not fixed:
                     log(f"overlay: could not place {tok} (got {got!r} at {m.start()}, moved {moved})")
                     continue
-            items.append({"range": rng, "value": value, "rect": None, "bg": None, "comp": comp})
+            style = self.range_style(rng)
+            items.append({"range": rng, "value": value, "rect": None, "bg": None, "comp": comp, "style": style})
         self.ov_items = items
-        log(f"overlay: scanned {len(items)} tokens in {(time.perf_counter() - t0) * 1000:.0f} ms")
+        sample = items[0]["style"] if items else {}
+        log(f"overlay: scanned {len(items)} tokens in {(time.perf_counter() - t0) * 1000:.0f} ms; style {sample}")
 
     def poll_overlay(self) -> None:
         if foreground_exe() != CLAUDE_EXE or not self.index.vault:
@@ -744,7 +773,7 @@ class Automation(threading.Thread):
             if it["rect"] != rect or it["bg"] is None:
                 it["rect"] = rect
                 it["bg"] = screen_pixel(r.left - 2, (r.top + r.bottom) // 2) or it["bg"] or "#ffffff"
-            frame.append((rect, it["value"], it["bg"]))
+            frame.append((rect, it["value"], it["bg"], it["style"]))
         if frame != self.ov_last_frame:
             self.ov_last_frame = frame
             self.ov_visible = bool(frame)
@@ -1176,14 +1205,27 @@ class Overlay:
         style = _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
         _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                                   style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED)
-        self.fonts: dict[int, tkfont.Font] = {}
+        self.fonts: dict[tuple, tkfont.Font] = {}
+        self.families = {f.lower() for f in tkfont.families(root)}
+        self.dpi = root.winfo_fpixels("1i")
         self.geom = None
         self.visible = False
 
-    def font(self, px: int) -> tkfont.Font:
-        if px not in self.fonts:
-            self.fonts[px] = tkfont.Font(family="Segoe UI", size=-px)
-        return self.fonts[px]
+    def font(self, family: str, px: int, bold: bool, italic: bool) -> tkfont.Font:
+        key = (family, px, bold, italic)
+        if key not in self.fonts:
+            self.fonts[key] = tkfont.Font(family=family, size=-px,
+                                          weight="bold" if bold else "normal",
+                                          slant="italic" if italic else "roman")
+        return self.fonts[key]
+
+    def resolve_family(self, css_family) -> str:
+        """First installed family from a CSS font-family list, else Segoe UI."""
+        for name in (css_family or "").split(","):
+            name = name.strip().strip("'\"")
+            if name and name.lower() in self.families:
+                return name
+        return "Segoe UI"
 
     @staticmethod
     def text_colour(bg: str) -> str:
@@ -1203,16 +1245,22 @@ class Overlay:
             self.geom = geom
         c = self.canvas
         c.delete("all")
-        for (l, t, r, b), value, bg in items:
+        for (l, t, r, b), value, bg, style in items:
             x, y, w, h = l - left, t - top, r - l, b - t
             bg = bg if bg and bg.lower() != self.KEY else "#ffffff"
-            fg = self.text_colour(bg)
-            px = max(9, int(h * 0.68))
-            f = self.font(px)
+            fg = style.get("fg") or self.text_colour(bg)
+            family = self.resolve_family(style.get("family"))
+            bold = float(style.get("weight") or 400) >= 600
+            italic = bool(style.get("italic"))
+            if style.get("size"):
+                px = max(9, int(round(float(style["size"]) * self.dpi / 72)))
+            else:
+                px = max(9, int(h * 0.68))
+            f = self.font(family, px, bold, italic)
             text = value
             while f.measure(text) > w and px > 9:
                 px -= 1
-                f = self.font(px)
+                f = self.font(family, px, bold, italic)
             if f.measure(text) > w:
                 while text and f.measure(text + "…") > w:
                     text = text[:-1]
