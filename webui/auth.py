@@ -16,9 +16,15 @@ Two modes, chosen by MASKROOM_AUTH_MODE:
 A request is attributed to one Principal, resolved in this order and never
 falling through from a presented-but-invalid credential:
   1. Authorization: Bearer mr_...   a named service key (api_keys table)
-  2. X-API-Key                      the deprecated shared MASKROOM_API_KEY
-  3. the maskroom_session cookie    a signed-in user
-  4. anonymous
+  2. Authorization: Bearer <token>  a signed-in user on a native client (the
+                                    desktop helper), token from /auth/exchange
+  3. X-API-Key                      the deprecated shared MASKROOM_API_KEY
+  4. the maskroom_session cookie    a signed-in user
+  5. anonymous
+
+Native clients sign in through the system browser: /auth/login?next=
+http://127.0.0.1:<port>/... (RFC 8252 loopback) ends with a one-time code on
+that URL, and POST /auth/exchange {code} returns a login-session token.
 
 Ownership: sessions and file runs remember the principal that created them and
 are served only to that principal (rows without an owner, created with auth
@@ -35,8 +41,8 @@ from urllib.parse import urlencode, urlsplit
 
 from flask import Blueprint, Response, g, jsonify, redirect, request, session as flask_session
 
-from maskroom.store import (ROLES, ApiKeyStore, LoginSessionStore, RunStore, UserStore,
-                            normalize_email, role_allows)
+from maskroom.store import (ROLES, ApiKeyStore, LoginCodeStore, LoginSessionStore, RunStore,
+                            UserStore, normalize_email, role_allows)
 from maskroom.store.users import MISSING
 
 log = logging.getLogger("maskroom.auth")
@@ -205,6 +211,7 @@ class AuthState:
         self.extension_ids = extension_ids
         self.users = UserStore(db)
         self.logins = LoginSessionStore(db, hours=session_hours)
+        self.codes = LoginCodeStore(db)
         self.keys = ApiKeyStore(db)
         self.runs = RunStore(db)
         self._warned_legacy = False
@@ -295,9 +302,17 @@ def owned(owner_id):
     return p.id == owner_id
 
 
+def is_loopback(n):
+    """A native client's redirect: http://127.0.0.1:<port>/... or [::1]
+    (RFC 8252 section 7.3). Not 'localhost', which can resolve elsewhere."""
+    u = urlsplit(n or "")
+    return u.scheme == "http" and u.hostname in ("127.0.0.1", "::1") and u.port is not None
+
+
 def safe_next(n):
-    """Where to go after login: a same-origin path, or the extension's own
-    chromiumapp.org callback. Anything else becomes '/'."""
+    """Where to go after login: a same-origin path, the extension's own
+    chromiumapp.org callback, or a native client's loopback URL. Anything
+    else becomes '/'."""
     if not n:
         return "/"
     if n.startswith("/") and not n.startswith("//") and not n.startswith("/\\"):
@@ -305,7 +320,14 @@ def safe_next(n):
     u = urlsplit(n)
     if u.scheme == "https" and u.netloc in {f"{eid}.chromiumapp.org" for eid in AUTH.extension_ids}:
         return n
+    if is_loopback(n):
+        return n
     return "/"
+
+
+def bearer_token():
+    auth = request.headers.get("Authorization", "")
+    return auth[7:].strip() if auth.startswith("Bearer ") else ""
 
 
 def cookie_kwargs():
@@ -323,10 +345,16 @@ def required_role(path):
 
 
 def resolve_principal():
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        key = AUTH.keys.authenticate(auth[7:].strip())
+    bearer = bearer_token()
+    if bearer.startswith("mr_"):
+        key = AUTH.keys.authenticate(bearer)
         return Principal("service", key.id, None, key.name, key.role) if key else ANONYMOUS
+    if bearer:
+        hit = AUTH.logins.resolve(bearer)
+        if hit:
+            _login, user = hit
+            return Principal("user", user.id, user.email, user.name, user.role)
+        return ANONYMOUS
     given = request.headers.get("X-API-Key")
     if given:
         legacy = AUTH.legacy_key
@@ -420,9 +448,37 @@ def callback():
     token = AUTH.logins.create(user.id, ip=client_ip(), id_token=ident.id_token)
     nxt = flask_session.pop("auth_next", "/")
     flask_session.pop("auth_state", None)
+    if is_loopback(nxt):
+        # A native client is waiting on 127.0.0.1: hand it a one-time code, not
+        # the session. The browser keeps its own cookie session as well.
+        code = AUTH.codes.create(user.id, ip=client_ip(), id_token=ident.id_token)
+        u = urlsplit(nxt)
+        query = (u.query + "&" if u.query else "") + urlencode({"code": code})
+        nxt = u._replace(query=query).geturl()
     resp = redirect(nxt)
     resp.set_cookie(COOKIE, token, **cookie_kwargs())
     return resp
+
+
+@auth_bp.post("/auth/exchange")
+def exchange():
+    """Native client: {code} -> {token, principal, expires_in}. The code came
+    from a loopback login redirect and works once, within a minute. The token
+    is a login session, sent back as `Authorization: Bearer <token>`."""
+    if AUTH.mode != "oidc":
+        return jsonify({"error": "Sign-in is not enabled on this server."}), 404
+    body = request.get_json(silent=True) or {}
+    hit = AUTH.codes.redeem(body.get("code"))
+    if not hit:
+        return jsonify({"error": "This sign-in code is invalid, used or expired. Sign in again."}), 400
+    user_id, _ip, id_token = hit
+    user = AUTH.users.get(user_id)
+    if user is None or user.disabled:
+        return jsonify({"error": "Account disabled."}), 403
+    token = AUTH.logins.create(user.id, ip=client_ip(), id_token=id_token)
+    p = Principal("user", user.id, user.email, user.name, user.role)
+    return jsonify({"token": token, "principal": p.to_dict(),
+                    "expires_in": int(AUTH.session_hours * 3600)})
 
 
 @auth_bp.post("/auth/logout")
@@ -434,6 +490,8 @@ def logout():
     token = request.cookies.get(COOKIE)
     if token and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         return jsonify({"error": f"Missing {CSRF_HEADER}: {CSRF_VALUE} header."}), 403
+    if not token:
+        token = bearer_token()   # a native client ending its own session
     id_token = None
     if token:
         _removed, id_token = AUTH.logins.revoke(token)

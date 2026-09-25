@@ -16,10 +16,10 @@ from .schema import metadata
 from .sessions import Session, SessionStore
 from .audit import AuditLog, INDEX_FIELDS
 from .policy import PolicyStore
-from .users import (ROLES, ApiKeyStore, LoginSessionStore, RunStore, UserStore,
+from .users import (ROLES, ApiKeyStore, LoginCodeStore, LoginSessionStore, RunStore, UserStore,
                     normalize_email, role_allows)
 
 __all__ = ["connect", "dispose_all", "make_engine", "init_schema", "default_url",
            "is_configured", "metadata", "Session", "SessionStore", "AuditLog",
-           "INDEX_FIELDS", "PolicyStore", "ROLES", "ApiKeyStore", "LoginSessionStore",
+           "INDEX_FIELDS", "PolicyStore", "ROLES", "ApiKeyStore", "LoginCodeStore", "LoginSessionStore",
            "RunStore", "UserStore", "normalize_email", "role_allows"]

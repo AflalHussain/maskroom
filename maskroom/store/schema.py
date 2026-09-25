@@ -126,6 +126,20 @@ login_sessions = Table(
     Index("ix_login_sessions_user", "user_id"),
 )
 
+# A one-time code handed to a native client (the desktop helper) at the end of
+# a browser sign-in, redeemed once within a minute for a login session. Same
+# hashing rule as login_sessions.
+login_codes = Table(
+    "login_codes", metadata,
+    Column("id", String(64), primary_key=True),
+    Column("user_id", String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("created", Float, nullable=False),
+    Column("expires", Float, nullable=False),
+    Column("ip", String(64), nullable=False, server_default=""),
+    Column("id_token", Text),
+    Index("ix_login_codes_expires", "expires"),
+)
+
 # Named credentials for scripts, gateways and MCP servers. Only the hash is kept.
 api_keys = Table(
     "api_keys", metadata,

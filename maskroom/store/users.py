@@ -16,7 +16,8 @@ from dataclasses import dataclass
 
 from sqlalchemy import delete, insert, select, update
 
-from .schema import api_keys as T_KEYS, login_sessions as T_LOGINS, runs as T_RUNS, users as T_USERS
+from .schema import (api_keys as T_KEYS, login_codes as T_CODES, login_sessions as T_LOGINS,
+                     runs as T_RUNS, users as T_USERS)
 
 ROLES = ("staff", "auditor", "admin")   # each role includes the ones before it
 _RANK = {r: i for i, r in enumerate(ROLES)}
@@ -205,6 +206,45 @@ class LoginSessionStore:
     def sweep(self):
         with self.db.begin() as conn:
             return conn.execute(delete(T_LOGINS).where(T_LOGINS.c.expires < time.time())).rowcount
+
+
+class LoginCodeStore:
+    """One-time codes that turn a browser sign-in into a native client's
+    session (the desktop helper). A code is redeemed once, within `ttl_s`."""
+
+    def __init__(self, db, ttl_s=60.0):
+        self.db = db
+        self.ttl = float(ttl_s)
+
+    def create(self, user_id, ip="", id_token=None):
+        """Returns the plaintext code (never stored)."""
+        code = secrets.token_urlsafe(32)
+        now = time.time()
+        with self.db.begin() as conn:
+            conn.execute(delete(T_CODES).where(T_CODES.c.expires < now))   # nothing else sweeps these
+            conn.execute(insert(T_CODES).values(
+                id=_sha(code), user_id=user_id, created=now, expires=now + self.ttl,
+                ip=ip or "", id_token=id_token))
+        return code
+
+    def redeem(self, code):
+        """(user_id, ip, id_token) for a live code, deleting it; None otherwise."""
+        if not code:
+            return None
+        cid = _sha(code)
+        with self.db.begin() as conn:
+            row = conn.execute(select(T_CODES.c.user_id, T_CODES.c.expires, T_CODES.c.ip, T_CODES.c.id_token)
+                               .where(T_CODES.c.id == cid)).first()
+            if row is None:
+                return None
+            conn.execute(delete(T_CODES).where(T_CODES.c.id == cid))
+            if row.expires < time.time():
+                return None
+        return row.user_id, row.ip, row.id_token
+
+    def sweep(self):
+        with self.db.begin() as conn:
+            return conn.execute(delete(T_CODES).where(T_CODES.c.expires < time.time())).rowcount
 
 
 class ApiKeyStore:

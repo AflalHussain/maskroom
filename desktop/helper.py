@@ -15,8 +15,17 @@ docs/DESKTOP_APP_RESEARCH.md section 5.4 for why.
 Run:   py -m pip install uiautomation
        py desktop\\helper.py
 
-Config lives in %APPDATA%\\Maskroom\\helper.json (server URL, key, session id).
-Open the settings window from the gear button on the bar.
+Sign-in: the gear button's "Sign in" opens the server's login page in the
+system browser. The server sends the browser through the identity provider and
+finally to http://127.0.0.1:<port>/done on this machine with a one-time code,
+which the helper exchanges (POST /auth/exchange) for a session token it then
+sends as `Authorization: Bearer`. A service key (mr_...) pasted into settings
+works too, for servers without sign-on or for shared machines.
+
+Config lives in %APPDATA%\\Maskroom\\helper.json (server URL, token, session
+id). An administrator can pre-set the server URL for every user of a machine
+in %ProgramData%\\Maskroom\\helper.json (read first, like the extension's
+managed serverUrl key).
 
 Threads: UI Automation and the server calls run on one worker thread (COM is
 apartment-bound); the global hotkeys run on their own thread because
@@ -36,7 +45,10 @@ import threading
 import time
 import tkinter as tk
 import urllib.error
+import urllib.parse
 import urllib.request
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 try:
@@ -48,13 +60,16 @@ except ImportError:  # pragma: no cover
 APP_NAME = "Maskroom"
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "helper.json"
+MACHINE_CONFIG = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / APP_NAME / "helper.json"
 DEFAULTS = {
     "serverUrl": "http://127.0.0.1:5170",
     "apiKey": "",          # a named service key (mr_...) or the legacy shared key
+    "token": "",           # login-session token from /auth/exchange (browser sign-in)
     "sessionId": None,
     "preamble": True,
     "preambleSent": [],
 }
+SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
 COMPOSER_CLASS_HINT = "ProseMirror"
 POLL_S = 0.25
@@ -63,10 +78,13 @@ HIDE_GRACE_S = 0.8
 # ----------------------------------------------------------------------------- config
 def load_config() -> dict:
     cfg = dict(DEFAULTS)
-    try:
-        cfg.update(json.loads(CONFIG_FILE.read_text("utf-8")))
-    except (OSError, ValueError):
-        pass
+    for path in (MACHINE_CONFIG, CONFIG_FILE):   # machine-wide defaults, then the user's own
+        try:
+            data = json.loads(path.read_text("utf-8"))
+            if isinstance(data, dict):
+                cfg.update(data)
+        except (OSError, ValueError):
+            pass
     return cfg
 
 
@@ -85,8 +103,11 @@ class Server:
     def api(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         url = self.cfg["serverUrl"].rstrip("/") + path
         headers = {"X-Requested-With": "maskroom", "Accept": "application/json"}
+        token = (self.cfg.get("token") or "").strip()
         key = (self.cfg.get("apiKey") or "").strip()
-        if key.startswith("mr_"):
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        elif key.startswith("mr_"):
             headers["Authorization"] = "Bearer " + key
         elif key:
             headers["X-API-Key"] = key
@@ -278,15 +299,28 @@ class Automation(threading.Thread):
         sid = self.ensure_session()
         self.toast(f"New session {sid[:8]}…")
 
+    def cmd_sign_out(self) -> None:
+        r = self.server.api("/auth/logout", "POST", {})
+        self.cfg["token"] = ""
+        save_config(self.cfg)
+        redirect = (r["data"] or {}).get("redirect") if r["ok"] else None
+        if redirect and redirect.startswith("http"):
+            webbrowser.open(redirect)    # let the identity provider end its session too
+        self.emit(type="auth", ok=True, signed_in=False, msg="Signed out.")
+
     def cmd_check(self) -> None:
         r = self.server.api("/api/me")
         if r["ok"]:
             d = r["data"] or {}
             p = d.get("principal") or {}
-            who = p.get("name") or p.get("email") or ("anonymous, auth off" if d.get("auth_mode") == "off" else "ok")
-            self.emit(type="check", ok=True, msg=f"Connected as {who}")
+            who = p.get("email") or p.get("name") or ("anonymous, auth off" if d.get("auth_mode") == "off" else "ok")
+            self.emit(type="check", ok=True, msg=f"Connected as {who}", auth_mode=d.get("auth_mode"))
         else:
-            self.emit(type="check", ok=False, msg=r["error"] or "not signed in")
+            if r["status"] == 401:
+                self.cfg["token"] = ""
+                save_config(self.cfg)
+            self.emit(type="check", ok=False, msg=(r["error"] or "not signed in") +
+                      (" — use Sign in" if r["status"] == 401 else ""))
 
     # ---- the two actions
     def cmd_mask(self) -> None:
@@ -307,7 +341,12 @@ class Automation(threading.Thread):
                 sid = self.ensure_session()
                 r = self.server.api("/api/mask", "POST", {"text": text, "session_id": sid})
             if not r["ok"]:
-                self.toast(r["error"], error=True)
+                if r["status"] == 401:
+                    self.cfg["token"] = ""
+                    save_config(self.cfg)
+                    self.toast("Sign-in required — open the gear button and sign in.", error=True)
+                else:
+                    self.toast(r["error"], error=True)
                 return
             d = r["data"]
             out = d["masked"]
@@ -348,6 +387,64 @@ class Automation(threading.Thread):
         unresolved = len(d.get("unresolved") or [])
         self.toast(f"Clipboard restored: {d.get('restored', 0)} value(s)"
                    + (f", {unresolved} unknown token(s) left" if unresolved else "") + ".")
+
+
+# ----------------------------------------------------------------------------- sign-in
+class SignIn(threading.Thread):
+    """Browser sign-in with a loopback redirect (RFC 8252): listen on 127.0.0.1,
+    open the server's login page, take the one-time code the server redirects
+    back with, exchange it for a session token."""
+
+    def __init__(self, cfg: dict, events: "queue.Queue[dict]"):
+        super().__init__(name="signin", daemon=True)
+        self.cfg, self.events = cfg, events
+
+    def run(self) -> None:
+        result: dict = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server API
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                result["code"] = (q.get("code") or [""])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                ok = bool(result["code"])
+                self.wfile.write(("<!doctype html><meta charset=utf-8><title>Maskroom</title>"
+                                  "<body style='font-family:system-ui;margin:3rem'>"
+                                  + ("<h2>Signed in to Maskroom</h2><p>You can close this tab and go back to Claude.</p>"
+                                     if ok else "<h2>Sign-in did not complete</h2><p>Try again from the helper.</p>")
+                                  + "</body>").encode("utf-8"))
+
+            def log_message(self, *_):  # quiet
+                pass
+
+        try:
+            srv = HTTPServer(("127.0.0.1", 0), Handler)
+        except OSError as e:
+            self.events.put({"type": "auth", "ok": False, "msg": f"Cannot listen on 127.0.0.1: {e}"})
+            return
+        port = srv.server_address[1]
+        srv.timeout = SIGNIN_TIMEOUT_S
+        done = f"http://127.0.0.1:{port}/done"
+        url = self.cfg["serverUrl"].rstrip("/") + "/auth/login?" + urllib.parse.urlencode({"next": done})
+        self.events.put({"type": "auth", "ok": True, "msg": "Waiting for the browser…"})
+        webbrowser.open(url)
+        srv.handle_request()          # exactly one request, or the timeout
+        srv.server_close()
+        code = result.get("code")
+        if not code:
+            self.events.put({"type": "auth", "ok": False, "msg": "Sign-in was cancelled or timed out."})
+            return
+        r = Server(self.cfg).api("/auth/exchange", "POST", {"code": code})
+        if not r["ok"]:
+            self.events.put({"type": "auth", "ok": False, "msg": r["error"]})
+            return
+        self.cfg["token"] = r["data"]["token"]
+        save_config(self.cfg)
+        p = r["data"].get("principal") or {}
+        self.events.put({"type": "auth", "ok": True, "signed_in": True,
+                         "msg": f"Signed in as {p.get('email') or p.get('name') or 'user'}"})
 
 
 # ----------------------------------------------------------------------------- hotkeys
@@ -411,7 +508,7 @@ class Bar:
         self.visible = False
         self.rect = None
         self.root.after(100, self.pump)
-        if not (cfg.get("apiKey") or "").strip():
+        if not ((cfg.get("apiKey") or "").strip() or (cfg.get("token") or "").strip()):
             self.root.after(300, self.open_settings)
 
     # ---- placement
@@ -460,8 +557,12 @@ class Bar:
                 elif t == "busy":
                     self.mask_btn.configure(text="Masking…" if ev["busy"] else "Mask",
                                             state="disabled" if ev["busy"] else "normal")
-                elif t == "check" and self.settings_win:
+                elif t == "check" and self.settings_win and self.settings_win.winfo_exists():
                     self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
+                elif t == "auth":
+                    self.toast(ev["msg"], not ev["ok"])
+                    if self.settings_win and self.settings_win.winfo_exists():
+                        self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
                 elif t == "session":
                     self.toast(f"Session {ev['id'][:8]}…")
         except queue.Empty:
@@ -482,7 +583,7 @@ class Bar:
         url = tk.Entry(w, width=48)
         url.insert(0, self.cfg["serverUrl"])
         url.grid(row=0, column=1, **pad)
-        tk.Label(w, text="API key (mr_… service key\nor legacy shared key)").grid(row=1, column=0, sticky="w", **pad)
+        tk.Label(w, text="Service key (optional; mr_…\nor the legacy shared key)").grid(row=1, column=0, sticky="w", **pad)
         key = tk.Entry(w, width=48, show="•")
         key.insert(0, self.cfg.get("apiKey") or "")
         key.grid(row=1, column=1, **pad)
@@ -491,6 +592,7 @@ class Bar:
                        variable=pre).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
         self.check_label = tk.Label(w, text="", anchor="w")
         self.check_label.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
+        self.commands.put(("check",))   # show who we are, if anyone
         tk.Label(w, text=f"Session: {(self.cfg.get('sessionId') or 'none')[:8]}    "
                          f"Hotkeys: Ctrl+Shift+M mask, Ctrl+Shift+U unmask clipboard\n"
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
@@ -509,6 +611,13 @@ class Bar:
             self.check_label.configure(text="Testing…", fg="#374151")
             self.commands.put(("check",))
 
+        def sign_in():
+            apply()
+            self.check_label.configure(text="Opening the browser…", fg="#374151")
+            SignIn(self.cfg, self.events).start()
+
+        tk.Button(btns, text="Sign in", command=sign_in).pack(side="left", padx=4)
+        tk.Button(btns, text="Sign out", command=lambda: (apply(), self.commands.put(("sign_out",)))).pack(side="left", padx=4)
         tk.Button(btns, text="Test connection", command=test).pack(side="left", padx=4)
         tk.Button(btns, text="Save", command=lambda: (apply(), w.destroy())).pack(side="left", padx=4)
         tk.Button(btns, text="Quit helper", command=self.root.destroy).pack(side="left", padx=4)

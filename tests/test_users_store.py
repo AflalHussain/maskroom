@@ -138,3 +138,28 @@ def test_admin_cli_users_and_keys(db, monkeypatch, capsys):
     kid = ApiKeyStore(db).list()[0].id
     assert main(["key", "revoke", kid]) == 0 and "revoked" in capsys.readouterr().out
     assert ApiKeyStore(db).authenticate(secret) is None
+
+
+def test_login_codes_are_single_use_and_short_lived(db, monkeypatch):
+    from maskroom.store import LoginCodeStore
+    from maskroom.store.schema import login_codes
+    users, codes = UserStore(db), LoginCodeStore(db, ttl_s=60)
+    u = users.upsert_login("dave@corp.lk", name="Dave")
+    code = codes.create(u.id, ip="10.0.0.2", id_token="idt")
+    with db.connect() as c:
+        row = c.execute(select(login_codes)).one()
+    assert row.id != code and len(row.id) == 64                 # hashed, not the code
+    assert codes.redeem("nope") is None and codes.redeem("") is None
+    assert codes.redeem(code) == (u.id, "10.0.0.2", "idt")
+    assert codes.redeem(code) is None                            # single use
+    now = time.time()
+    stale = codes.create(u.id)
+    monkeypatch.setattr(time, "time", lambda: now + 61)
+    assert codes.redeem(stale) is None                           # expired
+    monkeypatch.setattr(time, "time", lambda: now)
+    old = codes.create(u.id)
+    monkeypatch.setattr(time, "time", lambda: now + 120)
+    codes.create(u.id)                                           # create sweeps expired rows
+    with db.connect() as c:
+        assert c.execute(select(login_codes)).all().__len__() == 1
+    assert codes.redeem(old) is None

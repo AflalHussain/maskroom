@@ -528,6 +528,15 @@ and service keys. Bootstrap the first administrators with `MASKROOM_ADMIN_EMAILS
 **Ownership.** Sessions, vaults and file runs are served only to the principal that created
 them. Sessions created with auth off have no owner and are admin-only after switching on.
 
+**Native clients** (the Windows helper in [`desktop/`](desktop/README.md)) sign in through
+the system browser: they open `/auth/login?next=http://127.0.0.1:<port>/done`, the server
+finishes the provider flow and redirects the browser to that loopback URL with a one-time
+code, and `POST /auth/exchange {code}` returns a session token the client sends as
+`Authorization: Bearer <token>`. The code works once, within a minute; only `127.0.0.1`
+and `[::1]` with an explicit port are accepted as loopback targets. The token is an ordinary
+login session (same lifetime, revoked by disabling the user or by `POST /auth/logout` with
+the bearer header).
+
 **Service keys** for scripts, gateways and MCP servers are issued at `/admin/users` or with
 `maskroom-admin key create NAME`; send `Authorization: Bearer mr_…`. The old shared
 `MASKROOM_API_KEY` is still accepted as the `legacy-api-key` identity so a rollout can be

@@ -268,3 +268,57 @@ def test_pages_and_shared_script_are_open(env):
     r = c.get("/static/auth.js")
     assert r.status_code == 200 and b"MaskroomAuth" in r.data
     assert c.get("/api/users").status_code == 401
+
+
+# ------------------------------------------------------ native clients (desktop helper)
+def test_loopback_login_hands_a_code_and_exchange_returns_a_bearer_token(env):
+    nxt = "http://127.0.0.1:53211/done?state=xyz"
+    _, r = login(env, "alice@corp.lk", nxt=nxt)
+    loc = r.headers["Location"]
+    assert loc.startswith(nxt + "&code=") and "maskroom_session" in r.headers.get("Set-Cookie", "")
+    code = loc.split("code=", 1)[1]
+    # a fresh client with no cookie jar of its own
+    native = env.app.test_client(use_cookies=False)
+    x = native.post("/auth/exchange", json={"code": code})
+    assert x.status_code == 200, x.data
+    body = x.get_json()
+    assert body["principal"]["email"] == "alice@corp.lk" and body["expires_in"] == 12 * 3600
+    tok = body["token"]
+    assert not tok.startswith("mr_")
+    # the code is gone
+    assert native.post("/auth/exchange", json={"code": code}).status_code == 400
+    assert native.post("/auth/exchange", json={}).status_code == 400
+    # the token authenticates as the user, including state-changing calls
+    bearer = {"Authorization": f"Bearer {tok}", **H}
+    me = native.get("/api/me", headers=bearer)
+    assert me.status_code == 200 and me.get_json()["principal"]["email"] == "alice@corp.lk"
+    s = native.post("/api/session", headers=bearer, json={})
+    assert s.status_code == 200
+    m = native.post("/api/mask", headers=bearer, json={"text": "Call 0771234567", "session_id": s.get_json()["session_id"]})
+    assert m.status_code == 200 and m.get_json()["changed"]
+    # a garbage bearer is anonymous, not a crash, and never falls through to a cookie
+    assert native.get("/api/me", headers={"Authorization": "Bearer nope"}).status_code == 401
+    # logout by bearer revokes the token
+    out = native.post("/auth/logout", headers={"Authorization": f"Bearer {tok}"})
+    assert out.status_code == 200 and out.get_json()["ok"]
+    assert native.get("/api/me", headers=bearer).status_code == 401
+
+
+def test_loopback_next_is_only_127_0_0_1_with_a_port(env):
+    for bad in ("http://localhost:5000/done", "http://127.0.0.1/done", "https://127.0.0.1:5000/done",
+                "http://127.0.0.1.evil.example:5000/done", "http://10.0.0.5:5000/done"):
+        _, r = login(env, "alice@corp.lk", nxt=bad)
+        assert r.headers["Location"] == "/", bad
+    _, r = login(env, "alice@corp.lk", nxt="http://[::1]:5000/done")
+    assert r.headers["Location"].startswith("http://[::1]:5000/done?code=")
+
+
+def test_exchange_is_refused_with_auth_off(env):
+    webapp = env.webapp
+    webapp.configure_auth(webapp.app, env.db, mode="off", legacy_key=lambda: None, admin_key=lambda: None)
+    try:
+        assert env.app.test_client().post("/auth/exchange", json={"code": "x"}).status_code == 404
+    finally:
+        webapp.configure_auth(webapp.app, env.db, mode="oidc", provider=env.provider,
+                              legacy_key=lambda: webapp.API_KEY, admin_key=lambda: None,
+                              admin_emails="admin@corp.lk", extension_ids=[EXT_ID])

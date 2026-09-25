@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 from ._upsert import insert_ignore
 from .schema import metadata, schema_meta
 
-SCHEMA_VERSION = 2  # v2 (2026-09-22): users, login_sessions, api_keys, runs; sessions.owner_id
+SCHEMA_VERSION = 3  # v3 (2026-09-25): login_codes (native-client sign-in). v2 (2026-09-22): users, login_sessions, api_keys, runs; sessions.owner_id
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _MEMORY_URLS = ("sqlite://", "sqlite:///:memory:")
 
