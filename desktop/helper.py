@@ -139,6 +139,7 @@ MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
 MAX_UPLOAD = 25 * 1024 * 1024
 DIALOG_POLL_S = 0.4
+DIALOG_CLASSES = ("#32770", "Shell Dialog", "OperationStatusWindow")
 TIP_MAX_CHARS = 400
 SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
@@ -376,6 +377,7 @@ if _IS_WIN:
     _user32.GetParent.argtypes = [wt.HWND]
     _user32.GetAsyncKeyState.restype = ctypes.c_short
     _user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    _user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
     _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
     _user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
     _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
@@ -494,6 +496,22 @@ def set_clipboard_files(paths: list[str]) -> bool:
         _user32.CloseClipboard()
 
 
+def window_class(hwnd) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    _user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def foreground_window():
+    """(hwnd, class name, exe) of the foreground window."""
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd:
+        return None, "", ""
+    pid = wt.DWORD(0)
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return hwnd, window_class(hwnd), process_exe(pid.value)
+
+
 def foreground_exe() -> str:
     hwnd = _user32.GetForegroundWindow()
     if not hwnd:
@@ -589,6 +607,7 @@ class Automation(threading.Thread):
         self.files = FileApi(self.server)
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_seen = 0.0
+        self.seen_classes: set[str] = set()
         self.masked_paths: set[str] = set()   # our own outputs: never re-masked
 
     # ---- plumbing
@@ -1101,16 +1120,25 @@ class Automation(threading.Thread):
 
     # ---- the Windows file dialog Claude opens for its paperclip
     def find_dialog(self):
-        """Claude's open-file dialog, or None. Identified by class #32770 owned
-        by Claude.exe with a File name edit box."""
-        for w in auto.GetRootControl().GetChildren():
-            try:
-                if w.ClassName != "#32770" or process_exe(w.ProcessId) != CLAUDE_EXE:
-                    continue
-            except Exception:  # noqa: BLE001
-                continue
-            return w
-        return None
+        """Claude's open-file dialog, or None.
+
+        From the *foreground window*, not by scanning the accessibility tree for
+        a class name: the scan never found the dialog on a real machine and
+        sometimes threw. A file dialog is always the foreground window while it
+        is up, and its window class is read straight from Win32."""
+        hwnd, cls, exe = foreground_window()
+        if not hwnd or exe != CLAUDE_EXE:
+            return None
+        if cls not in DIALOG_CLASSES:
+            if cls and cls not in self.seen_classes:
+                self.seen_classes.add(cls)
+                log(f"file guard: Claude foreground window class {cls!r} (not a file dialog)")
+            return None
+        try:
+            return auto.ControlFromHandle(hwnd)
+        except Exception as e:  # noqa: BLE001
+            log(f"file guard: cannot read the dialog ({type(e).__name__}: {e})")
+            return None
 
     @staticmethod
     def dialog_parts(dlg):
@@ -1143,6 +1171,8 @@ class Automation(threading.Thread):
         except Exception:  # noqa: BLE001
             raw = ""
         if not raw:
+            raw = self.dialog_selection(dlg)      # double-clicked before the box filled in
+        if not raw:
             return []
         names = re.findall(r'"([^"]+)"', raw) or [raw]
         folder = self.dialog_folder(dlg)
@@ -1151,6 +1181,33 @@ class Automation(threading.Thread):
             p = Path(n)
             out.append(str(p if p.is_absolute() else Path(folder or "") / n))
         return out
+
+    @staticmethod
+    def dialog_selection(dlg) -> str:
+        """The names selected in the dialog's file list, quoted as the File name
+        box would hold them."""
+        stack, names, seen = [(dlg, 0)], [], 0
+        while stack and seen < 400:
+            c, depth = stack.pop()
+            seen += 1
+            try:
+                if c.ControlTypeName in ("ListControl", "DataGridControl"):
+                    sel = c.GetPattern(auto.PatternId.SelectionPattern)
+                    if sel is not None:
+                        for item in sel.GetSelection():
+                            n = (item.Name or "").strip()
+                            if n:
+                                names.append(n)
+                        if names:
+                            break
+                    continue
+                if depth < 8:
+                    stack.extend((k, depth + 1) for k in c.GetChildren())
+            except Exception:  # noqa: BLE001
+                continue
+        if not names:
+            return ""
+        return " ".join(f'"{n}"' for n in names) if len(names) > 1 else names[0]
 
     @staticmethod
     def dialog_folder(dlg) -> str:
@@ -1182,16 +1239,21 @@ class Automation(threading.Thread):
             SHARED["dialog_open"] = False
             return
         if self.dialog is None:
-            log("file dialog open")
+            edit, confirm = self.dialog_parts(dlg)
+            log(f"file dialog open: name={(dlg.Name or '')[:40]!r} "
+                f"file-name box {'found' if edit is not None else 'NOT FOUND'}, "
+                f"confirm button {(confirm.Name if confirm is not None else 'NOT FOUND')!r}")
             self.toast("File dialog: the file you pick will be masked before Claude sees it.")
         self.dialog = dlg
         SHARED["dialog_open"] = True
 
     def cmd_dialog_confirm(self, pressed_at: float) -> None:
-        """The hook swallowed Enter (or a click on Open) in Claude's file dialog."""
+        """The hook swallowed a confirm (Enter, a click on Open, or a double
+        click on a file) in Claude's file dialog."""
         dlg = self.find_dialog()
         if dlg is None:
             SHARED["dialog_open"] = False
+            log("file guard: confirm arrived but the dialog is gone")
             return
         edit, confirm = self.dialog_parts(dlg)
         if edit is None:
@@ -1199,6 +1261,7 @@ class Automation(threading.Thread):
             self.dialog_replay(dlg, confirm)
             return
         paths = self.dialog_paths(dlg, edit)
+        log(f"file guard: confirm with {paths if paths else 'an empty file name box'}")
         if not paths:
             self.dialog_replay(dlg, confirm)         # empty box, or a folder double-click
             return
@@ -1512,7 +1575,7 @@ class Hotkeys(threading.Thread):
 
     WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL = 14, 0x020A, 0x020E
 
-    WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK = 0x0201, 0x0202, 0x0203
 
     def mouse_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         """Notes wheel scrolling, and swallows a click on the file dialog's
@@ -1521,9 +1584,17 @@ class Hotkeys(threading.Thread):
             if n_code >= 0:
                 if w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
                     SHARED["scroll_at"] = time.time()
-                elif w_param == self.WM_LBUTTONDOWN and SHARED["dialog_open"] and self.cfg.get("fileGuard", True):
+                elif (w_param in (self.WM_LBUTTONDOWN, self.WM_LBUTTONDBLCLK)
+                      and SHARED["dialog_open"] and self.cfg.get("fileGuard", True)):
                     ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                    if not (ms.flags & 0x01) and self.on_dialog_confirm(ms.pt.x, ms.pt.y):   # LLMHF_INJECTED
+                    if ms.flags & 0x01:                       # LLMHF_INJECTED: our own replay
+                        pass
+                    elif w_param == self.WM_LBUTTONDBLCLK and self.on_dialog_file(ms.pt.x, ms.pt.y):
+                        self.swallow_click = True
+                        self.commands.put(("dialog_confirm", time.time()))
+                        log("hook: dialog file double-click swallowed")
+                        return 1
+                    elif w_param == self.WM_LBUTTONDOWN and self.on_dialog_confirm(ms.pt.x, ms.pt.y):
                         self.swallow_click = True
                         self.commands.put(("dialog_confirm", time.time()))
                         log("hook: dialog Open click swallowed")
@@ -1536,6 +1607,24 @@ class Hotkeys(threading.Thread):
         except Exception as e:  # noqa: BLE001
             log(f"mouse hook error {type(e).__name__}: {e}")
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+    @staticmethod
+    def on_dialog_file(x: int, y: int) -> bool:
+        """Is (x,y) on a file in the dialog's list? Double-clicking one is how
+        most people pick a file, and it confirms the dialog."""
+        try:
+            ctl = auto.ControlFromPoint(x, y)
+            if ctl is None or process_exe(ctl.ProcessId) != CLAUDE_EXE:
+                return False
+            for _ in range(3):
+                if ctl is None:
+                    return False
+                if ctl.ControlTypeName in ("ListItemControl", "DataItemControl"):
+                    return True
+                ctl = ctl.GetParentControl()
+        except Exception:  # noqa: BLE001
+            return False
+        return False
 
     @staticmethod
     def on_dialog_confirm(x: int, y: int) -> bool:
