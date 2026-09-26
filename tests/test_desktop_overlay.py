@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-DRIFT = 2          # the fake's range offsets run this far behind our string offsets
+CHAR_W, LINE_H, TEXT_X = 8, 18, 100      # the fake's screen geometry
 COMPOSER = (100, 690, 900, 730)
 WINDOW = (0, 90, 1000, 440)
 
@@ -56,28 +56,43 @@ ATTRS = {40005: "Anthropic Sans Variable Text", 40006: 11.5,
 
 
 class FakeRange:
-    """A range over `lines[li]`, in our own string offsets. Endpoint moves apply
-    DRIFT so the test exercises the nudge that recovers from misaligned offsets."""
+    """A range over `lines[li]`.
 
-    def __init__(self, lines, li, start=0, end=None):
-        self.lines, self.li, self.start = lines, li, start
+    `drift` models the real defect: moving an endpoint by N characters does not
+    land N characters into the string GetText returns, because a list marker or
+    a formatting run counts differently. Screen geometry stays honest, which is
+    what the hit-test fallback relies on.
+    """
+
+    def __init__(self, lines, li, start=0, end=None, drift=0):
+        self.lines, self.li, self.start, self.drift = lines, li, start, drift
         self.end = len(lines[li][0]) if end is None else end
 
     def Clone(self):
-        return FakeRange(self.lines, self.li, self.start, self.end)
+        return FakeRange(self.lines, self.li, self.start, self.end, self.drift)
 
     def GetText(self, n=-1):
         return self.lines[self.li][0][self.start:self.end]
 
     def GetBoundingRectangles(self):
-        text, y = self.lines[self.li]
+        _text, y = self.lines[self.li]
         if self.start >= self.end:
             return []
-        return [Rect(100 + self.start * 8, y, 100 + self.end * 8, y + 18)]
+        return [Rect(TEXT_X + self.start * CHAR_W, y,
+                     TEXT_X + self.end * CHAR_W, y + LINE_H)]
 
     def ExpandToEnclosingUnit(self, unit, waitTime=0):
+        text = self.lines[self.li][0]
         if unit == _TextUnit.Line:
-            self.start, self.end = 0, len(self.lines[self.li][0])
+            self.start, self.end = 0, len(text)
+        elif unit == _TextUnit.Word:
+            i = min(self.start, max(0, len(text) - 1))
+            while i > 0 and not text[i - 1].isspace():
+                i -= 1
+            j = max(i, self.end)
+            while j < len(text) and not text[j].isspace():
+                j += 1
+            self.start, self.end = i, j
         return True
 
     def Move(self, unit, count, waitTime=0):
@@ -94,7 +109,7 @@ class FakeRange:
             return 0
         length = len(self.lines[self.li][0])
         if endpoint == _Endpoint.Start:
-            new = self.start + count - DRIFT
+            new = self.start + count - self.drift
             if new > length:
                 return length - self.start
             self.start = max(0, new)
@@ -119,18 +134,21 @@ class FakeRange:
 
 
 class FakeDoc:
-    def __init__(self, lines):
-        self.lines = lines
+    def __init__(self, lines, drift=0):
+        self.lines, self.drift = lines, drift
 
     @property
     def DocumentRange(self):
-        return FakeRange(self.lines, 0)
+        return FakeRange(self.lines, 0, drift=self.drift)
 
     def RangeFromPoint(self, x, y):
-        for i, (_text, ly) in enumerate(self.lines):
-            if ly <= y <= ly + 18:
-                return FakeRange(self.lines, i)
-        return FakeRange(self.lines, 1)
+        """Honest geometry: the character under the point. Hit testing is the
+        primitive the real Chromium got right, so the fake keeps it exact."""
+        for i, (text, ly) in enumerate(self.lines):
+            if ly <= y <= ly + LINE_H:
+                ci = max(0, min(len(text) - 1, (x - TEXT_X) // CHAR_W))
+                return FakeRange(self.lines, i, ci, ci + 1, drift=self.drift)
+        return None
 
 
 class FakeWin:
@@ -180,9 +198,14 @@ def overlay(monkeypatch):
     helper.SHARED["index"] = helper.TokenIndex(vault)
     helper.SHARED["composer_rect"] = COMPOSER
 
-    worker = helper.OverlayWorker({"overlay": True}, queue.Queue())
-    worker.doc, worker.win = FakeDoc(lines), FakeWin(WINDOW)
-    return types.SimpleNamespace(helper=helper, worker=worker, lines=lines)
+    def build(drift=0):
+        worker = helper.OverlayWorker({"overlay": True}, queue.Queue())
+        worker.doc, worker.win = FakeDoc(lines, drift=drift), FakeWin(WINDOW)
+        return worker
+
+    ns = types.SimpleNamespace(helper=helper, lines=lines, build=build)
+    ns.worker = build()
+    return ns
 
 
 def test_only_visible_tokens_outside_the_composer_are_placed(overlay):
@@ -204,13 +227,16 @@ def test_the_rectangle_covers_the_token_not_the_line(overlay):
     assert item["rect"][2] == left + len(item["tok"]) * 8
 
 
-def test_style_is_read_once_per_walk(overlay):
+def test_style_is_read_for_each_token(overlay):
+    """Per token, not once per reply: a bold token has to be painted bold."""
     w = overlay.worker
     w.walk(w.doc, overlay.helper.SHARED["index"])
-    assert w.style["size"] == 11.5
-    assert w.style["family"] == "Anthropic Sans Variable Text"
-    assert w.style["fg"] == "#0b0b0b"
-    assert w.style["italic"] is False
+    assert w.items
+    for it in w.items:
+        assert it["style"]["size"] == 11.5
+        assert it["style"]["family"] == "Anthropic Sans Variable Text"
+        assert it["style"]["fg"] == "#0b0b0b"
+        assert it["style"]["italic"] is False
 
 
 def test_frame_carries_one_entry_per_visible_token(overlay):
@@ -258,3 +284,30 @@ def test_a_range_that_no_longer_holds_its_token_is_not_drawn(overlay):
     w.emit_frame()
     drawn = w.events.get_nowait()["items"]
     assert [v for _r, v, _b, _s in drawn] == ["8801-2233-9"]
+
+
+def test_tokens_are_placed_when_offsets_disagree_with_the_text(overlay):
+    """The bold-token failure: Chromium's character offsets ran against the line
+    text, counting landed on the wrong characters, and the token went unpainted.
+    Hit testing has to recover it."""
+    w = overlay.build(drift=9)          # far beyond any fixed nudge
+    w.walk(w.doc, overlay.helper.SHARED["index"])
+    assert sorted(it["tok"] for it in w.items) == [
+        "TOK_FINANCIAL_ACCOUNT_52940232", "TOK_PERSON_2615D96E"]
+    item = next(i for i in w.items if i["tok"] == "TOK_PERSON_2615D96E")
+    text = overlay.lines[1][0]
+    assert item["rect"][0] == TEXT_X + text.index(item["tok"]) * CHAR_W
+
+
+def test_a_token_no_vault_knows_is_reported(overlay, monkeypatch):
+    """Silence was the whole problem: a token on screen that no vault holds now
+    says so, which separates a lookup miss from a placement failure."""
+    said = []
+    monkeypatch.setattr(overlay.helper, "log", said.append)
+    helper = overlay.helper
+    helper.SHARED["index"] = helper.TokenIndex({"TOK_PERSON_2615D96E": "Nimal Perera"})
+    w = overlay.build()
+    w.walk(w.doc, helper.SHARED["index"])
+    assert [it["tok"] for it in w.items] == ["TOK_PERSON_2615D96E"]
+    assert any("TOK_FINANCIAL_ACCOUNT_52940232" in m and "no known session vault" in m
+               for m in said), said

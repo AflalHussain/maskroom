@@ -1622,7 +1622,6 @@ class OverlayWorker(threading.Thread):
     what follows scrolling.
     """
 
-    NUDGE = (0, -1, 1, -2, 2, -3, 3)
 
     def __init__(self, cfg: dict, events: "queue.Queue[dict]"):
         super().__init__(name="overlay", daemon=True)
@@ -1631,8 +1630,7 @@ class OverlayWorker(threading.Thread):
         self.doc = None
         self.win = None
         self.doc_checked = 0.0
-        self.items: list[dict] = []     # {"range", "value", "tok", "rect", "bg"}
-        self.style: dict = {}
+        self.items: list[dict] = []   # {"range", "value", "tok", "rect", "bg", "style"}
         self.last_frame = None
         self.visible = False
         self.walked_at = 0.0
@@ -1666,6 +1664,7 @@ class OverlayWorker(threading.Thread):
         self.doc, _ctrl, self.win = find_page_document()
         log(f"overlay: page document {'found' if self.doc else 'not found'}")
         self.items = []
+        self.warned.clear()
         return self.doc
 
     # ---- the loop
@@ -1801,10 +1800,14 @@ class OverlayWorker(threading.Thread):
                     in_composer = comp is not None and not (r.bottom < comp[1] or r.top > comp[3])
                     if not in_composer:
                         for m in EXACT_RE.finditer(text):
-                            value = idx.vault.get(m.group(0))
+                            tok = m.group(0)
+                            value = idx.vault.get(tok)
                             if value is None:
+                                self.warn_once(tok, f"overlay: {tok} is on screen but no known "
+                                                    f"session vault holds it")
                                 continue
-                            it = self.place(line, m, value)
+                            it = self.place(doc, line, (r.left, r.top, r.right, r.bottom),
+                                            text, m, value)
                             if it is not None:
                                 items.append(it)
             if line.Move(auto.TextUnit.Line, 1, waitTime=0) != 1:
@@ -1812,48 +1815,116 @@ class OverlayWorker(threading.Thread):
             line.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
         self.items = items
         self.last_frame = None
-        self.style = self.range_style(items[0]["range"]) if items else {}
         log(f"overlay: walked {lines} lines, placed {len(items)} tokens "
-            f"in {(time.perf_counter() - t0) * 1000:.0f} ms")
+            f"in {(time.perf_counter() - t0) * 1000:.0f} ms"
+            + (f"; style {items[0]['style']}" if items else ""))
 
-    def place(self, line, m, value) -> dict | None:
+    def warn_once(self, key: str, message: str) -> None:
+        if key not in self.warned:
+            if len(self.warned) > 200:
+                self.warned.clear()
+            self.warned.add(key)
+            log(message)
+
+    @staticmethod
+    def text_of(rng) -> str:
+        try:
+            return rng.GetText(-1) or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def range_at(line, start: int, length: int):
+        """`length` characters starting `start` characters into `line`. None when
+        the line is shorter than `start`. The end is clamped to the line."""
+        try:
+            rng = line.Clone()
+            if rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start,
+                                      auto.TextUnit.Character, start, waitTime=0) != start:
+                return None
+            rng.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, rng,
+                                    auto.TextPatternRangeEndpoint.Start, waitTime=0)
+            rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End,
+                                   auto.TextUnit.Character, length, waitTime=0)
+            return rng
+        except Exception:  # noqa: BLE001
+            return None
+
+    def item(self, rng, tok: str, value: str) -> dict | None:
+        try:
+            rects = rng.GetBoundingRectangles()
+        except Exception:  # noqa: BLE001
+            return None
+        if not rects:
+            return None
+        r = rects[0]              # a token wrapped over two lines gets its first part
+        if r.right - r.left < 8 or r.bottom - r.top < 6:
+            return None
+        return {"range": rng, "value": value, "tok": tok, "bg": None,
+                "rect": (r.left, r.top, r.right, r.bottom),
+                "style": self.range_style(rng)}
+
+    def place(self, doc, line, line_rect, text: str, m, value) -> dict | None:
         """A range over one token inside its line, verified by reading it back.
-        The offset is within a single line, so the move is short."""
+
+        Two ways, because one is cheap and the other is dependable.
+
+        Counting characters into the line is cheap, and right most of the time.
+        It is wrong when Chromium's character offsets disagree with the string
+        GetText returns, which a list marker, an embedded object or a formatting
+        run (bold, a link, a code span) can cause; the disagreement is not a
+        fixed size, so no arithmetic repairs it. That is what left the bold
+        account tokens unpainted.
+
+        The fallback uses the one primitive measured as exact on a real chat:
+        the range under a screen point, expanded to a word. The token's rough x
+        is estimated from its position in the line, and the search steps
+        outwards from there until the word under the point is the token.
+        """
         tok = m.group(0)
-        for d in self.NUDGE:
-            start = m.start() + d
-            if start < 0:
-                continue
+        rng = self.range_at(line, m.start(), len(tok))
+        if rng is not None and self.text_of(rng).upper() == tok.upper():
+            return self.item(rng, tok, value)
+        word = self.hit_test(doc, line_rect, text, m, tok)
+        if word is not None:
+            self.warn_once("hittest", "overlay: character offsets disagree with the line text on "
+                                      "some lines (bold or a list marker); placing by hit test")
+            return self.item(word, tok, value)
+        self.warn_once(tok, f"overlay: could not place {tok} at offset {m.start()} in its line; "
+                            f"counted to {self.text_of(rng)[:30]!r}")
+        return None
+
+    def hit_test(self, doc, line_rect, text: str, m, tok: str):
+        """The word under the token's estimated screen position, if it is the
+        token. Proportional estimation is rough with a proportional font, so the
+        search steps outwards from the guess."""
+        left, top, right, bottom = line_rect
+        y = (top + bottom) // 2
+        middle = (m.start() + len(tok) / 2) / max(1, len(text))
+        x0 = left + int((right - left) * middle)
+        step = max(6, (right - left) // max(1, len(text)))
+        for i in (0, -1, 1, -2, 2, -3, 3, -4, 4, -6, 6, -8, 8, -11, 11, -15, 15):
+            x = min(max(left, x0 + i * step), right - 1)
             try:
-                rng = line.Clone()
-                if rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start,
-                                          auto.TextUnit.Character, start, waitTime=0) != start:
-                    continue
-                rng.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, rng,
-                                        auto.TextPatternRangeEndpoint.Start, waitTime=0)
-                rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End,
-                                       auto.TextUnit.Character, len(tok), waitTime=0)
-                if (rng.GetText(-1) or "").upper() != tok.upper():
-                    continue
-                rects = rng.GetBoundingRectangles()
+                hit = doc.RangeFromPoint(x, y)
             except Exception:  # noqa: BLE001
                 return None
-            if not rects:
+            if hit is None:
                 continue
-            r = rects[0]
-            if r.right - r.left < 8 or r.bottom - r.top < 6:
-                continue
-            return {"range": rng, "value": value, "tok": tok,
-                    "rect": (r.left, r.top, r.right, r.bottom), "bg": None}
-        if tok not in self.warned:
-            self.warned.add(tok)
-            log(f"overlay: could not place {tok} inside its own line")
+            word = hit.Clone()
+            word.ExpandToEnclosingUnit(auto.TextUnit.Word, waitTime=0)
+            seen = self.text_of(word).strip()
+            if seen.upper() == tok.upper():
+                return word
+            if tok.upper() in seen.upper() and len(seen) <= len(tok) + 4:
+                return word          # the token plus a bracket or full stop
         return None
 
     @staticmethod
     def range_style(rng) -> dict:
         """Font family / size (pt) / weight / italic / foreground of a range.
-        Read once per walk: it is the same for every token in a reply."""
+        Read per token: a bold token must be painted bold, and headings and
+        code spans differ from the prose around them."""
         want = {"family": (auto.TextAttributeId.FontNameAttribute, str),
                 "size": (auto.TextAttributeId.FontSizeAttribute, (int, float)),
                 "weight": (auto.TextAttributeId.FontWeightAttribute, (int, float)),
@@ -1895,7 +1966,7 @@ class OverlayWorker(threading.Thread):
                 continue                        # the composer is never overlaid
             if it["bg"] is None:                # sampled once, before our own patch is drawn
                 it["bg"] = screen_pixel(l - 2, (t + b) // 2) or "#ffffff"
-            frame.append((rect, it["value"], it["bg"], self.style))
+            frame.append((rect, it["value"], it["bg"], it["style"]))
         if frame != self.last_frame:
             self.last_frame = frame
             self.visible = bool(frame)
