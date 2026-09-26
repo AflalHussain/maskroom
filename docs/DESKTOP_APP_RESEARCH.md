@@ -603,7 +603,13 @@ token on screen stays off the table. What *is* cheap and exact: `RangeFromPoint`
 mouse took **1 ms** and, expanded to a word, returned the token text and its rectangle
 precisely (`TOK_PERSON_2615D96E`, one 184×20 px rectangle); `ControlFromPoint` (6 ms) gave
 the list item with the whole line. The helper therefore restores on hover (tooltip with the
-line's real values) and on copy, not by overlay. See `desktop/README.md`.
+line's real values) and on copy. It *also* paints values over tokens, but only by
+walking the visible lines and positioning each token inside its own line: a first
+attempt that located tokens by their offset from the start of the document measured
+**400 ms per token and 30 s for one real chat** on Windows (2026-09-26), which starved
+the send guard sharing that thread. Offsets into a whole document are not a usable
+primitive here; per-line offsets and per-range rectangle refreshes are. See
+`desktop/README.md`.
 
 To restore tokens *visually* inside Claude Desktop you would: read the reply text and its
 line rectangles from the accessibility tree (possible: `GetBoundingRectangles` on Windows,

@@ -22,7 +22,7 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 | **Drop blocking** (default on) | A file dragged from Explorer onto Claude cannot be masked in flight (the drop is a shell handshake, not a message we can rewrite), so it is refused: while a drag is held over Claude an invisible window with no drop target sits on top, Windows shows "not allowed", and the bar says to use the paperclip. **This is all-or-nothing**: what is being dragged cannot be read before the drop lands (Explorer hides file extensions by default, so even the selection's names do not classify reliably), so a dragged image is refused along with a dragged spreadsheet. If you drag images often, turn it off in settings (`blockDrops`) and accept that a dragged spreadsheet then goes out unmasked; the paperclip stays guarded either way. |
 | **Explorer menu** | `install-context-menu.ps1` adds *Mask with Maskroom* to the right-click menu for those types (HKCU only, no admin). The masked copy lands in the files folder; attach it by hand. Remove with `-Uninstall`. |
 | **Unmask on hover** (default on) | Rest the mouse on a token in a reply and a tooltip shows that line with the real values. The helper keeps the session's vault locally (`GET /api/session/<id>/vault`, refreshed after each mask) and restores with the same tolerant rules as the extension's `tokens.js` (any case, spaced or escaped underscores, truncated ids; unknown tokens are left alone). Nothing on Claude's screen is changed. |
-| **Overlay** (experimental, default on) | Paints the real values over the tokens in replies, on a transparent click-through window that covers Claude. Tokens are located by character offset in the page text (one move per token, read back to verify; the text search the probe showed mis-aligning is not used), rectangles are refreshed every tick so scrolling is followed, and the page text is re-read twice a second for streaming. Each patch samples the pixel beside the token for its background and reads the token's font family, size, weight, italic and colour from the text range's UI Automation attributes so the value is drawn in the same style (a web font that is not installed on the PC falls back to Segoe UI); it shrinks to fit and ends with "…" when the real value is still wider. A dotted underline marks a restored value. The composer is never overlaid. Scrolling is followed: a mouse hook notes wheel events over Claude, one anchor token's rectangle is polled every 20 ms during the scroll and every patch is translated by that delta, then all rectangles are refreshed exactly once the scroll settles. The settings window has *Hide the overlay while scrolling* if following still looks wrong. Only exact `TOK_…` spellings are overlaid; lowercased or spaced ones still restore on hover and copy. **If it looks wrong, switch it off on the bar.** |
+| **Overlay** (experimental, default on) | Paints the real values over the tokens in replies, on a transparent click-through window that covers Claude. Tokens are found by **walking the visible lines**: a line's text and its rectangle cost one call each, and a token's offset inside its own line is small, so positioning it is cheap. Between walks each token's rectangle is re-read, which is what follows scrolling. Each patch samples the pixel beside the token for its background and reads the token's font family, size, weight, italic and colour from the text range's UI Automation attributes so the value is drawn in the same style (a web font that is not installed on the PC falls back to Segoe UI); it shrinks to fit and ends with "…" when the real value is still wider. A dotted underline marks a restored value. The composer is never overlaid. The settings window has *Hide the overlay while scrolling* if following it still looks wrong. Only exact `TOK_…` spellings are overlaid; lowercased or spaced ones still restore on hover and copy. **If it looks wrong, switch it off on the bar.** |
 | **Unmask on copy** (default on) | Copy text out of Claude and the clipboard is restored before you paste it anywhere; the bar reports the count. `Ctrl+Shift+U` does the same on demand through the server (`POST /api/unmask`). The helper's own masked paste is never "restored". |
 | **Sessions** | One Maskroom session (vault) per Claude chat, as in the extension. The chat on screen is identified by its URL (Chromium exposes the page URL as the document's value), else by the tokens visible on the page (a token's random id names its session), else by the chat title (`<title> - Claude` on the document). Masking uses that chat's session, so switching chats switches sessions; a brand-new chat gets a new session on its first mask and is bound to its URL on the next. *new session* on the bar starts a fresh vault for the chat on screen. Restore (hover, copy, overlay) searches every known vault at once, so it works whichever chat is current; the last 25 sessions are kept. |
 | **Sign in** | Gear button → *Sign in* opens the server's login page in your browser. After the identity provider, the server sends the browser back to a loopback port on this PC with a one-time code, which the helper exchanges for its own session (`POST /auth/exchange`). *Sign out* ends it, and lets the provider end its session too. |
@@ -30,10 +30,8 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 
 Not covered: the Send button (mouse), macOS, images (Maskroom cannot mask them, so they
 go out unmasked with a warning, as in the extension), and files reaching Claude through
-Cowork or a mounted folder (policy keys, research §5.5). The overlay is a trial: the
-research doc (§5.4) measured a naïve token sweep at up to 1.4 s, so it is built around
-offset moves and per-range rectangle refreshes instead; whether that is smooth enough is
-being judged on a real machine, and it will be dropped if not.
+Cowork or a mounted folder (policy keys, research §5.5). The overlay is still a trial, judged on a
+real machine (research §5.4 has the measurements behind its design).
 
 ## Install
 
@@ -90,6 +88,14 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
   held) or replays Enter with `SendInput`, which the hook lets through because synthetic
   input carries `LLKHF_INJECTED`. An Enter pressed while a check was still running is
   dropped, as the extension does, so a masked text is never sent unread.
+- **Overlay thread** (`OverlayWorker`): its own COM apartment, so a slow read can never
+  delay the Enter guard. It walks the visible lines, positions each token inside its line
+  (verified by reading the range back, with a small nudge for offset drift), re-reads
+  rectangles every 60 ms, and re-walks when something moved or after 1.5 s.
+  **This replaced a design that located each token from the start of the document**: that
+  measured 400 ms per token, 30 s for one real chat, and queued the guard behind it.
+  `tests/test_desktop_overlay.py` pins the walk down against a fake accessibility layer,
+  so it stays checkable without Windows.
 - **tkinter main thread** (`Bar`): the floating bar (`WS_EX_NOACTIVATE`, so clicking
   it leaves focus in Claude), toasts, and the settings window. Reads an event queue;
   never touches UIA.

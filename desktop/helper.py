@@ -40,16 +40,15 @@ tokens in replies on a transparent, click-through window that covers Claude.
 Tokens are located by character offset in the page text (one move per token,
 verified by reading the range back; the text search that the probe showed
 mis-aligning is not used), their rectangles are refreshed every tick (one
-call per token, which is how scrolling is followed), and the page text is
-re-read twice a second to catch streaming. Each token's font family, size,
-weight, italic and colour are read from the text range's attributes so the
-patch is drawn in the same style (a web font that is not installed falls
-back to Segoe UI). The composer is never overlaid. Scrolling: a mouse
-hook notes wheel events over Claude; while the page scrolls, one anchor
-token's rectangle is read every 20 ms (a single call) and every patch is
-translated by that delta on the canvas, then, once the scroll settles, all
-rectangles are refreshed exactly. Set "overlayHideOnScroll" in the config
-(or the settings checkbox) to hide the overlay during scrolls instead.
+call per token) on its own thread, so a slow read can never delay the Enter
+guard. Tokens are found by walking the *visible lines*: a line's text and
+rectangle cost one call each, and a token's offset inside its own line is
+small, so positioning it is cheap. Between walks each token's rectangle is
+re-read, which is what follows scrolling. Font family, size, weight, italic
+and colour come from the range's attributes once per walk (a web font that
+is not installed on the PC falls back to Segoe UI). The composer is never
+overlaid. Set "overlayHideOnScroll" (or the settings checkbox) to hide the
+overlay while scrolling instead of following it.
 If it does not look right, switch it off on the bar; hover and copy remain.
 
 Run:   py -m pip install uiautomation
@@ -128,11 +127,12 @@ DEFAULTS = {
     "filesDir": "",        # where masked copies are written (default: <config>/files)
     "preambleSent": [],
 }
-OVERLAY_TEXT_S = 0.5       # how often the page text is re-read for new tokens
-SCROLL_TICK_S = 0.02       # anchor poll while scrolling
-SCROLL_SETTLE_S = 0.15     # no movement for this long = scroll over
+OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
+OVERLAY_WALK_MIN_S = 0.30   # never re-walk the visible lines more often than this
+OVERLAY_WALK_MAX_S = 1.50   # but do walk at least this often while tokens are on screen
+OVERLAY_MAX_LINES = 250     # safety cap on the line walk
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
-          "blocking_since": 0.0}
+          "blocking_since": 0.0, "index": None, "composer_rect": None}
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
@@ -511,6 +511,41 @@ def make_no_activate(tk_toplevel: tk.Toplevel) -> None:
     _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
 
 
+def find_page_document():
+    """(TextPattern, element, window) for Claude's page: the element carrying the
+    most text under a Claude window. Called in each thread's own COM apartment,
+    because UIA objects must not cross apartments."""
+    best, best_n, best_win, best_ctrl = None, -1, None, None
+    for w in auto.GetRootControl().GetChildren():
+        try:
+            if w.ClassName != "Chrome_WidgetWin_1" or process_exe(w.ProcessId) != CLAUDE_EXE:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        stack = [(w, 0)]
+        while stack:
+            c, depth = stack.pop()
+            if depth > 12:
+                continue
+            try:
+                tp = c.GetPattern(auto.PatternId.TextPattern)
+            except Exception:  # noqa: BLE001
+                tp = None
+            if tp is not None:
+                try:
+                    n = len(tp.DocumentRange.GetText(-1) or "")
+                except Exception:  # noqa: BLE001
+                    n = -1
+                if n > best_n:
+                    best, best_n, best_win, best_ctrl = tp, n, w, c
+                continue
+            try:
+                stack.extend((k, depth + 1) for k in c.GetChildren())
+            except Exception:  # noqa: BLE001
+                pass
+    return best, best_ctrl, best_win
+
+
 # ----------------------------------------------------------------------------- UIA worker
 class Automation(threading.Thread):
     """Owns every UI Automation and server call. Talks to the UI through `events`."""
@@ -537,15 +572,6 @@ class Automation(threading.Thread):
         self.clip_seq = _user32.GetClipboardSequenceNumber() if _IS_WIN else 0
         self.clip_ignore_until = 0.0
         self.claude_win = None        # top-level Claude window (overlay covers it)
-        self.ov_text = None           # page text at the last token scan
-        self.ov_text_at = 0.0
-        self.ov_items: list[dict] = []   # {"range", "value", "rect", "bg"}
-        self.ov_last_frame = None     # what was last sent to the UI
-        self.ov_visible = False
-        self.ov_win = None            # window rect of the last frame
-        self.scrolling = False
-        self.scroll_moved_at = 0.0
-        self.anchor = None            # item whose rect is polled while scrolling
         self.files = FileApi(self.server)
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_seen = 0.0
@@ -562,15 +588,8 @@ class Automation(threading.Thread):
         with auto.UIAutomationInitializerInThread():
             while True:
                 try:
-                    cmd = self.commands.get(timeout=SCROLL_TICK_S if self.scrolling else POLL_S)
+                    cmd = self.commands.get(timeout=POLL_S)
                 except queue.Empty:
-                    if (self.cfg.get("overlay", True) and self.ov_visible) or self.scrolling:
-                        try:
-                            if self.track_scroll():
-                                continue          # mid-scroll: nothing else this tick
-                        except Exception as e:  # noqa: BLE001
-                            log(f"scroll track error {type(e).__name__}: {e}")
-                            self.scrolling = False
                     self.poll_focus()
                     if self.cfg.get("unmask", True):
                         try:
@@ -584,12 +603,6 @@ class Automation(threading.Thread):
                             self.poll_dialog()
                         except Exception as e:  # noqa: BLE001
                             log(f"dialog poll error {type(e).__name__}: {e}")
-                    if self.cfg.get("overlay", True):
-                        try:
-                            self.poll_overlay()
-                        except Exception as e:  # noqa: BLE001
-                            log(f"overlay poll error {type(e).__name__}: {e}")
-                            self.hide_overlay()
                     continue
                 try:
                     getattr(self, "cmd_" + cmd[0])(*cmd[1:])
@@ -618,6 +631,7 @@ class Automation(threading.Thread):
                 log(f"composer focused: class={ctrl.ClassName!r} pid={ctrl.ProcessId}")
             self.composer = ctrl
             self.last_seen = time.time()
+            SHARED["composer_rect"] = (r.left, r.top, r.right, r.bottom)
             self.emit(type="composer", visible=True, rect=(r.left, r.top, r.right, r.bottom))
         elif time.time() - self.last_seen > HIDE_GRACE_S:
             if self.composer is not None:
@@ -627,6 +641,7 @@ class Automation(threading.Thread):
                     where = "?"
                 log(f"composer lost; focus now: {where}")
             self.composer = None
+            SHARED["composer_rect"] = None
             self.emit(type="composer", visible=False)
 
     def current_composer(self):
@@ -703,6 +718,7 @@ class Automation(threading.Thread):
                 union.setdefault(tok, val)
                 owner.setdefault(tok, s)
         self.index = TokenIndex(union)
+        SHARED["index"] = self.index          # the overlay thread reads this
         self.token_owner = owner
         log(f"vault index: {len(union)} tokens across {len(self.vaults)} sessions")
 
@@ -733,8 +749,8 @@ class Automation(threading.Thread):
         return url if url and "/chat/" in url else None
 
     def page_text(self) -> str:
-        if self.ov_text is not None and time.time() - self.ov_text_at < 1.0:
-            return self.ov_text
+        """The page's text, for recognising which chat is on screen. Called once
+        per mask, not in any loop."""
         doc = self.page_document()
         try:
             return doc.DocumentRange.GetText(-1) or "" if doc else ""
@@ -743,48 +759,18 @@ class Automation(threading.Thread):
 
     # ---- hover tooltip
     def page_document(self):
-        """Claude's page document element (the one with the most text), cached."""
+        """Claude's page document element, cached (see find_page_document)."""
         now = time.time()
         if self.doc is not None or now - self.doc_checked < 2.0:
             return self.doc
         self.doc_checked = now
-        best, best_n, best_win, best_ctrl = None, -1, None, None
-        for w in auto.GetRootControl().GetChildren():
-            try:
-                if w.ClassName != "Chrome_WidgetWin_1" or process_exe(w.ProcessId) != CLAUDE_EXE:
-                    continue
-            except Exception:  # noqa: BLE001
-                continue
-            stack = [(w, 0)]
-            while stack:
-                c, depth = stack.pop()
-                if depth > 12:
-                    continue
-                try:
-                    tp = c.GetPattern(auto.PatternId.TextPattern)
-                except Exception:  # noqa: BLE001
-                    tp = None
-                if tp is not None:
-                    try:
-                        n = len(tp.DocumentRange.GetText(-1) or "")
-                    except Exception:  # noqa: BLE001
-                        n = -1
-                    if n > best_n:
-                        best, best_n, best_win, best_ctrl = tp, n, w, c
-                    continue
-                try:
-                    stack.extend((k, depth + 1) for k in c.GetChildren())
-                except Exception:  # noqa: BLE001
-                    pass
-        self.doc = best
-        self.doc_ctrl = best_ctrl
-        self.claude_win = best_win if best is not None else None
-        if best is not None:
+        self.doc, self.doc_ctrl, self.claude_win = find_page_document()
+        if self.doc is not None:
             url, title = self.chat_identity()
-            log(f"page document found ({best_n} chars) url={url!r} title={title!r}")
+            log(f"page document found url={url!r} title={title!r}")
         else:
             log("page document not found")
-        return best
+        return self.doc
 
     def set_tip(self, text, x=0, y=0) -> None:
         if text != self.tip_text:
@@ -797,6 +783,9 @@ class Automation(threading.Thread):
         if pos != self.cursor:
             self.cursor, self.cursor_since = pos, now
             self.set_tip(None)
+            return
+        if now - SHARED["scroll_at"] < 0.5:
+            self.set_tip(None)                      # the text is moving under the pointer
             return
         if self.tip_text is not None or now - self.cursor_since < 0.35:
             return                                  # already shown, or still moving
@@ -844,192 +833,10 @@ class Automation(threading.Thread):
             self.clip_seq = _user32.GetClipboardSequenceNumber()
             self.toast(f"Clipboard restored: {n} value{'' if n == 1 else 's'}.")
 
-    # ---- overlay
-    def hide_overlay(self) -> None:
-        if self.ov_visible:
-            self.ov_visible = False
-            self.ov_last_frame = None
-            self.emit(type="overlay", items=None)
-
-    @staticmethod
-    def range_style(rng) -> dict:
-        """Font family / size (pt) / weight / italic / foreground of a text range,
-        from UIA text attributes. Missing or mixed values are left out."""
-        want = {"family": (auto.TextAttributeId.FontNameAttribute, str),
-                "size": (auto.TextAttributeId.FontSizeAttribute, (int, float)),
-                "weight": (auto.TextAttributeId.FontWeightAttribute, (int, float)),
-                "italic": (auto.TextAttributeId.IsItalicAttribute, bool),
-                "fg": (auto.TextAttributeId.ForegroundColorAttribute, (int,))}
-        style = {}
-        for key, (aid, types) in want.items():
-            try:
-                v = rng.GetAttributeValue(aid)
-            except Exception:  # noqa: BLE001
-                continue
-            if isinstance(v, bool) and key != "italic":
-                continue
-            if isinstance(v, types) and not (key == "fg" and isinstance(v, bool)):
-                style[key] = v
-        if "fg" in style:
-            c = int(style["fg"])
-            style["fg"] = f"#{c & 0xFF:02x}{(c >> 8) & 0xFF:02x}{(c >> 16) & 0xFF:02x}"
-        return style
-
-    def scan_tokens(self, doc, text: str) -> None:
-        """Locate every known token in the page text by character offset: one
-        endpoint move per token, verified by reading the range back."""
-        items = []
-        comp = None
-        if self.composer is not None:
-            try:
-                comp = self.composer.BoundingRectangle
-            except Exception:  # noqa: BLE001
-                comp = None
-        t0 = time.perf_counter()
-        base = doc.DocumentRange
-        for m in list(EXACT_RE.finditer(text))[:OVERLAY_MAX_TOKENS]:
-            tok = m.group(0)
-            value = self.index.vault.get(tok)
-            if value is None:
-                continue
-            rng = base.Clone()
-            moved = rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start, auto.TextUnit.Character, m.start(), waitTime=0)
-            rng.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, rng, auto.TextPatternRangeEndpoint.Start, waitTime=0)
-            rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End, auto.TextUnit.Character, len(tok), waitTime=0)
-            got = (rng.GetText(-1) or "")
-            if got.upper() != tok.upper():
-                # Offsets drifted (embedded objects / line breaks count differently): nudge a few chars.
-                fixed = False
-                for d in (-1, 1, -2, 2, -3, 3):
-                    r2 = base.Clone()
-                    r2.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start, auto.TextUnit.Character, m.start() + d, waitTime=0)
-                    r2.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, r2, auto.TextPatternRangeEndpoint.Start, waitTime=0)
-                    r2.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End, auto.TextUnit.Character, len(tok), waitTime=0)
-                    if (r2.GetText(-1) or "").upper() == tok.upper():
-                        rng, fixed = r2, True
-                        break
-                if not fixed:
-                    log(f"overlay: could not place {tok} (got {got!r} at {m.start()}, moved {moved})")
-                    continue
-            style = self.range_style(rng)
-            items.append({"range": rng, "value": value, "rect": None, "bg": None, "comp": comp, "style": style})
-        self.ov_items = items
-        sample = items[0]["style"] if items else {}
-        log(f"overlay: scanned {len(items)} tokens in {(time.perf_counter() - t0) * 1000:.0f} ms; style {sample}")
-
-    def poll_overlay(self) -> None:
-        if foreground_exe() != CLAUDE_EXE or not self.index.vault:
-            self.hide_overlay()
-            return
-        doc = self.page_document()
-        if doc is None or self.claude_win is None:
-            self.hide_overlay()
-            return
-        now = time.time()
-        if now - self.ov_text_at >= OVERLAY_TEXT_S:
-            self.ov_text_at = now
-            try:
-                text = doc.DocumentRange.GetText(-1) or ""
-            except Exception:  # noqa: BLE001
-                self.doc = None
-                self.hide_overlay()
-                return
-            if text != self.ov_text:
-                self.ov_text = text
-                self.scan_tokens(doc, text)
-        if not self.ov_items:
-            self.hide_overlay()
-            return
-        try:
-            win = self.claude_win.BoundingRectangle
-        except Exception:  # noqa: BLE001
-            self.doc = None
-            self.hide_overlay()
-            return
-        frame = []
-        for it in self.ov_items:
-            try:
-                rects = it["range"].GetBoundingRectangles()
-            except Exception:  # noqa: BLE001
-                rects = []
-            it["on_screen"] = False
-            if not rects:
-                it["rect"] = None
-                continue
-            r = rects[0]
-            rect = (r.left, r.top, r.right, r.bottom)
-            if r.right - r.left < 8 or r.bottom - r.top < 6:
-                continue
-            if r.top < win.top or r.bottom > win.bottom:
-                continue                              # outside the window
-            it["on_screen"] = True
-            comp = it["comp"]
-            if comp is not None and not (r.bottom < comp.top or r.top > comp.bottom):
-                continue                              # never overlay the composer
-            if it["rect"] != rect or it["bg"] is None:
-                it["rect"] = rect
-                it["bg"] = screen_pixel(r.left - 2, (r.top + r.bottom) // 2) or it["bg"] or "#ffffff"
-            frame.append((rect, it["value"], it["bg"], it["style"]))
-        self.ov_win = (win.left, win.top, win.right, win.bottom)
-        if frame != self.ov_last_frame:
-            self.ov_last_frame = frame
-            self.ov_visible = bool(frame)
-            self.emit(type="overlay", items=frame or None, win=self.ov_win)
-
-    def pick_anchor(self):
-        for it in self.ov_items:
-            if it.get("rect") and it.get("on_screen"):
-                return it
-        return None
-
-    def track_scroll(self) -> bool:
-        """Follow a scroll with one UIA call per tick. Returns True while a
-        scroll is in progress (the caller then skips the slower polls)."""
-        now = time.time()
-        wheel = now - SHARED["scroll_at"] < 0.4
-        if not self.scrolling:
-            if not wheel:
-                return False
-            self.scrolling = True
-            self.scroll_moved_at = now
-            self.anchor = self.pick_anchor()
-            self.set_tip(None)
-            if self.cfg.get("overlayHideOnScroll"):
-                self.emit(type="overlay", items=None)
-            log("scroll: start")
-        if self.anchor is None:
-            self.anchor = self.pick_anchor()
-        if self.anchor is not None and not self.cfg.get("overlayHideOnScroll"):
-            try:
-                rects = self.anchor["range"].GetBoundingRectangles()
-            except Exception:  # noqa: BLE001
-                rects = []
-            if rects:
-                r = rects[0]
-                ol, ot, _, _ = self.anchor["rect"]
-                dx, dy = r.left - ol, r.top - ot
-                if dx or dy:
-                    for it in self.ov_items:
-                        if it.get("rect"):
-                            l, t, rr, b = it["rect"]
-                            it["rect"] = (l + dx, t + dy, rr + dx, b + dy)
-                    self.emit(type="overlay_shift", dx=dx, dy=dy)
-                    self.scroll_moved_at = now
-            else:
-                self.anchor = None                    # scrolled off screen: pick another next tick
-        if now - self.scroll_moved_at > SCROLL_SETTLE_S and not wheel:
-            self.scrolling = False
-            self.anchor = None
-            self.ov_last_frame = None                 # force an exact refresh
-            log("scroll: settled")
-            self.poll_overlay()
-            return False
-        return True
-
     def cmd_toggle_overlay(self) -> None:
         self.cfg["overlay"] = not self.cfg.get("overlay", True)
         save_config(self.cfg)
-        self.hide_overlay()
+        self.emit(type="overlay", items=None)
         self.emit(type="overlay_state", on=self.cfg["overlay"])
         self.toast("Overlay on: real values are painted over tokens." if self.cfg["overlay"]
                    else "Overlay off.")
@@ -1798,6 +1605,304 @@ class Hotkeys(threading.Thread):
             _user32.DispatchMessageW(ctypes.byref(msg))
 
 
+# ----------------------------------------------------------------------------- overlay worker
+class OverlayWorker(threading.Thread):
+    """Paints the real values over the tokens in replies.
+
+    Own thread and own COM apartment, so a slow read can never delay the Enter
+    guard - which it did: locating each token by moving a range endpoint
+    thousands of characters from the start of the document measured 400 ms per
+    token, 30 s for a real chat, and the guard queued behind it.
+
+    Tokens are found by walking the *visible lines* instead. A line's text and
+    its rectangle cost one call each, and a token's offset inside its own line
+    is small, so positioning it is cheap and the offset drift that defeated
+    document-wide offsets does not accumulate. Between walks each token's
+    rectangle is re-read (one call each, only for what is on screen), which is
+    what follows scrolling.
+    """
+
+    NUDGE = (0, -1, 1, -2, 2, -3, 3)
+
+    def __init__(self, cfg: dict, events: "queue.Queue[dict]"):
+        super().__init__(name="overlay", daemon=True)
+        self.cfg = cfg
+        self.events = events
+        self.doc = None
+        self.win = None
+        self.doc_checked = 0.0
+        self.items: list[dict] = []     # {"range", "value", "tok", "rect", "bg"}
+        self.style: dict = {}
+        self.last_frame = None
+        self.visible = False
+        self.walked_at = 0.0
+        self.was_scrolling = False
+        self.warned: set[str] = set()
+
+    # ---- plumbing
+    def run(self) -> None:
+        with auto.UIAutomationInitializerInThread():
+            while True:
+                time.sleep(OVERLAY_TICK_S)
+                try:
+                    self.tick()
+                except Exception as e:  # noqa: BLE001 - never let the thread die
+                    log(f"overlay error {type(e).__name__}: {e}")
+                    self.doc = None
+                    self.hide()
+
+    def hide(self) -> None:
+        if self.visible or self.last_frame is not None:
+            self.visible = False
+            self.last_frame = None
+            self.events.put({"type": "overlay", "items": None})
+
+    def document(self):
+        if self.doc is not None:
+            return self.doc
+        if time.time() - self.doc_checked < 2.0:
+            return None
+        self.doc_checked = time.time()
+        self.doc, _ctrl, self.win = find_page_document()
+        log(f"overlay: page document {'found' if self.doc else 'not found'}")
+        self.items = []
+        return self.doc
+
+    # ---- the loop
+    def tick(self) -> None:
+        idx = SHARED["index"]
+        if not self.cfg.get("overlay", True) or idx is None or not idx.vault:
+            self.hide()
+            return
+        if foreground_exe() != CLAUDE_EXE:
+            self.hide()
+            return
+        doc = self.document()
+        if doc is None:
+            self.hide()
+            return
+        now = time.time()
+        scrolling = now - SHARED["scroll_at"] < 0.35
+        if self.was_scrolling and not scrolling:
+            self.walked_at = 0.0          # the scroll ended: new lines came into view
+        self.was_scrolling = scrolling
+        moved = self.refresh_rects()
+        since = now - self.walked_at
+        if self.cfg.get("overlayHideOnScroll") and scrolling:
+            self.hide()
+            return
+        if not scrolling and (since > OVERLAY_WALK_MAX_S
+                              or (since > OVERLAY_WALK_MIN_S and (moved or not self.items))):
+            self.walk(doc, idx)
+        self.emit_frame()
+
+    def refresh_rects(self) -> bool:
+        """Re-read every item's rectangle. True when something moved, which is
+        the signal that the page scrolled or reflowed and needs a re-walk.
+
+        When a rectangle moves, the range's text is checked too: after an edit a
+        kept range can point at different text, and drawing one person's name
+        over another's token would be worse than drawing nothing. A mismatch
+        drops the patch until the next walk rebuilds it."""
+        moved = False
+        for it in self.items:
+            try:
+                rects = it["range"].GetBoundingRectangles()
+            except Exception:  # noqa: BLE001
+                it["rect"] = None
+                continue
+            rect = None
+            if rects:
+                r = rects[0]
+                rect = (r.left, r.top, r.right, r.bottom)
+            if rect == it["rect"]:
+                continue
+            moved = True
+            if rect is not None:
+                try:
+                    if (it["range"].GetText(-1) or "").upper() != it["tok"].upper():
+                        rect = None               # this range is no longer that token
+                except Exception:  # noqa: BLE001
+                    rect = None
+            it["rect"] = rect
+        return moved
+
+    # ---- finding tokens on the visible lines
+    def first_visible_line(self, doc, win):
+        """A line range at the top of the visible content. Hit-testing is the
+        one primitive measured at ~1 ms, so the walk starts from a hit test in
+        the middle of the window and steps back up to the top of the view."""
+        mid_x = (win.left + win.right) // 2
+        line = None
+        for frac in (0.35, 0.5, 0.2, 0.65, 0.8):
+            y = win.top + int((win.bottom - win.top) * frac)
+            for x in (mid_x, win.left + (win.right - win.left) // 3):
+                try:
+                    hit = doc.RangeFromPoint(x, y)
+                except Exception:  # noqa: BLE001
+                    return None
+                if hit is None:
+                    continue
+                cand = hit.Clone()
+                cand.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
+                try:
+                    if (cand.GetText(-1) or "").strip():
+                        line = cand
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if line is not None:
+                break
+        if line is None:
+            return None
+        for _ in range(80):                     # step up to the first visible line
+            probe = line.Clone()
+            if probe.Move(auto.TextUnit.Line, -1, waitTime=0) != -1:
+                break
+            probe.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
+            rects = probe.GetBoundingRectangles()
+            if not rects or rects[0].bottom < win.top:
+                break
+            line = probe
+        return line
+
+    def walk(self, doc, idx) -> None:
+        t0 = time.perf_counter()
+        self.walked_at = time.time()
+        try:
+            win = self.win.BoundingRectangle
+        except Exception:  # noqa: BLE001
+            self.doc = None
+            return
+        line = self.first_visible_line(doc, win)
+        if line is None:
+            if "noline" not in self.warned:
+                self.warned.add("noline")
+                log("overlay: no visible line found; overlay idle")
+            self.items = []
+            return
+        comp = SHARED["composer_rect"]
+        items, lines, blind = [], 0, 0
+        while lines < OVERLAY_MAX_LINES and len(items) < OVERLAY_MAX_TOKENS and blind < 30:
+            lines += 1
+            try:
+                text = line.GetText(-1) or ""
+                rects = line.GetBoundingRectangles()
+            except Exception:  # noqa: BLE001
+                break
+            if not rects:
+                blind += 1                  # a stretch with no geometry: do not walk forever
+            else:
+                blind = 0
+                r = rects[0]
+                if r.top > win.bottom:
+                    break                       # walked past the bottom of the view
+                if r.bottom >= win.top and "TOK_" in text.upper():
+                    in_composer = comp is not None and not (r.bottom < comp[1] or r.top > comp[3])
+                    if not in_composer:
+                        for m in EXACT_RE.finditer(text):
+                            value = idx.vault.get(m.group(0))
+                            if value is None:
+                                continue
+                            it = self.place(line, m, value)
+                            if it is not None:
+                                items.append(it)
+            if line.Move(auto.TextUnit.Line, 1, waitTime=0) != 1:
+                break
+            line.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
+        self.items = items
+        self.last_frame = None
+        self.style = self.range_style(items[0]["range"]) if items else {}
+        log(f"overlay: walked {lines} lines, placed {len(items)} tokens "
+            f"in {(time.perf_counter() - t0) * 1000:.0f} ms")
+
+    def place(self, line, m, value) -> dict | None:
+        """A range over one token inside its line, verified by reading it back.
+        The offset is within a single line, so the move is short."""
+        tok = m.group(0)
+        for d in self.NUDGE:
+            start = m.start() + d
+            if start < 0:
+                continue
+            try:
+                rng = line.Clone()
+                if rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.Start,
+                                          auto.TextUnit.Character, start, waitTime=0) != start:
+                    continue
+                rng.MoveEndpointByRange(auto.TextPatternRangeEndpoint.End, rng,
+                                        auto.TextPatternRangeEndpoint.Start, waitTime=0)
+                rng.MoveEndpointByUnit(auto.TextPatternRangeEndpoint.End,
+                                       auto.TextUnit.Character, len(tok), waitTime=0)
+                if (rng.GetText(-1) or "").upper() != tok.upper():
+                    continue
+                rects = rng.GetBoundingRectangles()
+            except Exception:  # noqa: BLE001
+                return None
+            if not rects:
+                continue
+            r = rects[0]
+            if r.right - r.left < 8 or r.bottom - r.top < 6:
+                continue
+            return {"range": rng, "value": value, "tok": tok,
+                    "rect": (r.left, r.top, r.right, r.bottom), "bg": None}
+        if tok not in self.warned:
+            self.warned.add(tok)
+            log(f"overlay: could not place {tok} inside its own line")
+        return None
+
+    @staticmethod
+    def range_style(rng) -> dict:
+        """Font family / size (pt) / weight / italic / foreground of a range.
+        Read once per walk: it is the same for every token in a reply."""
+        want = {"family": (auto.TextAttributeId.FontNameAttribute, str),
+                "size": (auto.TextAttributeId.FontSizeAttribute, (int, float)),
+                "weight": (auto.TextAttributeId.FontWeightAttribute, (int, float)),
+                "italic": (auto.TextAttributeId.IsItalicAttribute, bool),
+                "fg": (auto.TextAttributeId.ForegroundColorAttribute, (int,))}
+        style = {}
+        for key, (aid, types) in want.items():
+            try:
+                v = rng.GetAttributeValue(aid)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(v, bool) and key != "italic":
+                continue
+            if isinstance(v, types):
+                style[key] = v
+        if "fg" in style:
+            c = int(style["fg"])
+            style["fg"] = f"#{c & 0xFF:02x}{(c >> 8) & 0xFF:02x}{(c >> 16) & 0xFF:02x}"
+        return style
+
+    # ---- drawing
+    def emit_frame(self) -> None:
+        try:
+            w = self.win.BoundingRectangle
+        except Exception:  # noqa: BLE001
+            self.doc = None
+            self.hide()
+            return
+        comp = SHARED["composer_rect"]
+        frame = []
+        for it in self.items:
+            rect = it["rect"]
+            if rect is None:
+                continue
+            l, t, r, b = rect
+            if b < w.top or t > w.bottom or r < w.left or l > w.right:
+                continue
+            if comp is not None and not (b < comp[1] or t > comp[3]):
+                continue                        # the composer is never overlaid
+            if it["bg"] is None:                # sampled once, before our own patch is drawn
+                it["bg"] = screen_pixel(l - 2, (t + b) // 2) or "#ffffff"
+            frame.append((rect, it["value"], it["bg"], self.style))
+        if frame != self.last_frame:
+            self.last_frame = frame
+            self.visible = bool(frame)
+            self.events.put({"type": "overlay", "items": frame or None,
+                             "win": (w.left, w.top, w.right, w.bottom)})
+
+
 # ----------------------------------------------------------------------------- drop blocker
 class DropBlocker:
     """A file dropped from Explorer onto Claude cannot be masked in flight (the
@@ -1889,10 +1994,6 @@ class Overlay:
     def text_colour(bg: str) -> str:
         r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
         return "#111827" if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else "#f3f4f6"
-
-    def shift(self, dx: int, dy: int) -> None:
-        if self.visible and (dx or dy):
-            self.canvas.move("all", dx, dy)
 
     def render(self, items, win_rect) -> None:
         if not items:
@@ -2097,8 +2198,6 @@ class Bar:
                     self.set_unmask_label(ev["on"])
                 elif t == "overlay":
                     self.overlay.render(ev["items"], ev.get("win"))
-                elif t == "overlay_shift":
-                    self.overlay.shift(ev["dx"], ev["dy"])
                 elif t == "overlay_state":
                     self.set_overlay_label(ev["on"])
                 elif t == "file_guard":
@@ -2195,6 +2294,7 @@ def main() -> int:
     events: "queue.Queue[dict]" = queue.Queue()
     Automation(cfg, commands, events).start()
     Hotkeys(cfg, commands, events).start()
+    OverlayWorker(cfg, events).start()
     commands.put(("load_vault",))
     if args:
         commands.put(("mask_files", args))
