@@ -615,6 +615,7 @@ class Automation(threading.Thread):
         self.dialog_list = None
         self.dialog_seen = 0.0
         self.dialog_said = ""
+        self.dialog_dumped = False
         self.seen_classes: set[str] = set()
         self.masked_paths: set[str] = set()   # our own outputs: never re-masked
 
@@ -1202,20 +1203,46 @@ class Automation(threading.Thread):
             raw = (edit.GetPattern(auto.PatternId.ValuePattern).Value or "").strip()
         except Exception:  # noqa: BLE001
             raw = ""
-        source = "File name box"
-        if not raw:
-            raw = self.dialog_selection(dlg)      # double-clicked before the box filled in
-            source = "list selection"
-        if not raw:
-            return [], []
-        names = re.findall(r'"([^"]+)"', raw) or [raw]
+        typed = re.findall(r'"([^"]+)"', raw) or ([raw] if raw else [])
+        picked = self.dialog_selection(dlg)
         folder = self.dialog_folder(dlg)
+        # A selected item may carry its whole path; a typed name needs the folder.
         found, missing = [], []
-        for n in names:
+        for names in ((picked, "list selection"), (typed, "File name box")):
+            hits = [p for p in (self.resolve_pick(n, folder) for n in names[0]) if p]
+            if hits and len(hits) == len(names[0]):
+                log(f"file guard: {names[1]} {names[0]} in folder {folder or 'UNKNOWN'} -> {hits}")
+                return hits, []
+        for n in (typed or picked):
             p = self.resolve_pick(n, folder)
             (found if p else missing).append(p or n)
-        log(f"file guard: {source} {names} in folder {folder or 'UNKNOWN'} -> {found or missing}")
+        if missing:
+            log(f"file guard: could not locate {missing}; typed={typed} picked={picked} "
+                f"folder={folder or 'UNKNOWN'}")
+            self.dump_dialog(dlg)
         return found, missing
+
+    def dump_dialog(self, dlg) -> None:
+        """Everything the dialog exposes, once per dialog, when a pick cannot be
+        located. Guessing at which control holds the folder has cost several
+        rounds; this shows what is actually there."""
+        if self.dialog_dumped:
+            return
+        self.dialog_dumped = True
+        log("file guard: dialog contents follow (to find where the folder lives)")
+        stack, seen = [(dlg, 0)], 0
+        while stack and seen < 150:
+            c, depth = stack.pop()
+            seen += 1
+            try:
+                value = self.value_of(c)
+                log(f"file guard:   {' ' * depth}{c.ControlTypeName} name={(c.Name or '')[:40]!r} "
+                    f"id={(c.AutomationId or '')!r} class={(c.ClassName or '')[:24]!r}"
+                    + (f" value={value[:60]!r}" if value else ""))
+                if depth < 8:
+                    stack.extend((k, depth + 1) for k in reversed(c.GetChildren()))
+            except Exception:  # noqa: BLE001
+                continue
 
     @staticmethod
     def resolve_pick(name: str, folder: str) -> str | None:
@@ -1236,32 +1263,34 @@ class Automation(threading.Thread):
             hits = []
         return str(hits[0]) if hits else None
 
-    def dialog_selection(self, dlg) -> str:
-        """The names selected in the dialog's file list, quoted as the File name
-        box would hold them."""
-        stack, names, seen = [(dlg, 0)], [], 0
-        while stack and seen < 400:
-            c, depth = stack.pop()
-            seen += 1
-            try:
-                if c.ControlTypeName in ("ListControl", "DataGridControl"):
-                    sel = c.GetPattern(auto.PatternId.SelectionPattern)
-                    if sel is not None:
-                        for item in sel.GetSelection():
-                            # the item's own value is sometimes the full path
-                            n = self.looks_like_path(self.value_of(item)) or (item.Name or "").strip()
-                            if n:
-                                names.append(n)
-                        if names:
-                            break
+    def dialog_selection(self, dlg) -> list[str]:
+        """What is selected in the dialog's file list. A shell item often
+        carries its full path in its accessible value, which settles both the
+        folder and the hidden extension at once, so this is tried first."""
+        source = self.dialog_list
+        if source is None:
+            stack, seen = [(dlg, 0)], 0
+            while stack and seen < 400 and source is None:
+                c, depth = stack.pop()
+                seen += 1
+                try:
+                    if c.ControlTypeName in ("ListControl", "DataGridControl"):
+                        source = c
+                        break
+                    if depth < 8:
+                        stack.extend((k, depth + 1) for k in c.GetChildren())
+                except Exception:  # noqa: BLE001
                     continue
-                if depth < 8:
-                    stack.extend((k, depth + 1) for k in c.GetChildren())
-            except Exception:  # noqa: BLE001
-                continue
-        if not names:
-            return ""
-        return " ".join(f'"{n}"' for n in names) if len(names) > 1 else names[0]
+        if source is None:
+            return []
+        names = []
+        try:
+            sel = source.GetPattern(auto.PatternId.SelectionPattern)
+            for item in (sel.GetSelection() if sel is not None else []):
+                names.append(self.value_of(item) or (item.Name or "").strip())
+        except Exception:  # noqa: BLE001
+            return []
+        return [n for n in names if n]
 
     @staticmethod
     def looks_like_path(value: str) -> str:
@@ -1303,6 +1332,20 @@ class Automation(threading.Thread):
                     stack.extend((k, depth + 1) for k in c.GetChildren())
             except Exception:  # noqa: BLE001
                 continue
+        # Any control at all whose name or value is a real directory: the
+        # address bar is not always a toolbar, and its editable form carries the
+        # path even when the breadcrumb shows only display names.
+        stack, seen = [(dlg, 0)], 0
+        while stack and seen < 250:
+            c, depth = stack.pop()
+            seen += 1
+            try:
+                candidates.append(self.value_of(c))
+                candidates.append(c.Name or "")
+                if depth < 8:
+                    stack.extend((k, depth + 1) for k in c.GetChildren())
+            except Exception:  # noqa: BLE001
+                continue
         for value in candidates:
             path = self.looks_like_path(value)
             if path and Path(path).is_dir():
@@ -1321,6 +1364,7 @@ class Automation(threading.Thread):
             if self.dialog is not None:
                 log("file dialog closed")
             self.dialog = self.dialog_edit = self.dialog_confirm = self.dialog_list = None
+            self.dialog_dumped = False
             SHARED["dialog_open"] = False
             SHARED["dialog_confirm_rect"] = SHARED["dialog_list_rect"] = None
             return
