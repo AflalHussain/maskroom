@@ -18,6 +18,9 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 | **Bar** | When the Claude Desktop composer has keyboard focus, a small floating bar appears above it. It never takes focus away from Claude. |
 | **Mask** | Button on the bar, or `Ctrl+Shift+M` anywhere. Reads the composer, sends the text to your Maskroom server (`POST /api/mask`), writes the pseudonymized text back in place. **You still press send.** The first masked message of a session is prefixed with the token preamble, as the extension does. |
 | **Guard** (default on) | Pressing Enter while the composer holds text that has not been checked yet runs it through Maskroom first. If anything was masked the send is *held* so you can read what will leave the machine, then press Enter again. If nothing needed masking, Enter is replayed and your send goes through as typed. Shift+Enter is a newline and is never held; Enter outside the composer is passed straight through. The guard fails closed: if the server is unreachable the send is held and the bar says why — switch the guard off (bar button) to send anyway. Only the keyboard is hooked: the on-screen Send button is not guarded. |
+| **File guard** (default on) | Claude's paperclip opens the Windows file dialog; the helper watches it. Confirming a supported file (`.xlsx .xlsm .pdf .docx .pptx .csv .tsv .txt .json`) is intercepted with Enter or the *Open* button: the file goes to the server (`POST /api/process` with this chat's session), the masked copy is written to `%APPDATA%\Maskroom\files`, its path is typed into the dialog's *File name* box and the confirm is replayed. Claude attaches the masked copy and never sees the original. An unsupported type is refused and the dialog stays open. `Ctrl+V` with files on the clipboard is intercepted the same way. |
+| **Drop blocking** (default on) | A file dragged from Explorer onto Claude cannot be masked in flight (the drop is a shell handshake, not a message we can rewrite), so it is refused: while a drag is held over Claude an invisible window with no drop target sits on top, Windows shows "not allowed", and the bar says to use the paperclip. Turn off with `blockDrops` in the config if you would rather it be your responsibility. |
+| **Explorer menu** | `install-context-menu.ps1` adds *Mask with Maskroom* to the right-click menu for those types (HKCU only, no admin). The masked copy lands in the files folder; attach it by hand. Remove with `-Uninstall`. |
 | **Unmask on hover** (default on) | Rest the mouse on a token in a reply and a tooltip shows that line with the real values. The helper keeps the session's vault locally (`GET /api/session/<id>/vault`, refreshed after each mask) and restores with the same tolerant rules as the extension's `tokens.js` (any case, spaced or escaped underscores, truncated ids; unknown tokens are left alone). Nothing on Claude's screen is changed. |
 | **Overlay** (experimental, default on) | Paints the real values over the tokens in replies, on a transparent click-through window that covers Claude. Tokens are located by character offset in the page text (one move per token, read back to verify; the text search the probe showed mis-aligning is not used), rectangles are refreshed every tick so scrolling is followed, and the page text is re-read twice a second for streaming. Each patch samples the pixel beside the token for its background and reads the token's font family, size, weight, italic and colour from the text range's UI Automation attributes so the value is drawn in the same style (a web font that is not installed on the PC falls back to Segoe UI); it shrinks to fit and ends with "…" when the real value is still wider. A dotted underline marks a restored value. The composer is never overlaid. Scrolling is followed: a mouse hook notes wheel events over Claude, one anchor token's rectangle is polled every 20 ms during the scroll and every patch is translated by that delta, then all rectangles are refreshed exactly once the scroll settles. The settings window has *Hide the overlay while scrolling* if following still looks wrong. Only exact `TOK_…` spellings are overlaid; lowercased or spaced ones still restore on hover and copy. **If it looks wrong, switch it off on the bar.** |
 | **Unmask on copy** (default on) | Copy text out of Claude and the clipboard is restored before you paste it anywhere; the bar reports the count. `Ctrl+Shift+U` does the same on demand through the server (`POST /api/unmask`). The helper's own masked paste is never "restored". |
@@ -25,7 +28,9 @@ Desktop keeping a standard ProseMirror composer, and never the control you rely 
 | **Sign in** | Gear button → *Sign in* opens the server's login page in your browser. After the identity provider, the server sends the browser back to a loopback port on this PC with a one-time code, which the helper exchanges for its own session (`POST /auth/exchange`). *Sign out* ends it, and lets the provider end its session too. |
 | **Settings** | Gear button: server URL, optional service key, preamble toggle, *Test connection* (`GET /api/me`). Opens on first run. |
 
-Not covered: the Send button (mouse), file masking, macOS. The overlay is a trial: the
+Not covered: the Send button (mouse), macOS, images (Maskroom cannot mask them, so they
+are refused rather than masked), and files reaching Claude through Cowork or a mounted
+folder (policy keys, research §5.5). The overlay is a trial: the
 research doc (§5.4) measured a naïve token sweep at up to 1.4 s, so it is built around
 offset moves and per-range rectangle refreshes instead; whether that is smooth enough is
 being judged on a real machine, and it will be dropped if not.
@@ -88,6 +93,13 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
 - **tkinter main thread** (`Bar`): the floating bar (`WS_EX_NOACTIVATE`, so clicking
   it leaves focus in Claude), toasts, and the settings window. Reads an event queue;
   never touches UIA.
+- **Files**: `FileApi` posts a hand-rolled multipart body to `/api/process` and fetches the
+  result from `/api/download/<run>/<name>` (the same contract `extension/background.js`
+  uses). `poll_dialog()` spots Claude's `#32770` dialog; the keyboard hook swallows Enter
+  and the mouse hook swallows a click on *Open* while it is up, both routing to
+  `cmd_dialog_confirm()`, which reads the *File name* box, masks, writes the path back
+  through `ValuePattern.SetValue` and replays the confirm. Clipboard files use `CF_HDROP`
+  in both directions.
 - **Sessions**: `chat_identity()` reads the page document's `Name` and `ValuePattern.Value`;
   `resolve_session()` tries the url map, then the token→session map built from the cached
   vaults, then the title; `bind_session()` records the choice. A 404 from the server

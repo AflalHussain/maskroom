@@ -17,6 +17,17 @@ outside the composer are never held. It fails closed: if the server cannot be
 reached the send is held and the bar says why; switch the guard off to send
 anyway. The Send button is not guarded (only the keyboard is hooked).
 
+Files (guard on): when Claude's paperclip opens the Windows file dialog, the
+helper watches it. Confirming a supported file (.xlsx .xlsm .pdf .docx .pptx
+.csv .tsv .txt .json) is intercepted: the file goes to the server
+(POST /api/process), the masked copy is written to the Maskroom files folder,
+its path is typed into the dialog's File name box and the confirm is
+replayed, so Claude attaches the masked copy and never sees the original.
+An unsupported type is refused with a note. Explorer drag-and-drop onto
+Claude is blocked (the overlay window takes the drop and rejects it) so files
+go through the paperclip; Ctrl+V of files is intercepted the same way as the
+dialog.
+
 Unmask (default on): the helper keeps the session's vault locally and
 restores tokens two ways. Hover the mouse over a token in a reply and a
 tooltip shows that line with the real values (UI Automation RangeFromPoint,
@@ -110,14 +121,20 @@ DEFAULTS = {
     "unmask": True,        # hover tooltip + clipboard restore
     "overlay": True,       # paint real values over tokens in replies (experimental)
     "overlayHideOnScroll": False,   # hide while scrolling instead of tracking the scroll
+    "fileGuard": True,     # intercept the file dialog / paste / drop
+    "blockDrops": True,    # refuse Explorer drops on Claude (they cannot be masked in flight)
+    "filesDir": "",        # where masked copies are written (default: <config>/files)
     "preambleSent": [],
 }
 OVERLAY_TEXT_S = 0.5       # how often the page text is re-read for new tokens
 SCROLL_TICK_S = 0.02       # anchor poll while scrolling
 SCROLL_SETTLE_S = 0.15     # no movement for this long = scroll over
-SHARED = {"scroll_at": 0.0}   # written by the mouse hook, read by the worker
+SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False}
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
+MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
+MAX_UPLOAD = 25 * 1024 * 1024
+DIALOG_POLL_S = 0.4
 TIP_MAX_CHARS = 400
 SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
@@ -171,6 +188,44 @@ class Server:
     def __init__(self, cfg: dict):
         self.cfg = cfg
 
+    def _request(self, path: str, method: str, data, headers: dict):
+        url = self.cfg["serverUrl"].rstrip("/") + path
+        headers = {"X-Requested-With": "maskroom", "Accept": "application/json", **headers}
+        token = (self.cfg.get("token") or "").strip()
+        key = (self.cfg.get("apiKey") or "").strip()
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        elif key.startswith("mr_"):
+            headers["Authorization"] = "Bearer " + key
+        elif key:
+            headers["X-API-Key"] = key
+        return urllib.request.Request(url, data=data, method=method, headers=headers)
+
+    def raw(self, path: str, body: bytes, content_type: str) -> dict:
+        """POST a prepared body (multipart upload) and read a JSON reply."""
+        req = self._request(path, "POST", body, {"Content-Type": content_type})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as res:
+                return {"ok": True, "status": res.status, "data": _json_or_none(res.read()), "error": None}
+        except urllib.error.HTTPError as e:
+            payload = _json_or_none(e.read())
+            msg = (payload or {}).get("error") if isinstance(payload, dict) else None
+            return {"ok": False, "status": e.code, "data": payload, "error": msg or f"{e.code} {e.reason}"}
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            return {"ok": False, "status": 0, "data": None,
+                    "error": f"Cannot reach Maskroom at {self.cfg['serverUrl']} ({getattr(e, 'reason', e)})."}
+
+    def binary(self, path: str) -> tuple[bytes | None, str | None]:
+        """GET bytes (a masked or restored file). Returns (bytes, error)."""
+        req = self._request(path, "GET", None, {})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as res:
+                return res.read(), None
+        except urllib.error.HTTPError as e:
+            return None, f"{e.code} {e.reason}"
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            return None, str(getattr(e, "reason", e))
+
     def api(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         url = self.cfg["serverUrl"].rstrip("/") + path
         headers = {"X-Requested-With": "maskroom", "Accept": "application/json"}
@@ -201,11 +256,44 @@ class Server:
                     "error": f"Cannot reach Maskroom at {self.cfg['serverUrl']} ({reason}). Is the server running?"}
 
 
+def _multipart(fields: dict, filename: str, blob: bytes) -> tuple[bytes, str]:
+    """A minimal multipart/form-data body: the form fields plus one file part."""
+    boundary = "----maskroom" + os.urandom(12).hex()
+    out = bytearray()
+    for k, v in fields.items():
+        if v is None:
+            continue
+        out += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8")
+    out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+            f"filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode("utf-8")
+    out += blob + b"\r\n"
+    out += f"--{boundary}--\r\n".encode("utf-8")
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
 def _json_or_none(raw: bytes):
     try:
         return json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None
+
+
+class FileApi:
+    """The file half of the server contract the extension uses: /api/process
+    to mask, /api/download/<run>/<name> to fetch the result."""
+
+    def __init__(self, server: "Server"):
+        self.server = server
+
+    def process(self, path: str, fields: dict) -> dict:
+        blob = open(path, "rb").read()
+        if len(blob) > MAX_UPLOAD:
+            return {"ok": False, "status": 413, "error": "File is larger than 25 MB."}
+        body, ctype = _multipart(fields, os.path.basename(path), blob)
+        return self.server.raw("/api/process", body, ctype)
+
+    def download(self, run_id: str, name: str) -> tuple[bytes | None, str | None]:
+        return self.server.binary(f"/api/download/{run_id}/{urllib.parse.quote(name)}")
 
 
 # ----------------------------------------------------------------------------- tokens
@@ -292,6 +380,22 @@ if _IS_WIN:
     _user32.GetDC.restype = wt.HDC
     _user32.GetDC.argtypes = [wt.HWND]
     _user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+    _shell32 = ctypes.windll.shell32
+    _shell32.DragQueryFileW.restype = wt.UINT
+    _shell32.DragQueryFileW.argtypes = [wt.HANDLE, wt.UINT, wt.LPWSTR, wt.UINT]
+    _user32.IsClipboardFormatAvailable.argtypes = [wt.UINT]
+    _user32.OpenClipboard.argtypes = [wt.HWND]
+    _user32.GetClipboardData.restype = wt.HANDLE
+    _user32.GetClipboardData.argtypes = [wt.UINT]
+    _user32.SetClipboardData.restype = wt.HANDLE
+    _user32.SetClipboardData.argtypes = [wt.UINT, wt.HANDLE]
+    _kernel32.GlobalAlloc.restype = wt.HANDLE
+    _kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+    _kernel32.GlobalLock.restype = ctypes.c_void_p
+    _kernel32.GlobalLock.argtypes = [wt.HANDLE]
+    _kernel32.GlobalUnlock.argtypes = [wt.HANDLE]
+    _kernel32.GlobalFree.restype = wt.HANDLE
+    _kernel32.GlobalFree.argtypes = [wt.HANDLE]
     _gdi32 = ctypes.windll.gdi32
     _gdi32.GetPixel.restype = wt.COLORREF
     _gdi32.GetPixel.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
@@ -327,6 +431,63 @@ def process_exe(pid: int) -> str:
             _kernel32.CloseHandle(h)
     _exe_cache[pid] = name
     return name
+
+
+CF_HDROP = 15
+
+
+def clipboard_files() -> list[str]:
+    """Paths on the clipboard (CF_HDROP), or []."""
+    if not _IS_WIN or not _user32.IsClipboardFormatAvailable(CF_HDROP):
+        return []
+    if not _user32.OpenClipboard(None):
+        return []
+    try:
+        h = _user32.GetClipboardData(CF_HDROP)
+        if not h:
+            return []
+        n = _shell32.DragQueryFileW(h, 0xFFFFFFFF, None, 0)
+        out = []
+        for i in range(n):
+            need = _shell32.DragQueryFileW(h, i, None, 0) + 1
+            buf = ctypes.create_unicode_buffer(need)
+            if _shell32.DragQueryFileW(h, i, buf, need):
+                out.append(buf.value)
+        return out
+    finally:
+        _user32.CloseClipboard()
+
+
+def set_clipboard_files(paths: list[str]) -> bool:
+    """Put paths on the clipboard as CF_HDROP, so a paste attaches them."""
+    if not _IS_WIN or not paths:
+        return False
+
+    class DROPFILES(ctypes.Structure):
+        _fields_ = [("pFiles", wt.DWORD), ("pt", wt.POINT), ("fNC", wt.BOOL), ("fWide", wt.BOOL)]
+
+    names = "".join(p + "\0" for p in paths) + "\0"
+    data = bytes(DROPFILES(ctypes.sizeof(DROPFILES), wt.POINT(0, 0), False, True)) + names.encode("utf-16-le")
+    h = _kernel32.GlobalAlloc(0x0042, len(data))     # GMEM_MOVEABLE | GMEM_ZEROINIT
+    if not h:
+        return False
+    p = _kernel32.GlobalLock(h)
+    if not p:
+        _kernel32.GlobalFree(h)
+        return False
+    ctypes.memmove(p, data, len(data))
+    _kernel32.GlobalUnlock(h)
+    if not _user32.OpenClipboard(None):
+        _kernel32.GlobalFree(h)
+        return False
+    try:
+        _user32.EmptyClipboard()
+        if not _user32.SetClipboardData(CF_HDROP, h):
+            _kernel32.GlobalFree(h)
+            return False
+        return True                                   # the clipboard owns h now
+    finally:
+        _user32.CloseClipboard()
 
 
 def foreground_exe() -> str:
@@ -382,6 +543,10 @@ class Automation(threading.Thread):
         self.scrolling = False
         self.scroll_moved_at = 0.0
         self.anchor = None            # item whose rect is polled while scrolling
+        self.files = FileApi(self.server)
+        self.dialog = None            # the open file dialog, while Claude has one
+        self.dialog_seen = 0.0
+        self.masked_paths: set[str] = set()   # our own outputs: never re-masked
 
     # ---- plumbing
     def emit(self, **ev) -> None:
@@ -410,6 +575,12 @@ class Automation(threading.Thread):
                             self.poll_clipboard()
                         except Exception as e:  # noqa: BLE001
                             log(f"unmask poll error {type(e).__name__}: {e}")
+                    if self.cfg.get("fileGuard", True):
+                        try:
+                            self.poll_drag()
+                            self.poll_dialog()
+                        except Exception as e:  # noqa: BLE001
+                            log(f"dialog poll error {type(e).__name__}: {e}")
                     if self.cfg.get("overlay", True):
                         try:
                             self.poll_overlay()
@@ -1026,6 +1197,275 @@ class Automation(threading.Thread):
             self.mask_done_at = time.time()
             self.emit(type="busy", busy=False)
 
+    # ---- files
+    def files_dir(self) -> Path:
+        d = Path(self.cfg.get("filesDir") or (CONFIG_DIR / "files"))
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def mask_file(self, path: str) -> tuple[str | None, str]:
+        """Mask one file through the server. Returns (masked path, message)."""
+        src = Path(path)
+        if not src.is_file():
+            return None, f"{src.name}: not a file"
+        ext = src.suffix.lower()
+        if ext not in MASK_EXTS:
+            return None, f"{src.name}: {ext or 'no extension'} cannot be masked (allowed: {', '.join(MASK_EXTS)})"
+        sid = self.ensure_session()
+        fields = {"session_id": sid, "pdf_mode": "text", "preview": "false"}
+        r = self.files.process(str(src), fields)
+        if not r["ok"] and r["status"] == 404:
+            self.forget_session(sid)
+            fields["session_id"] = self.ensure_session()
+            r = self.files.process(str(src), fields)
+        if not r["ok"]:
+            return None, f"{src.name}: {r['error']}"
+        d = r["data"] or {}
+        out_name = ((d.get("downloads") or {}).get("output")) or src.name
+        blob, err = self.files.download(d["run_id"], out_name)
+        if blob is None:
+            return None, f"{src.name}: could not fetch the masked copy ({err})"
+        stem = src.stem
+        out = self.files_dir() / f"{stem}_masked{Path(out_name).suffix or ext}"
+        n = 1
+        while out.exists():
+            out = self.files_dir() / f"{stem}_masked_{n}{Path(out_name).suffix or ext}"
+            n += 1
+        out.write_bytes(blob)
+        self.masked_paths.add(str(out).lower())
+        self.load_vault(fields["session_id"])
+        found = len(d.get("findings") or [])
+        return str(out), f"{src.name}: {found} value{'' if found == 1 else 's'} masked"
+
+    def mask_many(self, paths: list[str]) -> tuple[list[str], list[str]]:
+        ok, bad = [], []
+        for p in paths:
+            if str(p).lower() in self.masked_paths:
+                ok.append(p)                       # already ours
+                continue
+            out, msg = self.mask_file(p)
+            (ok if out else bad).append(out or msg)
+            log(f"file guard: {msg}")
+        return ok, bad
+
+    # ---- the Windows file dialog Claude opens for its paperclip
+    def find_dialog(self):
+        """Claude's open-file dialog, or None. Identified by class #32770 owned
+        by Claude.exe with a File name edit box."""
+        for w in auto.GetRootControl().GetChildren():
+            try:
+                if w.ClassName != "#32770" or process_exe(w.ProcessId) != CLAUDE_EXE:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            return w
+        return None
+
+    @staticmethod
+    def dialog_parts(dlg):
+        """(file-name edit, confirm button) of a Windows common file dialog."""
+        edit = confirm = None
+        for c in dlg.GetChildren():
+            try:
+                t, name = c.ControlTypeName, (c.Name or "")
+            except Exception:  # noqa: BLE001
+                continue
+            if edit is None and t == "ComboBoxControl":
+                for k in c.GetChildren():           # the editable part of the combo
+                    try:
+                        if k.ControlTypeName == "EditControl":
+                            edit = k
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+            if edit is None and t == "EditControl":
+                edit = c
+            if confirm is None and t == "ButtonControl" and name.strip().strip("&").lower() in ("open", "ok", "attach", "select"):
+                confirm = c
+        return edit, confirm
+
+    def dialog_paths(self, dlg, edit) -> list[str]:
+        """Absolute paths the dialog would return: the File name box, resolved
+        against the folder it is browsing. Handles "a" "b" multi-select."""
+        try:
+            raw = (edit.GetPattern(auto.PatternId.ValuePattern).Value or "").strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+        if not raw:
+            return []
+        names = re.findall(r'"([^"]+)"', raw) or [raw]
+        folder = self.dialog_folder(dlg)
+        out = []
+        for n in names:
+            p = Path(n)
+            out.append(str(p if p.is_absolute() else Path(folder or "") / n))
+        return out
+
+    @staticmethod
+    def dialog_folder(dlg) -> str:
+        """The folder the dialog is browsing, from the breadcrumb toolbar's name
+        ("Address: Documents" style) - best effort; empty when unreadable."""
+        for c in dlg.GetChildren():
+            try:
+                if c.ControlTypeName == "ToolBarControl" and "address" in (c.Name or "").lower():
+                    for k in c.GetChildren():
+                        nm = (k.Name or "")
+                        if ":\\" in nm or nm.startswith("\\\\"):
+                            return nm
+            except Exception:  # noqa: BLE001
+                continue
+        return ""
+
+    def poll_dialog(self) -> None:
+        """Note when Claude opens or closes a file dialog (the hook needs to
+        know whether a confirm belongs to one)."""
+        now = time.time()
+        if now - self.dialog_seen < DIALOG_POLL_S:
+            return
+        self.dialog_seen = now
+        dlg = self.find_dialog()
+        if dlg is None:
+            if self.dialog is not None:
+                log("file dialog closed")
+            self.dialog = None
+            SHARED["dialog_open"] = False
+            return
+        if self.dialog is None:
+            log("file dialog open")
+            self.toast("File dialog: the file you pick will be masked before Claude sees it.")
+        self.dialog = dlg
+        SHARED["dialog_open"] = True
+
+    def cmd_dialog_confirm(self, pressed_at: float) -> None:
+        """The hook swallowed Enter (or a click on Open) in Claude's file dialog."""
+        dlg = self.find_dialog()
+        if dlg is None:
+            SHARED["dialog_open"] = False
+            return
+        edit, confirm = self.dialog_parts(dlg)
+        if edit is None:
+            log("file guard: no File name box found; letting the dialog through")
+            self.dialog_replay(dlg, confirm)
+            return
+        paths = self.dialog_paths(dlg, edit)
+        if not paths:
+            self.dialog_replay(dlg, confirm)         # empty box, or a folder double-click
+            return
+        if all(Path(p).is_dir() for p in paths):
+            self.dialog_replay(dlg, confirm)         # navigating into a folder
+            return
+        self.emit(type="busy", busy=True)
+        try:
+            ok, bad = self.mask_many([p for p in paths if not Path(p).is_dir()])
+        finally:
+            self.emit(type="busy", busy=False)
+        if bad:
+            self.toast("; ".join(bad[:2]) + (" — pick a supported file" if not ok else ""), error=True)
+            if not ok:
+                return                                # dialog stays open for another try
+        value = " ".join(f'"{p}"' for p in ok) if len(ok) > 1 else ok[0]
+        try:
+            edit.GetPattern(auto.PatternId.ValuePattern).SetValue(value)
+        except Exception as e:  # noqa: BLE001
+            self.toast(f"Masked, but the dialog would not take the path ({e}). "
+                       f"Pick it from {self.files_dir()}", error=True)
+            log(f"file guard: SetValue failed: {e}")
+            return
+        self.toast(f"Masked {len(ok)} file{'' if len(ok) == 1 else 's'} — attaching the masked cop"
+                   f"{'y' if len(ok) == 1 else 'ies'}.")
+        self.dialog_replay(dlg, confirm)
+
+    def dialog_replay(self, dlg, confirm) -> None:
+        """Confirm the dialog the way the user did: the button if we found it,
+        else Enter into the dialog."""
+        try:
+            if confirm is not None:
+                confirm.GetPattern(auto.PatternId.InvokePattern).Invoke(waitTime=0)
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            dlg.SetFocus()
+        except Exception:  # noqa: BLE001
+            pass
+        self.replay_enter()
+
+    def cmd_mask_clipboard_files(self, pressed_at: float) -> None:
+        """Ctrl+V in Claude with files on the clipboard: mask, then paste ours."""
+        paths = clipboard_files()
+        if not paths:
+            self.replay_paste()
+            return
+        self.emit(type="busy", busy=True)
+        try:
+            ok, bad = self.mask_many(paths)
+        finally:
+            self.emit(type="busy", busy=False)
+        if bad and not ok:
+            self.toast("; ".join(bad[:2]), error=True)
+            return
+        if not set_clipboard_files(ok):
+            self.toast(f"Masked, but the clipboard would not take the files. "
+                       f"Attach them from {self.files_dir()}", error=True)
+            return
+        self.clip_ignore_until = time.time() + 2.0
+        self.toast(f"Masked {len(ok)} file{'' if len(ok) == 1 else 's'} — attaching the masked cop"
+                   f"{'y' if len(ok) == 1 else 'ies'}.")
+        self.replay_paste()
+
+    @staticmethod
+    def replay_paste() -> None:
+        auto.SendKeys("{Ctrl}v", waitTime=0)
+
+    def cmd_mask_files(self, paths) -> None:
+        """Mask files named on the command line or dropped on the bar."""
+        ok, bad = self.mask_many(list(paths))
+        if ok:
+            self.toast(f"Masked into {self.files_dir()}: " + ", ".join(Path(p).name for p in ok[:3]))
+        if bad:
+            self.toast("; ".join(bad[:2]), error=True)
+
+    def poll_drag(self) -> None:
+        """While a drag with files is in flight over Claude, put the blocker up."""
+        if not (self.cfg.get("fileGuard", True) and self.cfg.get("blockDrops", True)):
+            return
+        dragging = SHARED["drag_at"] > 0 and (_user32.GetAsyncKeyState(0x01) & 0x8000)
+        if not dragging:
+            if SHARED["blocking"]:
+                SHARED["blocking"] = False
+                self.emit(type="block_drop", rect=None)
+                if SHARED["drag_at"]:
+                    self.toast("Explorer drops are not masked — use the paperclip, or drop on the "
+                               "MASKROOM bar.", error=True)
+                SHARED["drag_at"] = 0.0
+            return
+        if foreground_exe() != CLAUDE_EXE and self.claude_win is None:
+            return
+        try:
+            r = self.claude_win.BoundingRectangle if self.claude_win is not None else None
+        except Exception:  # noqa: BLE001
+            r = None
+        if r is None:
+            self.page_document()
+            return
+        x, y = auto.GetCursorPos()
+        if not (r.left <= x <= r.right and r.top <= y <= r.bottom):
+            if SHARED["blocking"]:
+                SHARED["blocking"] = False
+                self.emit(type="block_drop", rect=None)
+            return
+        if not SHARED["blocking"]:
+            SHARED["blocking"] = True
+            self.emit(type="block_drop", rect=(r.left, r.top, r.right, r.bottom))
+            log("drop blocker up")
+
+    def cmd_toggle_file_guard(self) -> None:
+        self.cfg["fileGuard"] = not self.cfg.get("fileGuard", True)
+        save_config(self.cfg)
+        self.emit(type="file_guard", on=self.cfg["fileGuard"])
+        self.toast("File guard on: files are masked before Claude sees them." if self.cfg["fileGuard"]
+                   else "File guard off: files are attached as they are.")
+
     # ---- the guard
     @staticmethod
     def replay_enter() -> None:
@@ -1191,6 +1631,7 @@ class Hotkeys(threading.Thread):
         self.commands = commands
         self.events = events
         self.swallow_up = False
+        self.swallow_click = False
         self._proc = None            # keep the callback alive for the hook's lifetime
 
     def claude_in_front(self) -> bool:
@@ -1206,28 +1647,71 @@ class Hotkeys(threading.Thread):
 
     WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL = 14, 0x020A, 0x020E
 
+    WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
+
     def mouse_proc(self, n_code: int, w_param: int, l_param: int) -> int:
-        """Never swallows anything; only notes wheel scrolling over Claude."""
+        """Notes wheel scrolling, and swallows a click on the file dialog's
+        confirm button so the pick can be masked first."""
         try:
-            if n_code >= 0 and w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
-                SHARED["scroll_at"] = time.time()
-        except Exception:  # noqa: BLE001
-            pass
+            if n_code >= 0:
+                if w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
+                    SHARED["scroll_at"] = time.time()
+                elif w_param == self.WM_LBUTTONDOWN and SHARED["dialog_open"] and self.cfg.get("fileGuard", True):
+                    ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                    if not (ms.flags & 0x01) and self.on_dialog_confirm(ms.pt.x, ms.pt.y):   # LLMHF_INJECTED
+                        self.swallow_click = True
+                        self.commands.put(("dialog_confirm", time.time()))
+                        log("hook: dialog Open click swallowed")
+                        return 1
+                elif w_param == self.WM_LBUTTONDOWN and foreground_exe() != CLAUDE_EXE:
+                    SHARED["drag_at"] = time.time()     # a drag may have begun elsewhere
+                elif w_param == self.WM_LBUTTONUP and self.swallow_click:
+                    self.swallow_click = False
+                    return 1
+        except Exception as e:  # noqa: BLE001
+            log(f"mouse hook error {type(e).__name__}: {e}")
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+    @staticmethod
+    def on_dialog_confirm(x: int, y: int) -> bool:
+        """Is (x,y) inside the confirm button of Claude's file dialog?"""
+        try:
+            ctl = auto.ControlFromPoint(x, y)
+            if ctl is None or ctl.ControlTypeName != "ButtonControl":
+                return False
+            if (ctl.Name or "").strip().strip("&").lower() not in ("open", "ok", "attach", "select"):
+                return False
+            return process_exe(ctl.ProcessId) == CLAUDE_EXE
+        except Exception:  # noqa: BLE001
+            return False
 
     def hook_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         try:
             if n_code >= 0:
                 kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                injected = bool(kb.flags & self.LLKHF_INJECTED)
+                ctrl_down = bool(_user32.GetAsyncKeyState(self.VK_CONTROL) & 0x8000)
+                if (kb.vkCode == ord("V") and ctrl_down and not injected
+                        and w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN)
+                        and self.cfg.get("fileGuard", True) and self.claude_in_front()
+                        and clipboard_files()):
+                    self.swallow_up = True
+                    self.commands.put(("mask_clipboard_files", time.time()))
+                    log("hook: Ctrl+V with files swallowed")
+                    return 1
                 if kb.vkCode == self.VK_RETURN and w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
-                    injected = bool(kb.flags & self.LLKHF_INJECTED)
                     plain = not (kb.flags & self.LLKHF_ALTDOWN) \
-                        and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) \
-                        and not (_user32.GetAsyncKeyState(self.VK_CONTROL) & 0x8000)
+                        and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) and not ctrl_down
                     front = self.claude_in_front()
+                    if (SHARED["dialog_open"] and plain and not injected
+                            and self.cfg.get("fileGuard", True) and front):
+                        self.swallow_up = True
+                        self.commands.put(("dialog_confirm", time.time()))
+                        log("hook: dialog Enter swallowed")
+                        return 1
                     guard = self.cfg.get("guard", True)
                     log(f"hook: Enter down injected={injected} plain={plain} claude_in_front={front} guard={guard}")
-                    if guard and not injected and plain and front:
+                    if guard and not injected and plain and front and not SHARED["dialog_open"]:
                         self.swallow_up = True
                         self.commands.put(("guard", time.time()))
                         log("hook: swallowed")
@@ -1268,6 +1752,45 @@ class Hotkeys(threading.Thread):
                 self.commands.put((self.BINDINGS[msg.wParam][1],))
             _user32.TranslateMessage(ctypes.byref(msg))
             _user32.DispatchMessageW(ctypes.byref(msg))
+
+
+# ----------------------------------------------------------------------------- drop blocker
+class DropBlocker:
+    """A file dropped from Explorer onto Claude cannot be masked in flight (the
+    drop is a shell handshake, not a message we can rewrite), so we refuse it:
+    while the left button is held over Claude with files on the drag, an
+    invisible window that registers no drop target sits on top. Windows then
+    shows "not allowed" and nothing reaches Claude. The user is told to use the
+    paperclip, which IS guarded."""
+
+    def __init__(self, root: tk.Tk):
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.attributes("-alpha", 0.01)          # effectively invisible, still hit-tested
+        self.win.configure(bg="#000000")
+        self.win.withdraw()
+        self.win.update_idletasks()
+        GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = -20, 0x08000000, 0x80
+        hwnd = _user32.GetParent(self.win.winfo_id()) or self.win.winfo_id()
+        style = _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+        _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+        self.visible = False
+
+    def show(self, rect) -> None:
+        if not rect:
+            return
+        left, top, right, bottom = rect
+        self.win.geometry(f"{right - left}x{bottom - top}+{left}+{top}")
+        if not self.visible:
+            self.win.deiconify()
+            self.win.lift()
+            self.visible = True
+
+    def hide(self) -> None:
+        if self.visible:
+            self.win.withdraw()
+            self.visible = False
 
 
 # ----------------------------------------------------------------------------- overlay window
@@ -1373,7 +1896,7 @@ class Overlay:
 class Bar:
     """The floating bar above the composer, plus toast, settings and the event pump."""
 
-    W, H = 540, 34
+    W, H = 620, 34
     BG, FG, ACCENT, ERR = "#1f2937", "#e5e7eb", "#93a4c4", "#f87171"
 
     def __init__(self, cfg: dict, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
@@ -1409,6 +1932,11 @@ class Bar:
                                      font=("Segoe UI", 8))
         self.overlay_btn.pack(side="left", padx=(6, 0))
         self.set_overlay_label(cfg.get("overlay", True))
+        self.fileguard_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_file_guard",)),
+                                       bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
+                                       font=("Segoe UI", 8))
+        self.fileguard_btn.pack(side="left", padx=(6, 0))
+        self.set_fileguard_label(cfg.get("fileGuard", True))
         tk.Button(f, text="new session", command=lambda: self.commands.put(("new_session",)),
                   bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
                   font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
@@ -1429,6 +1957,7 @@ class Bar:
         make_no_activate(self.tip)
 
         self.overlay = Overlay(self.root)
+        self.blocker = DropBlocker(self.root)
 
         self.toast_after = None
         self.settings_win = None
@@ -1440,6 +1969,9 @@ class Bar:
 
     def set_guard_label(self, on: bool) -> None:
         self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+
+    def set_fileguard_label(self, on: bool) -> None:
+        self.fileguard_btn.configure(text=f"files: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
 
     def set_overlay_label(self, on: bool) -> None:
         self.overlay_btn.configure(text=f"overlay: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
@@ -1525,6 +2057,10 @@ class Bar:
                     self.overlay.shift(ev["dx"], ev["dy"])
                 elif t == "overlay_state":
                     self.set_overlay_label(ev["on"])
+                elif t == "file_guard":
+                    self.set_fileguard_label(ev["on"])
+                elif t == "block_drop":
+                    self.blocker.show(ev["rect"]) if ev["rect"] else self.blocker.hide()
                 elif t == "tip":
                     self.show_tip(ev["text"], ev["x"], ev["y"])
         except queue.Empty:
@@ -1603,12 +2139,16 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
     cfg = load_config()
-    log(f"start: server={cfg.get('serverUrl')} guard={cfg.get('guard', True)} log={LOG_FILE}")
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    log(f"start: server={cfg.get('serverUrl')} guard={cfg.get('guard', True)} log={LOG_FILE}"
+        + (f" mask={len(args)} file(s)" if args else ""))
     commands: "queue.Queue[tuple]" = queue.Queue()
     events: "queue.Queue[dict]" = queue.Queue()
     Automation(cfg, commands, events).start()
     Hotkeys(cfg, commands, events).start()
     commands.put(("load_vault",))
+    if args:
+        commands.put(("mask_files", args))
     Bar(cfg, commands, events).run()
     return 0
 
