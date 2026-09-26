@@ -306,8 +306,10 @@ def test_tokens_are_placed_when_offsets_disagree_with_the_text(overlay):
 
 
 def test_a_token_no_vault_knows_is_reported(overlay, monkeypatch):
-    """Silence was the whole problem: a token on screen that no vault holds now
-    says so, which separates a lookup miss from a placement failure."""
+    """Silence was the whole problem: a token on screen that no vault holds is
+    named in the walk summary, which separates a lookup miss from a placement
+    failure. It goes in *every* walk line, not once per token, because a warning
+    that fires once has already scrolled away by the time anyone reads the log."""
     said = []
     monkeypatch.setattr(overlay.helper, "log", said.append)
     helper = overlay.helper
@@ -315,7 +317,7 @@ def test_a_token_no_vault_knows_is_reported(overlay, monkeypatch):
     w = overlay.build()
     w.walk(w.doc, helper.SHARED["index"])
     assert [it["tok"] for it in w.items] == ["TOK_PERSON_2615D96E"]
-    assert any("TOK_FINANCIAL_ACCOUNT_52940232" in m and "no known session vault" in m
+    assert any("TOK_FINANCIAL_ACCOUNT_52940232" in m and "NOT IN ANY VAULT" in m
                for m in said), said
 
 
@@ -343,3 +345,19 @@ def test_a_patch_straddling_the_band_edge_is_dropped(overlay):
     drawn = w.events.get_nowait()["items"] or []
     assert all(r[1] >= BAND[1] for r, *_ in drawn)
     assert len(drawn) == len(w.items) - 1
+
+
+def test_every_walk_reports_its_own_outcome(overlay):
+    """A log fragment has to be conclusive on its own."""
+    w = overlay.worker
+    said = []
+    overlay.helper.log, saved = said.append, overlay.helper.log
+    try:
+        w.walk(w.doc, overlay.helper.SHARED["index"])
+        w.walk(w.doc, overlay.helper.SHARED["index"])
+    finally:
+        overlay.helper.log = saved
+    summaries = [m for m in said if "walked" in m]
+    assert len(summaries) == 2
+    for m in summaries:
+        assert "with tokens)" in m and "placed 2" in m

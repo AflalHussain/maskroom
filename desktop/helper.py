@@ -122,6 +122,7 @@ DEFAULTS = {
     "unmask": True,        # hover tooltip + clipboard restore
     "overlay": True,       # paint real values over tokens in replies (experimental)
     "overlayHideOnScroll": False,   # hide while scrolling instead of tracking the scroll
+    "overlayDebug": False,  # log every walked line (to find out why a token was missed)
     "fileGuard": True,     # intercept the file dialog / paste / drop
     "blockDrops": True,    # refuse Explorer drops on Claude (they cannot be masked in flight)
     "filesDir": "",        # where masked copies are written (default: <config>/files)
@@ -1891,6 +1892,8 @@ class OverlayWorker(threading.Thread):
             self.items = []
             return
         items, lines, blind = [], 0, 0
+        unplaced, unknown, token_lines, by_hit = [], [], 0, 0
+        debug = self.cfg.get("overlayDebug")
         while lines < OVERLAY_MAX_LINES and len(items) < OVERLAY_MAX_TOKENS and blind < 30:
             lines += 1
             try:
@@ -1900,30 +1903,44 @@ class OverlayWorker(threading.Thread):
                 break
             if not rects:
                 blind += 1                  # a stretch with no geometry: do not walk forever
+                if debug:
+                    log(f"overlay:   line {lines}: no rect, {text[:60]!r}")
             else:
                 blind = 0
                 r = rects[0]
+                if debug:
+                    log(f"overlay:   line {lines}: y={r.top}..{r.bottom} {text[:60]!r}")
                 if r.top > win.bottom:
                     break                       # walked past the bottom of the view
                 if r.top >= win.top and "TOK_" in text.upper():
+                    token_lines += 1
                     for m in EXACT_RE.finditer(text):
                         tok = m.group(0)
                         value = idx.vault.get(tok)
                         if value is None:
-                            self.warn_once(tok, f"overlay: {tok} is on screen but no known "
-                                                f"session vault holds it")
+                            unknown.append(tok)
                             continue
                         it = self.place(doc, line, (r.left, r.top, r.right, r.bottom),
                                         text, m, value)
-                        if it is not None:
-                            items.append(it)
+                        if it is None:
+                            unplaced.append(tok)
+                            continue
+                        by_hit += it["how"] == "hit test"
+                        items.append(it)
             if line.Move(auto.TextUnit.Line, 1, waitTime=0) != 1:
                 break
             line.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
         self.items = items
         self.last_frame = None
-        log(f"overlay: walked {lines} lines, placed {len(items)} tokens "
-            f"in {(time.perf_counter() - t0) * 1000:.0f} ms"
+        # Every walk says the whole outcome, so any fragment of the log is
+        # conclusive: a one-off warning had already scrolled away by the time
+        # anyone came to read it.
+        log(f"overlay: walked {lines} lines ({token_lines} with tokens), "
+            f"placed {len(items)}"
+            + (f" ({by_hit} by hit test)" if by_hit else "")
+            + (f", UNPLACED {len(unplaced)}: {', '.join(unplaced[:4])}" if unplaced else "")
+            + (f", NOT IN ANY VAULT {len(unknown)}: {', '.join(unknown[:4])}" if unknown else "")
+            + f" in {(time.perf_counter() - t0) * 1000:.0f} ms"
             + (f"; style {items[0]['style']}" if items else ""))
 
     def warn_once(self, key: str, message: str) -> None:
@@ -1957,7 +1974,7 @@ class OverlayWorker(threading.Thread):
         except Exception:  # noqa: BLE001
             return None
 
-    def item(self, rng, tok: str, value: str) -> dict | None:
+    def item(self, rng, tok: str, value: str, how: str) -> dict | None:
         try:
             rects = rng.GetBoundingRectangles()
         except Exception:  # noqa: BLE001
@@ -1967,7 +1984,7 @@ class OverlayWorker(threading.Thread):
         r = rects[0]              # a token wrapped over two lines gets its first part
         if r.right - r.left < 8 or r.bottom - r.top < 6:
             return None
-        return {"range": rng, "value": value, "tok": tok, "bg": None,
+        return {"range": rng, "value": value, "tok": tok, "bg": None, "how": how,
                 "rect": (r.left, r.top, r.right, r.bottom),
                 "style": self.range_style(rng)}
 
@@ -1991,14 +2008,18 @@ class OverlayWorker(threading.Thread):
         tok = m.group(0)
         rng = self.range_at(line, m.start(), len(tok))
         if rng is not None and self.text_of(rng).upper() == tok.upper():
-            return self.item(rng, tok, value)
+            it = self.item(rng, tok, value, "count")
+            if it is not None:
+                return it
         word = self.hit_test(doc, line_rect, text, m, tok)
         if word is not None:
-            self.warn_once("hittest", "overlay: character offsets disagree with the line text on "
-                                      "some lines (bold or a list marker); placing by hit test")
-            return self.item(word, tok, value)
-        self.warn_once(tok, f"overlay: could not place {tok} at offset {m.start()} in its line; "
-                            f"counted to {self.text_of(rng)[:30]!r}")
+            it = self.item(word, tok, value, "hit test")
+            if it is not None:
+                return it
+        if self.cfg.get("overlayDebug"):
+            log(f"overlay:   {tok} at offset {m.start()} in {text[:60]!r}: "
+                f"counting reached {self.text_of(rng)[:30]!r}, hit test "
+                f"{'found nothing' if word is None else 'gave no usable rectangle'}")
         return None
 
     def hit_test(self, doc, line_rect, text: str, m, tok: str):
@@ -2413,6 +2434,9 @@ class Bar:
         hide_scroll = tk.BooleanVar(value=self.cfg.get("overlayHideOnScroll", False))
         tk.Checkbutton(w, text="Hide the overlay while scrolling (instead of following the scroll)",
                        variable=hide_scroll).grid(row=6, column=0, columnspan=2, sticky="w", **pad)
+        ov_debug = tk.BooleanVar(value=self.cfg.get("overlayDebug", False))
+        tk.Checkbutton(w, text="Log every line the overlay walks (diagnostics; noisy)",
+                       variable=ov_debug).grid(row=8, column=0, columnspan=2, sticky="w", **pad)
         block_drops = tk.BooleanVar(value=self.cfg.get("blockDrops", True))
         tk.Checkbutton(w, text="Refuse files dropped from Explorer (they cannot be masked in flight; "
                                "the paperclip can)", variable=block_drops).grid(
@@ -2426,7 +2450,7 @@ class Bar:
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
             row=4, column=0, columnspan=2, sticky="w", **pad)
         btns = tk.Frame(w)
-        btns.grid(row=8, column=0, columnspan=2, sticky="e", **pad)
+        btns.grid(row=9, column=0, columnspan=2, sticky="e", **pad)
 
         def apply():
             self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
@@ -2434,6 +2458,7 @@ class Bar:
             self.cfg["preamble"] = bool(pre.get())
             self.cfg["overlayHideOnScroll"] = bool(hide_scroll.get())
             self.cfg["blockDrops"] = bool(block_drops.get())
+            self.cfg["overlayDebug"] = bool(ov_debug.get())
             save_config(self.cfg)
 
         def test():

@@ -126,6 +126,31 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
   `X-API-Key` for the legacy key, and the `/api/session`, `/api/mask`, `/api/unmask`,
   `/api/me`, `/auth/logout` routes.
 
+## Diagnosing the overlay
+
+Every walk reports its whole outcome, so any fragment of `%APPDATA%\Maskroom\helper.log`
+is conclusive:
+
+```
+overlay: walked 58 lines (6 with tokens), placed 13 (2 by hit test), UNPLACED 1: TOK_PERSON_3669FE1A in 404 ms; style {...}
+```
+
+- `UNPLACED` — the token was found in a line but neither counting characters nor hit
+  testing could pin it down. 
+- `NOT IN ANY VAULT` — the token is on screen but no known session holds it, which is a
+  session problem, not a placement one.
+- Named in neither, and not painted — the line it sits on was never walked.
+
+For that last case turn on *Log every line the overlay walks* in settings
+(`overlayDebug`), reproduce, and the log lists each walked line with its y range and text,
+plus why a token on it could not be placed. It is noisy; turn it off afterwards.
+
+Copy the log with `Copy-Item` rather than redirecting it, or the line breaks are lost:
+
+```powershell
+Copy-Item $env:APPDATA\Maskroom\helper.log $HOME\Desktop\helper.log
+```
+
 ## Next steps (from the research doc, §8.2)
 
 1. Guard the Send button too: a `WH_MOUSE_LL` hook hit-tested against the button's UIA
