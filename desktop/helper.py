@@ -137,6 +137,7 @@ OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
 OVERLAY_WALK_MIN_S = 0.30   # never re-walk the visible lines more often than this
 OVERLAY_WALK_MAX_S = 1.50   # but do walk at least this often while tokens are on screen
 OVERLAY_MAX_LINES = 250     # safety cap on the line walk
+PANE_REFRESH_S = 3.0        # how often the set of text panes is re-found
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
           "blocking_since": 0.0, "index": None, "composer_rect": None,
           "dialog_confirm_rect": None, "dialog_list_rect": None}
@@ -561,6 +562,41 @@ class Box:
 
     def __repr__(self):
         return f"Box({self.left},{self.top},{self.right},{self.bottom})"
+
+
+def find_text_panes(limit=4, min_area=20000):
+    """Every text-bearing pane under a Claude window, largest first.
+
+    Claude renders a file or artifact preview in its own pane, so restoring only
+    the biggest one leaves previews showing raw tokens. Panes are chosen by
+    rectangle rather than by how much text they hold, which keeps discovery free
+    of a GetText call per candidate.
+    """
+    panes = []
+    for w in auto.GetRootControl().GetChildren():
+        try:
+            if w.ClassName != "Chrome_WidgetWin_1" or process_exe(w.ProcessId) != CLAUDE_EXE:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        stack = [(w, 0)]
+        while stack:
+            c, depth = stack.pop()
+            if depth > 12:
+                continue
+            try:
+                tp = c.GetPattern(auto.PatternId.TextPattern)
+                if tp is not None:
+                    r = c.BoundingRectangle
+                    area = (r.right - r.left) * (r.bottom - r.top)
+                    if area >= min_area:
+                        panes.append((area, tp, c, w))
+                    continue
+                stack.extend((k, depth + 1) for k in c.GetChildren())
+            except Exception:  # noqa: BLE001
+                continue
+    panes.sort(key=lambda p: -p[0])
+    return [(tp, c, w) for _area, tp, c, w in panes[:limit]]
 
 
 def find_page_document():
@@ -2013,8 +2049,7 @@ class OverlayWorker(threading.Thread):
         super().__init__(name="overlay", daemon=True)
         self.cfg = cfg
         self.events = events
-        self.doc = None
-        self.win = None
+        self.panes = []               # [(TextPattern, element, window)] - conversation + previews
         self.doc_checked = 0.0
         self.items: list[dict] = []   # {"range", "value", "tok", "rect", "bg", "style"}
         self.last_frame = None
@@ -2037,7 +2072,7 @@ class OverlayWorker(threading.Thread):
                     self.tick()
                 except Exception as e:  # noqa: BLE001 - never let the thread die
                     log(f"overlay error {type(e).__name__}: {e}")
-                    self.doc = None
+                    self.panes = []
                     self.hide()
 
     def hide(self) -> None:
@@ -2046,19 +2081,23 @@ class OverlayWorker(threading.Thread):
             self.last_frame = None
             self.events.put({"type": "overlay", "items": None})
 
-    def document(self):
-        if self.doc is not None:
-            return self.doc
-        if time.time() - self.doc_checked < 2.0:
-            return None
-        self.doc_checked = time.time()
-        self.doc, _ctrl, self.win = find_page_document()
-        log(f"overlay: page document {'found' if self.doc else 'not found'}")
-        self.items = []
-        self.warned.clear()
-        self.clip = None
-        self.composer = None
-        return self.doc
+    def documents(self):
+        """The panes to walk, re-found periodically: a preview opens and closes
+        while the helper is running."""
+        now = time.time()
+        if self.panes and now - self.doc_checked < PANE_REFRESH_S:
+            return self.panes
+        if not self.panes and now - self.doc_checked < 2.0:
+            return self.panes
+        self.doc_checked = now
+        found = find_text_panes()
+        if len(found) != len(self.panes):
+            log(f"overlay: {len(found)} text pane(s) in Claude")
+            self.items = []
+            self.warned.clear()
+            self.composer = None
+        self.panes = found
+        return self.panes
 
     # ---- where painting is allowed
     def conversation_scroller(self, win):
@@ -2157,14 +2196,14 @@ class OverlayWorker(threading.Thread):
         if foreground_exe() != CLAUDE_EXE:
             self.hide()
             return
-        doc = self.document()
-        if doc is None:
+        panes = self.documents()
+        if not panes:
             self.hide()
             return
         try:
-            self.update_clip(self.win.BoundingRectangle)
+            self.update_clip(panes[0][2].BoundingRectangle)
         except Exception:  # noqa: BLE001
-            self.doc = None
+            self.panes = []
             self.hide()
             return
         now = time.time()
@@ -2179,7 +2218,7 @@ class OverlayWorker(threading.Thread):
             return
         if not scrolling and (since > OVERLAY_WALK_MAX_S
                               or (since > OVERLAY_WALK_MIN_S and (moved or not self.items))):
-            self.walk(doc, idx)
+            self.walk_all(panes, idx)
         self.emit_frame()
 
     def refresh_rects(self) -> bool:
@@ -2252,20 +2291,40 @@ class OverlayWorker(threading.Thread):
             line = probe
         return line
 
-    def walk(self, doc, idx) -> None:
+    def walk_all(self, panes, idx) -> None:
+        """Walk every pane. The conversation is bounded by the paint band; a
+        preview pane is bounded by its own rectangle, since it sits outside the
+        conversation's scroller entirely."""
         t0 = time.perf_counter()
+        items, notes = [], []
+        for n, (tp, ctrl, _win) in enumerate(panes):
+            try:
+                r = ctrl.BoundingRectangle
+                pane = (r.left, r.top, r.right, r.bottom)
+            except Exception:  # noqa: BLE001
+                self.panes = []
+                continue
+            band = self.clip if n == 0 else pane
+            if self.clip is not None:                 # never paint over the composer
+                band = (band[0], band[1], band[2], min(band[3], self.clip[3]))
+            found, note = self.walk(tp, idx, band)
+            items.extend(found)
+            notes.append(note)
+        self.items = items
+        self.last_frame = None
         self.walked_at = time.time()
-        band = self.clip
+        log(f"overlay: {len(panes)} pane(s), placed {len(items)} in "
+            f"{(time.perf_counter() - t0) * 1000:.0f} ms | " + " | ".join(notes))
+
+    def walk(self, doc, idx, band) -> tuple[list, str]:
+        """Tokens on the visible lines of one pane, and a note for the log."""
         if band is None:
-            return
+            return [], "no band"
         win = Box(*band)
+        t0 = time.perf_counter()
         line = self.first_visible_line(doc, win)
         if line is None:
-            if "noline" not in self.warned:
-                self.warned.add("noline")
-                log("overlay: no visible line found; overlay idle")
-            self.items = []
-            return
+            return [], "no visible line"
         items, lines, blind = [], 0, 0
         unplaced, unknown, covered, token_lines, by_hit = [], [], [], 0, 0
         debug = self.cfg.get("overlayDebug")
@@ -2305,19 +2364,14 @@ class OverlayWorker(threading.Thread):
             if line.Move(auto.TextUnit.Line, 1, waitTime=0) != 1:
                 break
             line.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
-        self.items = items
-        self.last_frame = None
-        # Every walk says the whole outcome, so any fragment of the log is
+        # Every walk says its whole outcome, so any fragment of the log is
         # conclusive: a one-off warning had already scrolled away by the time
         # anyone came to read it.
-        log(f"overlay: walked {lines} lines ({token_lines} with tokens), "
-            f"placed {len(items)}"
-            + (f" ({by_hit} by hit test)" if by_hit else "")
-            + (f", {len(covered)} behind a panel" if covered else "")
-            + (f", UNPLACED {len(unplaced)}: {', '.join(unplaced[:4])}" if unplaced else "")
-            + (f", NOT IN ANY VAULT {len(unknown)}: {', '.join(unknown[:4])}" if unknown else "")
-            + f" in {(time.perf_counter() - t0) * 1000:.0f} ms"
-            + (f"; style {items[0]['style']}" if items else ""))
+        return items, (f"{lines} lines ({token_lines} with tokens), placed {len(items)}"
+                       + (f" ({by_hit} by hit test)" if by_hit else "")
+                       + (f", {len(covered)} behind a panel" if covered else "")
+                       + (f", UNPLACED: {', '.join(unplaced[:4])}" if unplaced else "")
+                       + (f", NOT IN ANY VAULT: {', '.join(unknown[:4])}" if unknown else ""))
 
     def warn_once(self, key: str, message: str) -> None:
         if key not in self.warned:
@@ -2482,14 +2536,19 @@ class OverlayWorker(threading.Thread):
 
     # ---- drawing
     def emit_frame(self) -> None:
-        try:
-            w = self.win.BoundingRectangle
-        except Exception:  # noqa: BLE001
-            self.doc = None
+        if not self.panes:
             self.hide()
             return
-        band = self.clip or (w.left, w.top, w.right, w.bottom)
-        bl, bt, br, bb = band
+        try:
+            w = self.panes[0][2].BoundingRectangle
+        except Exception:  # noqa: BLE001
+            self.panes = []
+            self.hide()
+            return
+        # The window, not the conversation band: a preview pane sits outside it.
+        bl, bt, br, bb = w.left, w.top, w.right, w.bottom
+        if self.clip is not None:
+            bb = min(bb, self.clip[3])
         frame = []
         for it in self.items:
             rect = it["rect"]
