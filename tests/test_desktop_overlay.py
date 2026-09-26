@@ -142,6 +142,15 @@ class FakeDoc:
     def DocumentRange(self):
         return FakeRange(self.lines, 0, drift=self.drift)
 
+    def ControlFromPoint(self, x, y):
+        for (l, t, r, b), name in PANELS:
+            if l <= x <= r and t <= y <= b:
+                return FakeControl(name)
+        for text, ly in self.lines:
+            if ly <= y <= ly + LINE_H:
+                return FakeControl(text)
+        return None
+
     def RangeFromPoint(self, x, y):
         """Honest geometry: the character under the point, and for a point in a
         gap the nearest line, as a real hit test gives. Hit testing is the
@@ -160,6 +169,24 @@ class FakeWin:
         self.BoundingRectangle = Rect(*rect)
 
 
+class FakeControl:
+    """What a screen-point hit returns: either conversation text, whose name
+    carries the line, or a floating panel, whose name is its own."""
+
+    def __init__(self, name, parent=None):
+        self.Name, self._parent = name, parent
+
+    def GetParentControl(self):
+        return self._parent
+
+
+PANELS = [                       # float over the conversation, which scrolls under them
+    ((0, 0, 1000, 90), "Overdue loan account reminders"),        # the header
+    ((100, 580, 1000, 630), "You've used 75% of your weekly limit"),   # a usage banner
+    ((100, 690, 900, 730), "Reply"),                             # the composer
+]
+
+
 def _fake_uia():
     m = types.ModuleType("uiautomation")
     m.Rect, m.TextUnit, m.TextPatternRangeEndpoint = Rect, _TextUnit, _Endpoint
@@ -171,7 +198,7 @@ def _fake_uia():
     m.SendKeys = lambda *a, **k: None
     m.GetFocusedControl = lambda: None
     m.GetRootControl = lambda: None
-    m.ControlFromPoint = lambda x, y: None
+    m.ControlFromPoint = lambda x, y: None      # replaced per test by the fake page
     m.UIAutomationInitializerInThread = lambda *a, **k: None
     return m
 
@@ -207,6 +234,7 @@ def overlay(monkeypatch):
         worker = helper.OverlayWorker({"overlay": True}, queue.Queue())
         worker.doc, worker.win = FakeDoc(lines, drift=drift), FakeWin(WINDOW)
         worker.clip, worker.clip_at = clip, float("inf")   # pin the band; tick() recomputes it
+        monkeypatch.setattr(helper.auto, "ControlFromPoint", worker.doc.ControlFromPoint)
         return worker
 
     ns = types.SimpleNamespace(helper=helper, lines=lines, build=build)
@@ -361,3 +389,32 @@ def test_every_walk_reports_its_own_outcome(overlay):
     assert len(summaries) == 2
     for m in summaries:
         assert "with tokens)" in m and "placed 2" in m
+
+
+def test_a_token_under_a_floating_panel_is_not_painted(overlay):
+    """The header, a usage banner and the composer float over the conversation,
+    which keeps scrolling under them, so they sit inside the scroller's own
+    rectangle and no band can exclude them. Asking what is on top does."""
+    helper = overlay.helper
+    overlay.lines.append(["Behind the usage banner: TOK_PERSON_2615D96E", 595])
+    w = overlay.build(clip=(0, 0, 1000, 740))      # deliberately no band at all
+    w.walk(w.doc, helper.SHARED["index"])
+    painted = [(it["tok"], it["rect"][1]) for it in w.items]
+    assert all(y != 595 for _tok, y in painted), painted
+    assert any(y == 120 for _tok, y in painted), "visible tokens must still be painted"
+
+
+def test_covered_tokens_are_reported_apart_from_unplaced_ones(overlay):
+    """They need different fixes, so the log must not conflate them."""
+    helper = overlay.helper
+    overlay.lines.append(["Behind the usage banner: TOK_PERSON_2615D96E", 595])
+    said = []
+    helper.log, saved = said.append, helper.log
+    try:
+        w = overlay.build(clip=(0, 0, 1000, 740))
+        w.walk(w.doc, helper.SHARED["index"])
+    finally:
+        helper.log = saved
+    summary = next(m for m in said if "walked" in m)
+    assert "behind a panel" in summary, summary
+    assert "UNPLACED" not in summary, summary      # a covered token is not a placement fault

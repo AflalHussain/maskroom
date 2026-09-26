@@ -1654,6 +1654,7 @@ class OverlayWorker(threading.Thread):
         self.clip_at = 0.0
         self.composer = None          # the composer element, focused or not
         self.composer_at = 0.0
+        self.covered = False          # last placement failed because something covered it
 
     # ---- plumbing
     def run(self) -> None:
@@ -1707,7 +1708,7 @@ class OverlayWorker(threading.Thread):
                     sp = ctrl.GetPattern(auto.PatternId.ScrollPattern)
                     if sp is not None and sp.VerticallyScrollable:
                         r = ctrl.BoundingRectangle
-                        if r.bottom - r.top > 80:
+                        if r.bottom - r.top > 200 and r.right - r.left > 200:
                             return r
                     ctrl = ctrl.GetParentControl()
                 except Exception:  # noqa: BLE001
@@ -1742,8 +1743,10 @@ class OverlayWorker(threading.Thread):
                     break
                 try:
                     if COMPOSER_CLASS_HINT in (ctrl.ClassName or ""):
-                        self.composer = ctrl
                         r = ctrl.BoundingRectangle
+                        if r.top < (win.top + win.bottom) // 2:
+                            break            # not the composer: it sits low in the window
+                        self.composer = ctrl
                         log(f"overlay: composer at {(r.left, r.top, r.right, r.bottom)}")
                         return (r.left, r.top, r.right, r.bottom)
                     ctrl = ctrl.GetParentControl()
@@ -1892,7 +1895,7 @@ class OverlayWorker(threading.Thread):
             self.items = []
             return
         items, lines, blind = [], 0, 0
-        unplaced, unknown, token_lines, by_hit = [], [], 0, 0
+        unplaced, unknown, covered, token_lines, by_hit = [], [], [], 0, 0
         debug = self.cfg.get("overlayDebug")
         while lines < OVERLAY_MAX_LINES and len(items) < OVERLAY_MAX_TOKENS and blind < 30:
             lines += 1
@@ -1923,7 +1926,7 @@ class OverlayWorker(threading.Thread):
                         it = self.place(doc, line, (r.left, r.top, r.right, r.bottom),
                                         text, m, value)
                         if it is None:
-                            unplaced.append(tok)
+                            (covered if self.covered else unplaced).append(tok)
                             continue
                         by_hit += it["how"] == "hit test"
                         items.append(it)
@@ -1938,6 +1941,7 @@ class OverlayWorker(threading.Thread):
         log(f"overlay: walked {lines} lines ({token_lines} with tokens), "
             f"placed {len(items)}"
             + (f" ({by_hit} by hit test)" if by_hit else "")
+            + (f", {len(covered)} behind a panel" if covered else "")
             + (f", UNPLACED {len(unplaced)}: {', '.join(unplaced[:4])}" if unplaced else "")
             + (f", NOT IN ANY VAULT {len(unknown)}: {', '.join(unknown[:4])}" if unknown else "")
             + f" in {(time.perf_counter() - t0) * 1000:.0f} ms"
@@ -1974,6 +1978,33 @@ class OverlayWorker(threading.Thread):
         except Exception:  # noqa: BLE001
             return None
 
+    def on_top(self, rect, tok: str) -> bool:
+        """Is the conversation text the thing actually visible at this point?
+
+        Claude's header, its usage banners and its composer float *over* the
+        conversation, which keeps scrolling underneath them, so they are inside
+        the scroller's rectangle and no band can exclude them. Asking which
+        element is at the point answers it directly, whatever is floating:
+        the element under a visible token carries the token in its name, and
+        the element under a covered one belongs to whatever covers it.
+        """
+        x, y = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+        try:
+            ctrl = auto.ControlFromPoint(x, y)
+        except Exception:  # noqa: BLE001
+            return True                       # cannot tell; leave it visible
+        needle = tok.upper()
+        for _ in range(3):                    # the text may be named on an ancestor
+            if ctrl is None:
+                break
+            try:
+                if needle in (ctrl.Name or "").upper():
+                    return True
+                ctrl = ctrl.GetParentControl()
+            except Exception:  # noqa: BLE001
+                return True
+        return False
+
     def item(self, rng, tok: str, value: str, how: str) -> dict | None:
         try:
             rects = rng.GetBoundingRectangles()
@@ -1983,6 +2014,9 @@ class OverlayWorker(threading.Thread):
             return None
         r = rects[0]              # a token wrapped over two lines gets its first part
         if r.right - r.left < 8 or r.bottom - r.top < 6:
+            return None
+        if not self.on_top((r.left, r.top, r.right, r.bottom), tok):
+            self.covered = True               # something floats over it; not a placement fault
             return None
         return {"range": rng, "value": value, "tok": tok, "bg": None, "how": how,
                 "rect": (r.left, r.top, r.right, r.bottom),
@@ -2006,6 +2040,7 @@ class OverlayWorker(threading.Thread):
         outwards from there until the word under the point is the token.
         """
         tok = m.group(0)
+        self.covered = False
         rng = self.range_at(line, m.start(), len(tok))
         if rng is not None and self.text_of(rng).upper() == tok.upper():
             it = self.item(rng, tok, value, "count")
