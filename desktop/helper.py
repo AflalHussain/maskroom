@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import collections
 import json
 import os
 import queue
@@ -140,6 +141,7 @@ MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt",
 MAX_UPLOAD = 25 * 1024 * 1024
 DIALOG_POLL_S = 0.4
 DIALOG_CLASSES = ("#32770", "Shell Dialog", "OperationStatusWindow")
+OPEN_BUTTONS = ("open", "ok", "attach", "select", "choose")   # never "save": that is a download
 TIP_MAX_CHARS = 400
 SIGNIN_TIMEOUT_S = 300
 CLAUDE_EXE = "claude.exe"
@@ -606,7 +608,10 @@ class Automation(threading.Thread):
         self.claude_win = None        # top-level Claude window (overlay covers it)
         self.files = FileApi(self.server)
         self.dialog = None            # the open file dialog, while Claude has one
+        self.dialog_edit = None
+        self.dialog_confirm = None
         self.dialog_seen = 0.0
+        self.dialog_said = ""
         self.seen_classes: set[str] = set()
         self.masked_paths: set[str] = set()   # our own outputs: never re-masked
 
@@ -1142,25 +1147,42 @@ class Automation(threading.Thread):
 
     @staticmethod
     def dialog_parts(dlg):
-        """(file-name edit, confirm button) of a Windows common file dialog."""
-        edit = confirm = None
-        for c in dlg.GetChildren():
+        """(file-name edit, confirm button) of a Windows file dialog.
+
+        Searched breadth-first through the whole dialog, not among its direct
+        children: in the modern dialog the File name box sits several levels
+        down, which is why an earlier version reported it missing on every
+        opening and let every pick through unmasked.
+        """
+        edit, confirm, edit_score = None, None, -1
+        queue_, seen = collections.deque([(dlg, 0)]), 0
+        while queue_ and seen < 600:
+            c, depth = queue_.popleft()
+            seen += 1
             try:
-                t, name = c.ControlTypeName, (c.Name or "")
+                kind, name, aid = c.ControlTypeName, (c.Name or ""), (c.AutomationId or "")
             except Exception:  # noqa: BLE001
                 continue
-            if edit is None and t == "ComboBoxControl":
-                for k in c.GetChildren():           # the editable part of the combo
-                    try:
-                        if k.ControlTypeName == "EditControl":
-                            edit = k
-                            break
-                    except Exception:  # noqa: BLE001
-                        pass
-            if edit is None and t == "EditControl":
-                edit = c
-            if confirm is None and t == "ButtonControl" and name.strip().strip("&").lower() in ("open", "ok", "attach", "select"):
-                confirm = c
+            if kind == "EditControl":
+                low = name.lower()
+                if aid == "1148":
+                    score = 3                     # the classic File name control id
+                elif "file name" in low or "filename" in low:
+                    score = 2
+                else:
+                    score = 1 if depth > 0 else 0
+                if score > edit_score:
+                    edit, edit_score = c, score
+            elif kind == "ButtonControl" and confirm is None:
+                if name.strip().strip("&").lower() in OPEN_BUTTONS:
+                    confirm = c
+            if edit_score >= 2 and confirm is not None:
+                break
+            if depth < 10:
+                try:
+                    queue_.extend((k, depth + 1) for k in c.GetChildren())
+                except Exception:  # noqa: BLE001
+                    pass
         return edit, confirm
 
     def dialog_paths(self, dlg, edit) -> list[str]:
@@ -1235,17 +1257,36 @@ class Automation(threading.Thread):
         if dlg is None:
             if self.dialog is not None:
                 log("file dialog closed")
-            self.dialog = None
+            self.dialog = self.dialog_edit = self.dialog_confirm = None
             SHARED["dialog_open"] = False
             return
-        if self.dialog is None:
-            edit, confirm = self.dialog_parts(dlg)
-            log(f"file dialog open: name={(dlg.Name or '')[:40]!r} "
-                f"file-name box {'found' if edit is not None else 'NOT FOUND'}, "
-                f"confirm button {(confirm.Name if confirm is not None else 'NOT FOUND')!r}")
-            self.toast("File dialog: the file you pick will be masked before Claude sees it.")
         self.dialog = dlg
+        if self.dialog_edit is None:
+            # Retried on every poll: a dialog that has just appeared is not
+            # fully built, and one failed look used to disarm the guard for good.
+            edit, confirm = self.dialog_parts(dlg)
+            if edit is None:
+                SHARED["dialog_open"] = False
+                self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} but no "
+                                 f"File name box yet")
+                return
+            if confirm is None:
+                SHARED["dialog_open"] = False     # a Save dialog, or one we do not understand
+                self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} with no "
+                                 f"Open button; left alone")
+                return
+            self.dialog_edit, self.dialog_confirm = edit, confirm
+            log(f"file dialog ready: name={(dlg.Name or '')[:40]!r} "
+                f"box={(edit.Name or edit.AutomationId or 'edit')!r} "
+                f"button={(confirm.Name or '')!r}")
+            self.toast("File dialog: the file you pick will be masked before Claude sees it.")
         SHARED["dialog_open"] = True
+
+    def warn_dialog(self, message: str) -> None:
+        """Say it once per distinct message, not once per poll."""
+        if message != self.dialog_said:
+            self.dialog_said = message
+            log(message)
 
     def cmd_dialog_confirm(self, pressed_at: float) -> None:
         """The hook swallowed a confirm (Enter, a click on Open, or a double
@@ -1255,7 +1296,9 @@ class Automation(threading.Thread):
             SHARED["dialog_open"] = False
             log("file guard: confirm arrived but the dialog is gone")
             return
-        edit, confirm = self.dialog_parts(dlg)
+        edit, confirm = self.dialog_edit, self.dialog_confirm
+        if edit is None:
+            edit, confirm = self.dialog_parts(dlg)
         if edit is None:
             log("file guard: no File name box found; letting the dialog through")
             self.dialog_replay(dlg, confirm)

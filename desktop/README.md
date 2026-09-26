@@ -100,7 +100,11 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
 - **tkinter main thread** (`Bar`): the floating bar (`WS_EX_NOACTIVATE`, so clicking
   it leaves focus in Claude), toasts, and the settings window. Reads an event queue;
   never touches UIA.
-- **Files**: the dialog is found from `GetForegroundWindow` plus its Win32 class, and a
+- **Files**: the dialog is found from `GetForegroundWindow` plus its Win32 class; its
+  *File name* box and *Open* button are searched breadth-first through the whole dialog,
+  because in the modern dialog they are not direct children, and the search is retried on
+  every poll until both are there, since a dialog that has just appeared is not yet built.
+  A dialog with no Open button (a Save dialog) is left alone. A
   double-clicked file is read from the list's selection when the *File name* box has not
   filled in yet. `FileApi` posts a hand-rolled multipart body to `/api/process` and fetches the
   result from `/api/download/<run>/<name>` (the same contract `extension/background.js`
