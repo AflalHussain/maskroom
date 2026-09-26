@@ -23,7 +23,9 @@ helper watches it. Confirming a supported file (.xlsx .xlsm .pdf .docx .pptx
 (POST /api/process), the masked copy is written to the Maskroom files folder,
 its path is typed into the dialog's File name box and the confirm is
 replayed, so Claude attaches the masked copy and never sees the original.
-An unsupported type is refused with a note. Explorer drag-and-drop onto
+A type Maskroom cannot mask (an image, an archive) is attached as it is with
+a warning on the bar, as the extension does; only a supported type that
+*should* have been masked and could not holds the attachment. Explorer drag-and-drop onto
 Claude is blocked (the overlay window takes the drop and rejects it) so files
 go through the paperclip; Ctrl+V of files is intercepted the same way as the
 dialog.
@@ -129,7 +131,8 @@ DEFAULTS = {
 OVERLAY_TEXT_S = 0.5       # how often the page text is re-read for new tokens
 SCROLL_TICK_S = 0.02       # anchor poll while scrolling
 SCROLL_SETTLE_S = 0.15     # no movement for this long = scroll over
-SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False}
+SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
+          "blocking_since": 0.0}
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
@@ -1203,14 +1206,23 @@ class Automation(threading.Thread):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def mask_file(self, path: str) -> tuple[str | None, str]:
-        """Mask one file through the server. Returns (masked path, message)."""
+    def mask_file(self, path: str) -> tuple[str, str | None, str]:
+        """Mask one file through the server. Returns (status, path to attach, message):
+
+          "masked"    the masked copy; the original never leaves the machine
+          "unmasked"  Maskroom cannot mask this type (an image, an archive…), so
+                      the original is attached and the user is warned - the same
+                      choice the extension makes
+          "skip"      nothing to do (not a file); left to the dialog
+          "failed"    a type we should have masked but could not; the send is
+                      held, because attaching it would leak what we exist to hide
+        """
         src = Path(path)
         if not src.is_file():
-            return None, f"{src.name}: not a file"
+            return "skip", str(src), f"{src.name}: not a file; left to the dialog"
         ext = src.suffix.lower()
         if ext not in MASK_EXTS:
-            return None, f"{src.name}: {ext or 'no extension'} cannot be masked (allowed: {', '.join(MASK_EXTS)})"
+            return "unmasked", str(src), f"{src.name}: {ext or 'no extension'} cannot be masked, attached as it is"
         sid = self.ensure_session()
         fields = {"session_id": sid, "pdf_mode": "text", "preview": "false"}
         r = self.files.process(str(src), fields)
@@ -1219,12 +1231,12 @@ class Automation(threading.Thread):
             fields["session_id"] = self.ensure_session()
             r = self.files.process(str(src), fields)
         if not r["ok"]:
-            return None, f"{src.name}: {r['error']}"
+            return "failed", None, f"{src.name}: {r['error']}"
         d = r["data"] or {}
         out_name = ((d.get("downloads") or {}).get("output")) or src.name
         blob, err = self.files.download(d["run_id"], out_name)
         if blob is None:
-            return None, f"{src.name}: could not fetch the masked copy ({err})"
+            return "failed", None, f"{src.name}: could not fetch the masked copy ({err})"
         stem = src.stem
         out = self.files_dir() / f"{stem}_masked{Path(out_name).suffix or ext}"
         n = 1
@@ -1235,18 +1247,36 @@ class Automation(threading.Thread):
         self.masked_paths.add(str(out).lower())
         self.load_vault(fields["session_id"])
         found = len(d.get("findings") or [])
-        return str(out), f"{src.name}: {found} value{'' if found == 1 else 's'} masked"
+        return "masked", str(out), f"{src.name}: {found} value{'' if found == 1 else 's'} masked"
 
-    def mask_many(self, paths: list[str]) -> tuple[list[str], list[str]]:
-        ok, bad = [], []
+    def mask_many(self, paths: list[str]) -> tuple[list[str], list[str], list[str]]:
+        """(paths to attach, names going out unmasked, failures that must hold)."""
+        attach, unmasked, failed = [], [], []
         for p in paths:
             if str(p).lower() in self.masked_paths:
-                ok.append(p)                       # already ours
+                attach.append(p)                   # already one of ours
                 continue
-            out, msg = self.mask_file(p)
-            (ok if out else bad).append(out or msg)
+            status, out, msg = self.mask_file(p)
             log(f"file guard: {msg}")
-        return ok, bad
+            if status == "failed":
+                failed.append(msg)
+                continue
+            attach.append(out)
+            if status == "unmasked":
+                unmasked.append(Path(p).name)
+        return attach, unmasked, failed
+
+    @staticmethod
+    def attach_summary(attach: list[str], unmasked: list[str]) -> tuple[str, bool]:
+        """(message, warn) for a set of files about to be attached."""
+        n = len(attach) - len(unmasked)
+        bits = []
+        if n:
+            bits.append(f"masked {n} file{'' if n == 1 else 's'}")
+        if unmasked:
+            bits.append(f"attached unmasked: {', '.join(unmasked[:3])}"
+                        + (f" and {len(unmasked) - 3} more" if len(unmasked) > 3 else ""))
+        return ("; ".join(bits) or "nothing to mask"), bool(unmasked)
 
     # ---- the Windows file dialog Claude opens for its paperclip
     def find_dialog(self):
@@ -1356,14 +1386,23 @@ class Automation(threading.Thread):
             return
         self.emit(type="busy", busy=True)
         try:
-            ok, bad = self.mask_many([p for p in paths if not Path(p).is_dir()])
+            attach, unmasked, failed = self.mask_many([p for p in paths if not Path(p).is_dir()])
         finally:
             self.emit(type="busy", busy=False)
-        if bad:
-            self.toast("; ".join(bad[:2]) + (" — pick a supported file" if not ok else ""), error=True)
-            if not ok:
-                return                                # dialog stays open for another try
-        value = " ".join(f'"{p}"' for p in ok) if len(ok) > 1 else ok[0]
+        if failed:
+            self.toast("; ".join(failed[:2]) + " — attachment held. Fix this, or switch the "
+                       "file guard off to attach as it is.", error=True)
+            return                                    # dialog stays open for another try
+        if not attach:
+            self.dialog_replay(dlg, confirm)
+            return
+        msg, warn = self.attach_summary(attach, unmasked)
+        if len(attach) - len(unmasked) == 0:
+            # Nothing was masked (all images or the like): confirm the user's own pick.
+            self.toast(msg + ".", error=True)
+            self.dialog_replay(dlg, confirm)
+            return
+        value = " ".join(f'"{p}"' for p in attach) if len(attach) > 1 else attach[0]
         try:
             edit.GetPattern(auto.PatternId.ValuePattern).SetValue(value)
         except Exception as e:  # noqa: BLE001
@@ -1371,8 +1410,7 @@ class Automation(threading.Thread):
                        f"Pick it from {self.files_dir()}", error=True)
             log(f"file guard: SetValue failed: {e}")
             return
-        self.toast(f"Masked {len(ok)} file{'' if len(ok) == 1 else 's'} — attaching the masked cop"
-                   f"{'y' if len(ok) == 1 else 'ies'}.")
+        self.toast(msg + ".", error=warn)
         self.dialog_replay(dlg, confirm)
 
     def dialog_replay(self, dlg, confirm) -> None:
@@ -1398,19 +1436,20 @@ class Automation(threading.Thread):
             return
         self.emit(type="busy", busy=True)
         try:
-            ok, bad = self.mask_many(paths)
+            attach, unmasked, failed = self.mask_many(paths)
         finally:
             self.emit(type="busy", busy=False)
-        if bad and not ok:
-            self.toast("; ".join(bad[:2]), error=True)
+        if failed:
+            self.toast("; ".join(failed[:2]) + " — paste held.", error=True)
             return
-        if not set_clipboard_files(ok):
-            self.toast(f"Masked, but the clipboard would not take the files. "
-                       f"Attach them from {self.files_dir()}", error=True)
-            return
-        self.clip_ignore_until = time.time() + 2.0
-        self.toast(f"Masked {len(ok)} file{'' if len(ok) == 1 else 's'} — attaching the masked cop"
-                   f"{'y' if len(ok) == 1 else 'ies'}.")
+        msg, warn = self.attach_summary(attach, unmasked)
+        if len(attach) - len(unmasked) > 0:          # something changed: swap the clipboard
+            if not set_clipboard_files(attach):
+                self.toast(f"Masked, but the clipboard would not take the files. "
+                           f"Attach them from {self.files_dir()}", error=True)
+                return
+            self.clip_ignore_until = time.time() + 2.0
+        self.toast(msg + ".", error=warn)
         self.replay_paste()
 
     @staticmethod
@@ -1418,12 +1457,15 @@ class Automation(threading.Thread):
         auto.SendKeys("{Ctrl}v", waitTime=0)
 
     def cmd_mask_files(self, paths) -> None:
-        """Mask files named on the command line or dropped on the bar."""
-        ok, bad = self.mask_many(list(paths))
-        if ok:
-            self.toast(f"Masked into {self.files_dir()}: " + ", ".join(Path(p).name for p in ok[:3]))
-        if bad:
-            self.toast("; ".join(bad[:2]), error=True)
+        """Mask files named on the command line (the Explorer menu entry)."""
+        attach, unmasked, failed = self.mask_many(list(paths))
+        made = [p for p in attach if str(p).lower() in self.masked_paths]
+        if made:
+            self.toast(f"Masked into {self.files_dir()}: " + ", ".join(Path(p).name for p in made[:3]))
+        if unmasked:
+            self.toast(f"Cannot be masked: {', '.join(unmasked[:3])}", error=True)
+        if failed:
+            self.toast("; ".join(failed[:2]), error=True)
 
     def poll_drag(self) -> None:
         """While a drag with files is in flight over Claude, put the blocker up."""
@@ -1434,10 +1476,11 @@ class Automation(threading.Thread):
             if SHARED["blocking"]:
                 SHARED["blocking"] = False
                 self.emit(type="block_drop", rect=None)
-                if SHARED["drag_at"]:
-                    self.toast("Explorer drops are not masked — use the paperclip, or drop on the "
-                               "MASKROOM bar.", error=True)
-                SHARED["drag_at"] = 0.0
+                # A quick click-release that merely passed over Claude is not a drop.
+                if time.time() - SHARED["blocking_since"] > 0.3:
+                    self.toast("A dropped file cannot be masked on its way in — use the paperclip "
+                               "(it is guarded), or switch drop blocking off in settings.", error=True)
+            SHARED["drag_at"] = 0.0
             return
         if foreground_exe() != CLAUDE_EXE and self.claude_win is None:
             return
@@ -1456,6 +1499,7 @@ class Automation(threading.Thread):
             return
         if not SHARED["blocking"]:
             SHARED["blocking"] = True
+            SHARED["blocking_since"] = time.time()
             self.emit(type="block_drop", rect=(r.left, r.top, r.right, r.bottom))
             log("drop blocker up")
 
@@ -2091,6 +2135,10 @@ class Bar:
         hide_scroll = tk.BooleanVar(value=self.cfg.get("overlayHideOnScroll", False))
         tk.Checkbutton(w, text="Hide the overlay while scrolling (instead of following the scroll)",
                        variable=hide_scroll).grid(row=6, column=0, columnspan=2, sticky="w", **pad)
+        block_drops = tk.BooleanVar(value=self.cfg.get("blockDrops", True))
+        tk.Checkbutton(w, text="Refuse files dropped from Explorer (they cannot be masked in flight; "
+                               "the paperclip can)", variable=block_drops).grid(
+            row=7, column=0, columnspan=2, sticky="w", **pad)
         self.check_label = tk.Label(w, text="", anchor="w")
         self.check_label.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         self.commands.put(("check",))   # show who we are, if anyone
@@ -2100,13 +2148,14 @@ class Bar:
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
             row=4, column=0, columnspan=2, sticky="w", **pad)
         btns = tk.Frame(w)
-        btns.grid(row=7, column=0, columnspan=2, sticky="e", **pad)
+        btns.grid(row=8, column=0, columnspan=2, sticky="e", **pad)
 
         def apply():
             self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
             self.cfg["apiKey"] = key.get().strip()
             self.cfg["preamble"] = bool(pre.get())
             self.cfg["overlayHideOnScroll"] = bool(hide_scroll.get())
+            self.cfg["blockDrops"] = bool(block_drops.get())
             save_config(self.cfg)
 
         def test():
