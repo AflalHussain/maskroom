@@ -14,8 +14,10 @@ composer are not, the rectangle covers the token rather than the line, a
 character-offset drift is recovered by nudging, the font style is read once, and
 a scroll is reported as movement.
 """
+import os
 import queue
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -462,3 +464,98 @@ def test_a_folder_is_recognised_in_an_accessible_value(automation):
     assert automation.looks_like_path("\\\\server\\share\\docs") == "\\\\server\\share\\docs"
     assert automation.looks_like_path("Documents") == ""
     assert automation.looks_like_path("") == ""
+
+
+# --------------------------------------------------------------------- downloads
+@pytest.fixture
+def watcher(automation, tmp_path):
+    """An Automation wired to a fake server and a temporary Downloads folder."""
+    helper = sys.modules["helper"]
+    calls = {}
+
+    class FakeFiles:
+        def unmask(self, path, fields):
+            calls["unmask"] = (path, fields)
+            return {"ok": True, "status": 200, "error": None,
+                    "data": {"run_id": "r1", "restored": 3, "unresolved": [],
+                             "downloads": {"output": "restored" + Path(path).suffix}}}
+
+        def download(self, run_id, name):
+            return b"restored bytes", None
+
+    automation.cfg = {"downloadsDir": str(tmp_path), "sessionId": "s1", "watchDownloads": True}
+    automation.files = FakeFiles()
+    automation.downloads_at = 0.0
+    automation.downloads_done = set()
+    automation.downloads_size = {}
+    automation.emit = lambda **kw: None
+    automation.toast = lambda msg, error=False: calls.setdefault("toasts", []).append(msg)
+    helper.log = lambda m: None
+    return types.SimpleNamespace(a=automation, dir=tmp_path, calls=calls, helper=helper)
+
+
+def test_only_files_that_hold_tokens_are_sent(watcher):
+    plain = watcher.dir / "notes.md"
+    plain.write_text("nothing to restore here")
+    tokened = watcher.dir / "reply.md"
+    tokened.write_text("Call TOK_PERSON_2615D96E today")
+    book = watcher.dir / "sheet.xlsx"
+    book.write_bytes(b"PK\\x03\\x04 zipped, tokens are deflated out of sight")
+    assert watcher.a.holds_tokens(plain) is False
+    assert watcher.a.holds_tokens(tokened) is True
+    assert watcher.a.holds_tokens(book) is True
+
+
+def test_a_download_is_restored_beside_itself_and_the_original_is_kept(watcher):
+    """Deleting a file the user downloaded is their call, not ours, so both are
+    kept unless they ask otherwise."""
+    src = watcher.dir / "reply.md"
+    src.write_text("Call TOK_PERSON_2615D96E today")
+    watcher.a.restore_download(src)
+    out = watcher.dir / "reply_restored.md"
+    assert out.read_bytes() == b"restored bytes"
+    assert src.exists()
+    assert watcher.calls["unmask"][1] == {"session_id": "s1"}
+
+
+def test_the_token_copy_is_removed_only_when_asked(watcher):
+    watcher.a.cfg["deleteTokenCopy"] = True
+    src = watcher.dir / "reply.md"
+    src.write_text("Call TOK_PERSON_2615D96E today")
+    watcher.a.restore_download(src)
+    assert (watcher.dir / "reply_restored.md").exists()
+    assert not src.exists()
+
+
+def test_the_watcher_leaves_alone_what_it_should(watcher, monkeypatch):
+    """Files that were already there, ones it made itself, and types the server
+    cannot restore. A PDF is redacted, not tokenised: there is nothing to put back."""
+    sent = []
+    monkeypatch.setattr(watcher.a, "restore_download", lambda p: sent.append(p.name))
+    old = watcher.dir / "old.md"
+    old.write_text("TOK_PERSON_2615D96E")
+    os.utime(old, (time.time() - 3600, time.time() - 3600))
+    (watcher.dir / "reply_restored.md").write_text("TOK_PERSON_2615D96E")
+    (watcher.dir / "report.pdf").write_bytes(b"%PDF- TOK_PERSON_2615D96E")
+    fresh = watcher.dir / "fresh.md"
+    fresh.write_text("TOK_PERSON_2615D96E")
+    watcher.a.poll_downloads()                     # first look records the size
+    watcher.a.downloads_at = 0.0
+    watcher.a.poll_downloads()                     # second look: unchanged, so it has landed
+    assert sent == ["fresh.md"], sent
+
+
+def test_a_file_still_being_written_waits_for_the_next_look(watcher, monkeypatch):
+    sent = []
+    monkeypatch.setattr(watcher.a, "restore_download", lambda p: sent.append(p.name))
+    growing = watcher.dir / "big.csv"
+    growing.write_text("TOK_PERSON_2615D96E,1")
+    watcher.a.poll_downloads()                     # first sight: size recorded, nothing sent
+    assert sent == []
+    growing.write_text("TOK_PERSON_2615D96E,1\\nmore rows arriving")
+    watcher.a.downloads_at = 0.0
+    watcher.a.poll_downloads()                     # grew: still waiting
+    assert sent == []
+    watcher.a.downloads_at = 0.0
+    watcher.a.poll_downloads()                     # stable now
+    assert sent == ["big.csv"]

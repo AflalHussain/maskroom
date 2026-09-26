@@ -128,6 +128,9 @@ DEFAULTS = {
     "fileGuard": True,     # intercept the file dialog / paste / drop
     "blockDrops": True,    # refuse Explorer drops on Claude (they cannot be masked in flight)
     "filesDir": "",        # where masked copies are written (default: <config>/files)
+    "watchDownloads": True,   # restore tokens in files Claude produces
+    "downloadsDir": "",    # default: the user's Downloads folder
+    "deleteTokenCopy": False,  # keep both by default: deleting a download is the user's call
     "preambleSent": [],
 }
 OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
@@ -140,6 +143,12 @@ SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": Fa
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
+# What the server can restore tokens inside (maskroom/restore.py). No PDF: a
+# redacted PDF has had its bytes destroyed, so there is nothing to put back.
+RESTORE_EXTS = (".md", ".txt", ".csv", ".tsv", ".json", ".html", ".htm", ".xml", ".yaml",
+                ".yml", ".xlsx", ".xlsm", ".docx", ".pptx")
+ZIP_EXTS = (".xlsx", ".xlsm", ".docx", ".pptx")      # tokens are deflated out of sight
+DOWNLOAD_POLL_S = 1.5
 MAX_UPLOAD = 25 * 1024 * 1024
 DIALOG_POLL_S = 0.4
 DIALOG_CLASSES = ("#32770", "Shell Dialog", "OperationStatusWindow")
@@ -300,6 +309,13 @@ class FileApi:
             return {"ok": False, "status": 413, "error": "File is larger than 25 MB."}
         body, ctype = _multipart(fields, os.path.basename(path), blob)
         return self.server.raw("/api/process", body, ctype)
+
+    def unmask(self, path: str, fields: dict) -> dict:
+        blob = open(path, "rb").read()
+        if len(blob) > MAX_UPLOAD:
+            return {"ok": False, "status": 413, "error": "File is larger than 25 MB."}
+        body, ctype = _multipart(fields, os.path.basename(path), blob)
+        return self.server.raw("/api/unmask-file", body, ctype)
 
     def download(self, run_id: str, name: str) -> tuple[bytes | None, str | None]:
         return self.server.binary(f"/api/download/{run_id}/{urllib.parse.quote(name)}")
@@ -617,6 +633,9 @@ class Automation(threading.Thread):
         self.dialog_said = ""
         self.dialog_dumped = False
         self.seen_classes: set[str] = set()
+        self.downloads_at = 0.0
+        self.downloads_done: set[str] = set()
+        self.downloads_size: dict[str, int] = {}
         self.masked_paths: set[str] = set()   # our own outputs: never re-masked
 
     # ---- plumbing
@@ -645,6 +664,11 @@ class Automation(threading.Thread):
                             self.poll_dialog()
                         except Exception as e:  # noqa: BLE001
                             log(f"dialog poll error {type(e).__name__}: {e}")
+                    if self.cfg.get("watchDownloads", True):
+                        try:
+                            self.poll_downloads()
+                        except Exception as e:  # noqa: BLE001
+                            log(f"downloads poll error {type(e).__name__}: {e}")
                     continue
                 try:
                     getattr(self, "cmd_" + cmd[0])(*cmd[1:])
@@ -1126,6 +1150,99 @@ class Automation(threading.Thread):
             bits.append(f"attached unmasked: {', '.join(unmasked[:3])}"
                         + (f" and {len(unmasked) - 3} more" if len(unmasked) > 3 else ""))
         return ("; ".join(bits) or "nothing to mask"), bool(unmasked)
+
+    # ---- files Claude produces, coming back down
+    def downloads_dir(self) -> Path:
+        d = self.cfg.get("downloadsDir")
+        return Path(d) if d else Path.home() / "Downloads"
+
+    def poll_downloads(self) -> None:
+        """Restore tokens in files Claude produces, as the extension's download
+        intercept does. A desktop download cannot be caught mid-flight, so it is
+        picked up once it has landed and stopped growing."""
+        now = time.time()
+        if now - self.downloads_at < DOWNLOAD_POLL_S:
+            return
+        self.downloads_at = now
+        folder = self.downloads_dir()
+        try:
+            entries = [e for e in folder.iterdir() if e.is_file()]
+        except OSError:
+            return
+        for entry in entries:
+            key = str(entry).lower()
+            if key in self.downloads_done:
+                continue
+            if entry.suffix.lower() not in RESTORE_EXTS or "_restored" in entry.stem:
+                self.downloads_done.add(key)
+                continue
+            try:
+                size, mtime = entry.stat().st_size, entry.stat().st_mtime
+            except OSError:
+                continue
+            if now - mtime > 120:
+                self.downloads_done.add(key)      # already there before we started looking
+                continue
+            if self.downloads_size.get(key) != size or size == 0:
+                self.downloads_size[key] = size   # still being written; look again next tick
+                continue
+            self.downloads_done.add(key)
+            self.downloads_size.pop(key, None)
+            self.restore_download(entry)
+
+    def restore_download(self, path: Path) -> None:
+        if not self.holds_tokens(path):
+            return
+        sid = self.cfg.get("sessionId")
+        if not sid:
+            self.toast(f"{path.name} holds tokens but there is no session to restore it with.",
+                       error=True)
+            return
+        self.emit(type="busy", busy=True)
+        try:
+            r = self.files.unmask(str(path), {"session_id": sid})
+        finally:
+            self.emit(type="busy", busy=False)
+        if not r["ok"]:
+            log(f"downloads: {path.name}: {r['error']}")
+            self.toast(f"{path.name}: could not restore ({r['error']})", error=True)
+            return
+        d = r["data"] or {}
+        out_name = ((d.get("downloads") or {}).get("output")) or ("restored" + path.suffix)
+        blob, err = self.files.download(d["run_id"], out_name)
+        if blob is None:
+            self.toast(f"{path.name}: could not fetch the restored copy ({err})", error=True)
+            return
+        out = path.with_name(f"{path.stem}_restored{path.suffix}")
+        n = 1
+        while out.exists():
+            out = path.with_name(f"{path.stem}_restored_{n}{path.suffix}")
+            n += 1
+        out.write_bytes(blob)
+        self.downloads_done.add(str(out).lower())
+        restored, unresolved = d.get("restored", 0), len(d.get("unresolved") or [])
+        log(f"downloads: {path.name} -> {out.name}: {restored} restored, {unresolved} unresolved")
+        if self.cfg.get("deleteTokenCopy"):
+            try:
+                path.unlink()
+            except OSError as e:
+                log(f"downloads: could not remove the token copy: {e}")
+        self.toast(f"{out.name}: {restored} value{'' if restored == 1 else 's'} restored"
+                   + (f", {unresolved} token{'' if unresolved == 1 else 's'} unresolved "
+                      f"(masked in another chat?)" if unresolved else "") + ".",
+                   error=bool(unresolved))
+
+    @staticmethod
+    def holds_tokens(path: Path) -> bool:
+        """Cheap pre-check, so the server is not sent every download. A zipped
+        Office file hides its text, so those are always sent."""
+        if path.suffix.lower() in ZIP_EXTS:
+            return True
+        try:
+            with open(path, "rb") as fh:
+                return b"TOK_" in fh.read(4 * 1024 * 1024).upper()
+        except OSError:
+            return False
 
     # ---- the Windows file dialog Claude opens for its paperclip
     def find_dialog(self):
@@ -2724,6 +2841,12 @@ class Bar:
         hide_scroll = tk.BooleanVar(value=self.cfg.get("overlayHideOnScroll", False))
         tk.Checkbutton(w, text="Hide the overlay while scrolling (instead of following the scroll)",
                        variable=hide_scroll).grid(row=6, column=0, columnspan=2, sticky="w", **pad)
+        watch_dl = tk.BooleanVar(value=self.cfg.get("watchDownloads", True))
+        tk.Checkbutton(w, text="Restore tokens in files Claude produces, as they land in Downloads",
+                       variable=watch_dl).grid(row=9, column=0, columnspan=2, sticky="w", **pad)
+        del_tok = tk.BooleanVar(value=self.cfg.get("deleteTokenCopy", False))
+        tk.Checkbutton(w, text="…and delete the token copy afterwards (off: both files are kept)",
+                       variable=del_tok).grid(row=10, column=0, columnspan=2, sticky="w", **pad)
         ov_debug = tk.BooleanVar(value=self.cfg.get("overlayDebug", False))
         tk.Checkbutton(w, text="Log every line the overlay walks (diagnostics; noisy)",
                        variable=ov_debug).grid(row=8, column=0, columnspan=2, sticky="w", **pad)
@@ -2740,7 +2863,7 @@ class Bar:
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
             row=4, column=0, columnspan=2, sticky="w", **pad)
         btns = tk.Frame(w)
-        btns.grid(row=9, column=0, columnspan=2, sticky="e", **pad)
+        btns.grid(row=11, column=0, columnspan=2, sticky="e", **pad)
 
         def apply():
             self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
@@ -2749,6 +2872,8 @@ class Bar:
             self.cfg["overlayHideOnScroll"] = bool(hide_scroll.get())
             self.cfg["blockDrops"] = bool(block_drops.get())
             self.cfg["overlayDebug"] = bool(ov_debug.get())
+            self.cfg["watchDownloads"] = bool(watch_dl.get())
+            self.cfg["deleteTokenCopy"] = bool(del_tok.get())
             save_config(self.cfg)
 
         def test():
