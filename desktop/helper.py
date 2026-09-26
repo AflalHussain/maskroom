@@ -511,6 +511,19 @@ def make_no_activate(tk_toplevel: tk.Toplevel) -> None:
     _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
 
 
+class Box:
+    """A plain rectangle, so code that reads .left/.top/.right/.bottom works for
+    both a UIA rectangle and one we computed."""
+
+    __slots__ = ("left", "top", "right", "bottom")
+
+    def __init__(self, left, top, right, bottom):
+        self.left, self.top, self.right, self.bottom = left, top, right, bottom
+
+    def __repr__(self):
+        return f"Box({self.left},{self.top},{self.right},{self.bottom})"
+
+
 def find_page_document():
     """(TextPattern, element, window) for Claude's page: the element carrying the
     most text under a Claude window. Called in each thread's own COM apartment,
@@ -1636,6 +1649,10 @@ class OverlayWorker(threading.Thread):
         self.walked_at = 0.0
         self.was_scrolling = False
         self.warned: set[str] = set()
+        self.clip = None              # the band where conversation text may be painted
+        self.clip_at = 0.0
+        self.composer = None          # the composer element, focused or not
+        self.composer_at = 0.0
 
     # ---- plumbing
     def run(self) -> None:
@@ -1665,7 +1682,95 @@ class OverlayWorker(threading.Thread):
         log(f"overlay: page document {'found' if self.doc else 'not found'}")
         self.items = []
         self.warned.clear()
+        self.clip = None
+        self.composer = None
         return self.doc
+
+    # ---- where painting is allowed
+    def conversation_scroller(self, win):
+        """The scrollable element holding the conversation, found by hit-testing
+        its middle and walking up to the first vertically scrollable ancestor.
+        Its rectangle is the viewport: a token scrolled out of the conversation
+        still reports a rectangle, and without this it lands on the header."""
+        x = (win.left + win.right) // 2
+        for frac in (0.45, 0.3, 0.6):
+            y = win.top + int((win.bottom - win.top) * frac)
+            try:
+                ctrl = auto.ControlFromPoint(x, y)
+            except Exception:  # noqa: BLE001
+                return None
+            for _ in range(14):
+                if ctrl is None:
+                    break
+                try:
+                    sp = ctrl.GetPattern(auto.PatternId.ScrollPattern)
+                    if sp is not None and sp.VerticallyScrollable:
+                        r = ctrl.BoundingRectangle
+                        if r.bottom - r.top > 80:
+                            return r
+                    ctrl = ctrl.GetParentControl()
+                except Exception:  # noqa: BLE001
+                    break
+        return None
+
+    def composer_rect(self, win):
+        """The composer's rectangle whether or not it has focus. SHARED holds it
+        only while focused, and the conversation scrolls *under* the composer,
+        so without this a token behind it gets painted over it."""
+        focused = SHARED["composer_rect"]
+        if focused is not None:
+            return focused
+        if self.composer is not None:
+            try:
+                r = self.composer.BoundingRectangle
+                if r.bottom > r.top:
+                    return (r.left, r.top, r.right, r.bottom)
+            except Exception:  # noqa: BLE001
+                self.composer = None
+        if time.time() - self.composer_at < 5.0:
+            return None
+        self.composer_at = time.time()
+        x = (win.left + win.right) // 2
+        for up in (40, 70, 100, 140):
+            try:
+                ctrl = auto.ControlFromPoint(x, win.bottom - up)
+            except Exception:  # noqa: BLE001
+                return None
+            for _ in range(8):
+                if ctrl is None:
+                    break
+                try:
+                    if COMPOSER_CLASS_HINT in (ctrl.ClassName or ""):
+                        self.composer = ctrl
+                        r = ctrl.BoundingRectangle
+                        log(f"overlay: composer at {(r.left, r.top, r.right, r.bottom)}")
+                        return (r.left, r.top, r.right, r.bottom)
+                    ctrl = ctrl.GetParentControl()
+                except Exception:  # noqa: BLE001
+                    break
+        return None
+
+    def update_clip(self, win) -> None:
+        """Recompute the band where a patch may be drawn: inside the conversation
+        viewport, and above the composer."""
+        if time.time() - self.clip_at < 2.0 and self.clip is not None:
+            return
+        self.clip_at = time.time()
+        scroller = self.conversation_scroller(win)
+        top = scroller.top if scroller is not None else win.top
+        bottom = scroller.bottom if scroller is not None else win.bottom
+        left = scroller.left if scroller is not None else win.left
+        right = scroller.right if scroller is not None else win.right
+        if scroller is None:
+            self.warn_once("noscroller", "overlay: no scrollable conversation found; "
+                                         "painting is clipped to the window only")
+        comp = self.composer_rect(win)
+        if comp is not None:
+            bottom = min(bottom, comp[1] - 4)
+        clip = (left, top, right, bottom)
+        if clip != self.clip:
+            log(f"overlay: paint band {clip}")
+        self.clip = clip
 
     # ---- the loop
     def tick(self) -> None:
@@ -1678,6 +1783,12 @@ class OverlayWorker(threading.Thread):
             return
         doc = self.document()
         if doc is None:
+            self.hide()
+            return
+        try:
+            self.update_clip(self.win.BoundingRectangle)
+        except Exception:  # noqa: BLE001
+            self.doc = None
             self.hide()
             return
         now = time.time()
@@ -1768,11 +1879,10 @@ class OverlayWorker(threading.Thread):
     def walk(self, doc, idx) -> None:
         t0 = time.perf_counter()
         self.walked_at = time.time()
-        try:
-            win = self.win.BoundingRectangle
-        except Exception:  # noqa: BLE001
-            self.doc = None
+        band = self.clip
+        if band is None:
             return
+        win = Box(*band)
         line = self.first_visible_line(doc, win)
         if line is None:
             if "noline" not in self.warned:
@@ -1780,7 +1890,6 @@ class OverlayWorker(threading.Thread):
                 log("overlay: no visible line found; overlay idle")
             self.items = []
             return
-        comp = SHARED["composer_rect"]
         items, lines, blind = [], 0, 0
         while lines < OVERLAY_MAX_LINES and len(items) < OVERLAY_MAX_TOKENS and blind < 30:
             lines += 1
@@ -1796,20 +1905,18 @@ class OverlayWorker(threading.Thread):
                 r = rects[0]
                 if r.top > win.bottom:
                     break                       # walked past the bottom of the view
-                if r.bottom >= win.top and "TOK_" in text.upper():
-                    in_composer = comp is not None and not (r.bottom < comp[1] or r.top > comp[3])
-                    if not in_composer:
-                        for m in EXACT_RE.finditer(text):
-                            tok = m.group(0)
-                            value = idx.vault.get(tok)
-                            if value is None:
-                                self.warn_once(tok, f"overlay: {tok} is on screen but no known "
-                                                    f"session vault holds it")
-                                continue
-                            it = self.place(doc, line, (r.left, r.top, r.right, r.bottom),
-                                            text, m, value)
-                            if it is not None:
-                                items.append(it)
+                if r.top >= win.top and "TOK_" in text.upper():
+                    for m in EXACT_RE.finditer(text):
+                        tok = m.group(0)
+                        value = idx.vault.get(tok)
+                        if value is None:
+                            self.warn_once(tok, f"overlay: {tok} is on screen but no known "
+                                                f"session vault holds it")
+                            continue
+                        it = self.place(doc, line, (r.left, r.top, r.right, r.bottom),
+                                        text, m, value)
+                        if it is not None:
+                            items.append(it)
             if line.Move(auto.TextUnit.Line, 1, waitTime=0) != 1:
                 break
             line.ExpandToEnclosingUnit(auto.TextUnit.Line, waitTime=0)
@@ -1953,17 +2060,18 @@ class OverlayWorker(threading.Thread):
             self.doc = None
             self.hide()
             return
-        comp = SHARED["composer_rect"]
+        band = self.clip or (w.left, w.top, w.right, w.bottom)
+        bl, bt, br, bb = band
         frame = []
         for it in self.items:
             rect = it["rect"]
             if rect is None:
                 continue
             l, t, r, b = rect
-            if b < w.top or t > w.bottom or r < w.left or l > w.right:
+            # Fully inside the band, not merely overlapping it: half a patch over
+            # the header or the composer is worse than none.
+            if t < bt or b > bb or l < bl or r > br:
                 continue
-            if comp is not None and not (b < comp[1] or t > comp[3]):
-                continue                        # the composer is never overlaid
             if it["bg"] is None:                # sampled once, before our own patch is drawn
                 it["bg"] = screen_pixel(l - 2, (t + b) // 2) or "#ffffff"
             frame.append((rect, it["value"], it["bg"], it["style"]))

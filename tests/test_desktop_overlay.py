@@ -23,7 +23,8 @@ import pytest
 
 CHAR_W, LINE_H, TEXT_X = 8, 18, 100      # the fake's screen geometry
 COMPOSER = (100, 690, 900, 730)
-WINDOW = (0, 90, 1000, 440)
+WINDOW = (0, 0, 1000, 740)        # the whole Claude window: header, chat, composer
+BAND = (0, 90, 1000, 640)         # where conversation text may legitimately be painted
 
 
 class Rect:
@@ -142,13 +143,16 @@ class FakeDoc:
         return FakeRange(self.lines, 0, drift=self.drift)
 
     def RangeFromPoint(self, x, y):
-        """Honest geometry: the character under the point. Hit testing is the
-        primitive the real Chromium got right, so the fake keeps it exact."""
-        for i, (text, ly) in enumerate(self.lines):
-            if ly <= y <= ly + LINE_H:
-                ci = max(0, min(len(text) - 1, (x - TEXT_X) // CHAR_W))
-                return FakeRange(self.lines, i, ci, ci + 1, drift=self.drift)
-        return None
+        """Honest geometry: the character under the point, and for a point in a
+        gap the nearest line, as a real hit test gives. Hit testing is the
+        primitive Chromium got right, so the fake keeps it exact."""
+        if not self.lines:
+            return None
+        i = min(range(len(self.lines)),
+                key=lambda j: abs((self.lines[j][1] + LINE_H / 2) - y))
+        text = self.lines[i][0]
+        ci = max(0, min(len(text) - 1, (x - TEXT_X) // CHAR_W))
+        return FakeRange(self.lines, i, ci, ci + 1, drift=self.drift)
 
 
 class FakeWin:
@@ -181,12 +185,13 @@ def overlay(monkeypatch):
     helper = pytest.importorskip("helper")
 
     lines = [
+        ["Scrolled above the chat: TOK_PERSON_AAAA1111", 40],   # behind the header
         ["Here is the summary you asked for", 100],
         ["Patient: TOK_PERSON_2615D96E admitted", 120],
         ["Account TOK_FINANCIAL_ACCOUNT_52940232 is overdue", 140],
         ["No identifiers on this line at all", 160],
-        ["Below the fold: TOK_PERSON_AAAA1111", 460],      # under the window bottom
-        ["composer draft TOK_PERSON_2615D96E here", 700],  # inside the composer
+        ["Behind the composer: TOK_PERSON_AAAA1111", 660],      # the chat scrolls under it
+        ["composer draft TOK_PERSON_2615D96E here", 700],       # in the composer itself
     ]
     vault = {"TOK_PERSON_2615D96E": "Nimal Perera",
              "TOK_FINANCIAL_ACCOUNT_52940232": "8801-2233-9",
@@ -198,9 +203,10 @@ def overlay(monkeypatch):
     helper.SHARED["index"] = helper.TokenIndex(vault)
     helper.SHARED["composer_rect"] = COMPOSER
 
-    def build(drift=0):
+    def build(drift=0, clip=BAND):
         worker = helper.OverlayWorker({"overlay": True}, queue.Queue())
         worker.doc, worker.win = FakeDoc(lines, drift=drift), FakeWin(WINDOW)
+        worker.clip, worker.clip_at = clip, float("inf")   # pin the band; tick() recomputes it
         return worker
 
     ns = types.SimpleNamespace(helper=helper, lines=lines, build=build)
@@ -221,7 +227,7 @@ def test_the_rectangle_covers_the_token_not_the_line(overlay):
     w = overlay.worker
     w.walk(w.doc, overlay.helper.SHARED["index"])
     item = next(i for i in w.items if i["tok"] == "TOK_PERSON_2615D96E")
-    text = overlay.lines[1][0]
+    text = overlay.lines[2][0]
     left = 100 + text.index(item["tok"]) * 8
     assert item["rect"][0] == left
     assert item["rect"][2] == left + len(item["tok"]) * 8
@@ -276,8 +282,8 @@ def test_a_range_that_no_longer_holds_its_token_is_not_drawn(overlay):
     w.walk(w.doc, overlay.helper.SHARED["index"])
     assert all(it["rect"] for it in w.items)
     # The line is edited under us: same geometry, different text.
-    overlay.lines[1][0] = "Patient: TOK_PERSON_99999999 admitted"
-    overlay.lines[1][1] -= 10                      # and it moved, so the text is re-checked
+    overlay.lines[2][0] = "Patient: TOK_PERSON_99999999 admitted"
+    overlay.lines[2][1] -= 10                      # and it moved, so the text is re-checked
     w.refresh_rects()
     stale = next(i for i in w.items if i["tok"] == "TOK_PERSON_2615D96E")
     assert stale["rect"] is None
@@ -295,7 +301,7 @@ def test_tokens_are_placed_when_offsets_disagree_with_the_text(overlay):
     assert sorted(it["tok"] for it in w.items) == [
         "TOK_FINANCIAL_ACCOUNT_52940232", "TOK_PERSON_2615D96E"]
     item = next(i for i in w.items if i["tok"] == "TOK_PERSON_2615D96E")
-    text = overlay.lines[1][0]
+    text = overlay.lines[2][0]
     assert item["rect"][0] == TEXT_X + text.index(item["tok"]) * CHAR_W
 
 
@@ -311,3 +317,29 @@ def test_a_token_no_vault_knows_is_reported(overlay, monkeypatch):
     assert [it["tok"] for it in w.items] == ["TOK_PERSON_2615D96E"]
     assert any("TOK_FINANCIAL_ACCOUNT_52940232" in m and "no known session vault" in m
                for m in said), said
+
+
+def test_nothing_is_painted_outside_the_conversation_band(overlay):
+    """Tokens scrolled above the chat still report a rectangle, and the chat
+    scrolls *under* the composer. Painting either put values over the header and
+    over the reply box."""
+    w = overlay.worker
+    w.walk(w.doc, overlay.helper.SHARED["index"])
+    assert all(it["tok"] != "TOK_PERSON_AAAA1111" for it in w.items), \
+        "a line outside the band was walked"
+    w.emit_frame()
+    for rect, _value, _bg, _style in w.events.get_nowait()["items"]:
+        assert rect[1] >= BAND[1] and rect[3] <= BAND[3], rect
+
+
+def test_a_patch_straddling_the_band_edge_is_dropped(overlay):
+    """Half a patch over the header is worse than none, so containment has to be
+    total rather than an overlap."""
+    w = overlay.worker
+    w.walk(w.doc, overlay.helper.SHARED["index"])
+    assert w.items
+    w.items[0]["rect"] = (200, BAND[1] - 4, 400, BAND[1] + 14)   # crosses the top edge
+    w.emit_frame()
+    drawn = w.events.get_nowait()["items"] or []
+    assert all(r[1] >= BAND[1] for r, *_ in drawn)
+    assert len(drawn) == len(w.items) - 1
