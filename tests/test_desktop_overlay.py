@@ -418,3 +418,47 @@ def test_covered_tokens_are_reported_apart_from_unplaced_ones(overlay):
     summary = next(m for m in said if "walked" in m)
     assert "behind a panel" in summary, summary
     assert "UNPLACED" not in summary, summary      # a covered token is not a placement fault
+
+
+# --------------------------------------------------------------------- file dialog
+@pytest.fixture
+def automation(monkeypatch):
+    sys.modules.setdefault("uiautomation", _fake_uia())
+    root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(root / "desktop"))
+    helper = pytest.importorskip("helper")
+    return helper.Automation.__new__(helper.Automation)
+
+
+def test_a_picked_name_without_its_extension_is_resolved(automation, tmp_path):
+    """What the dialog hands over is a *display* name: Explorer hides known
+    extensions, so a picked .xlsx arrives as a bare stem, relative to a folder
+    the dialog does not spell out either."""
+    real = tmp_path / "hr_leave_register_aug2026.xlsx"
+    real.write_bytes(b"x")
+    assert automation.resolve_pick("hr_leave_register_aug2026", str(tmp_path)) == str(real)
+    assert automation.resolve_pick("hr_leave_register_aug2026.xlsx", str(tmp_path)) == str(real)
+    assert automation.resolve_pick(str(real), "") == str(real)
+
+
+def test_a_name_that_cannot_be_found_resolves_to_nothing(automation, tmp_path):
+    """Which has to be held rather than waved through: an unmaskable file
+    reaching Claude is the disclosure the guard exists to stop."""
+    assert automation.resolve_pick("does_not_exist", str(tmp_path)) is None
+    assert automation.resolve_pick("anything", "") is None
+    assert automation.resolve_pick(str(tmp_path / "gone.xlsx"), "") is None
+
+
+def test_a_name_with_glob_characters_is_taken_literally(automation, tmp_path):
+    (tmp_path / "report[2026].xlsx").write_bytes(b"x")
+    (tmp_path / "reportX.xlsx").write_bytes(b"x")
+    assert automation.resolve_pick("report[2026]", str(tmp_path)) == str(tmp_path / "report[2026].xlsx")
+
+
+def test_a_folder_is_recognised_in_an_accessible_value(automation):
+    """Breadcrumbs carry it with a prefix, or not at all."""
+    assert automation.looks_like_path("Address: C:\\Users\\a\\Documents") == "C:\\Users\\a\\Documents"
+    assert automation.looks_like_path("C:\\Users\\a\\Documents") == "C:\\Users\\a\\Documents"
+    assert automation.looks_like_path("\\\\server\\share\\docs") == "\\\\server\\share\\docs"
+    assert automation.looks_like_path("Documents") == ""
+    assert automation.looks_like_path("") == ""

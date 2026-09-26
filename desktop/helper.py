@@ -85,6 +85,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import collections
+import glob as globlib
 import json
 import os
 import queue
@@ -1189,27 +1190,53 @@ class Automation(threading.Thread):
                     pass
         return edit, confirm, listing
 
-    def dialog_paths(self, dlg, edit) -> list[str]:
-        """Absolute paths the dialog would return: the File name box, resolved
-        against the folder it is browsing. Handles "a" "b" multi-select."""
+    def dialog_paths(self, dlg, edit) -> tuple[list[str], list[str]]:
+        """(resolved paths, names that could not be resolved).
+
+        What the dialog hands over is a *display* name: Explorer hides known
+        extensions, so "hr_leave_register_aug2026" is what a picked .xlsx looks
+        like, and it is relative to a folder the dialog does not spell out
+        either. Both have to be recovered before anything can be masked.
+        """
         try:
             raw = (edit.GetPattern(auto.PatternId.ValuePattern).Value or "").strip()
         except Exception:  # noqa: BLE001
             raw = ""
+        source = "File name box"
         if not raw:
             raw = self.dialog_selection(dlg)      # double-clicked before the box filled in
+            source = "list selection"
         if not raw:
-            return []
+            return [], []
         names = re.findall(r'"([^"]+)"', raw) or [raw]
         folder = self.dialog_folder(dlg)
-        out = []
+        found, missing = [], []
         for n in names:
-            p = Path(n)
-            out.append(str(p if p.is_absolute() else Path(folder or "") / n))
-        return out
+            p = self.resolve_pick(n, folder)
+            (found if p else missing).append(p or n)
+        log(f"file guard: {source} {names} in folder {folder or 'UNKNOWN'} -> {found or missing}")
+        return found, missing
 
     @staticmethod
-    def dialog_selection(dlg) -> str:
+    def resolve_pick(name: str, folder: str) -> str | None:
+        """A display name to a real path: as given if absolute, else joined to
+        the folder, else the same stem with whatever extension it really has."""
+        p = Path(name)
+        if p.is_absolute():
+            return str(p) if p.exists() else None
+        if not folder:
+            return None
+        base = Path(folder)
+        direct = base / name
+        if direct.is_file():
+            return str(direct)
+        try:
+            hits = sorted(base.glob(globlib.escape(name) + ".*"))
+        except OSError:
+            hits = []
+        return str(hits[0]) if hits else None
+
+    def dialog_selection(self, dlg) -> str:
         """The names selected in the dialog's file list, quoted as the File name
         box would hold them."""
         stack, names, seen = [(dlg, 0)], [], 0
@@ -1221,7 +1248,8 @@ class Automation(threading.Thread):
                     sel = c.GetPattern(auto.PatternId.SelectionPattern)
                     if sel is not None:
                         for item in sel.GetSelection():
-                            n = (item.Name or "").strip()
+                            # the item's own value is sometimes the full path
+                            n = self.looks_like_path(self.value_of(item)) or (item.Name or "").strip()
                             if n:
                                 names.append(n)
                         if names:
@@ -1236,18 +1264,49 @@ class Automation(threading.Thread):
         return " ".join(f'"{n}"' for n in names) if len(names) > 1 else names[0]
 
     @staticmethod
-    def dialog_folder(dlg) -> str:
-        """The folder the dialog is browsing, from the breadcrumb toolbar's name
-        ("Address: Documents" style) - best effort; empty when unreadable."""
-        for c in dlg.GetChildren():
+    def looks_like_path(value: str) -> str:
+        """A path out of an accessible value such as "Address: C:\\Users\\x"."""
+        v = (value or "").strip()
+        if ":" in v[:40] and not (len(v) > 1 and v[1] == ":"):
+            v = v.split(":", 1)[1].strip()        # drop an "Address:" style prefix
+        return v if (len(v) > 2 and v[1] == ":") or v.startswith("\\\\") else ""
+
+    def value_of(self, ctrl) -> str:
+        for pid in (auto.PatternId.ValuePattern, auto.PatternId.LegacyIAccessiblePattern):
             try:
-                if c.ControlTypeName == "ToolBarControl" and "address" in (c.Name or "").lower():
-                    for k in c.GetChildren():
-                        nm = (k.Name or "")
-                        if ":\\" in nm or nm.startswith("\\\\"):
-                            return nm
+                pat = ctrl.GetPattern(pid)
+                if pat is not None and pat.Value:
+                    return str(pat.Value)
             except Exception:  # noqa: BLE001
                 continue
+        return ""
+
+    def dialog_folder(self, dlg) -> str:
+        """The folder the dialog is browsing. No single source is dependable, so
+        the file list's own value, the breadcrumb's value and its item names are
+        all tried; the first that names a real directory wins."""
+        candidates = []
+        if self.dialog_list is not None:
+            candidates.append(self.value_of(self.dialog_list))
+        stack, seen = [(dlg, 0)], 0
+        while stack and seen < 300:
+            c, depth = stack.pop()
+            seen += 1
+            try:
+                if c.ControlTypeName == "ToolBarControl" and "address" in (c.Name or "").lower():
+                    candidates.append(self.value_of(c))
+                    for k in c.GetChildren():
+                        candidates.append(self.value_of(k))
+                        candidates.append(k.Name or "")
+                    continue
+                if depth < 6:
+                    stack.extend((k, depth + 1) for k in c.GetChildren())
+            except Exception:  # noqa: BLE001
+                continue
+        for value in candidates:
+            path = self.looks_like_path(value)
+            if path and Path(path).is_dir():
+                return path
         return ""
 
     def poll_dialog(self) -> None:
@@ -1326,10 +1385,15 @@ class Automation(threading.Thread):
             log("file guard: no File name box found; letting the dialog through")
             self.dialog_replay(dlg, confirm)
             return
-        paths = self.dialog_paths(dlg, edit)
-        log(f"file guard: confirm with {paths if paths else 'an empty file name box'}")
-        if not paths:
+        paths, missing = self.dialog_paths(dlg, edit)
+        if not paths and not missing:
             self.dialog_replay(dlg, confirm)         # empty box, or a folder double-click
+            return
+        if missing:
+            # Cannot find the file, so cannot mask it. Holding is the only safe
+            # answer: letting it through is exactly the disclosure we exist to stop.
+            self.toast(f"Cannot locate {', '.join(missing[:2])} on disk, so it cannot be masked. "
+                       f"Copy the file in Explorer and paste it into Claude instead.", error=True)
             return
         if all(Path(p).is_dir() for p in paths):
             self.dialog_replay(dlg, confirm)         # navigating into a folder
