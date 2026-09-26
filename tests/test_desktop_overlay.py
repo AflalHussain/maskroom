@@ -167,8 +167,6 @@ class FakeDoc:
 
 
 class FakeWin:
-    """Stands in for both a top-level window and a text pane's element."""
-
     def __init__(self, rect):
         self.BoundingRectangle = Rect(*rect)
 
@@ -234,14 +232,11 @@ def overlay(monkeypatch):
     helper.SHARED["index"] = helper.TokenIndex(vault)
     helper.SHARED["composer_rect"] = COMPOSER
 
-    def build(drift=0, clip=BAND, panes=1):
+    def build(drift=0, clip=BAND):
         worker = helper.OverlayWorker({"overlay": True}, queue.Queue())
-        doc = FakeDoc(lines, drift=drift)
-        worker.doc = doc                       # the conversation pane, for tests that walk it
-        worker.panes = [(doc, FakeWin(WINDOW), FakeWin(WINDOW))] * panes
-        worker.doc_checked = float("inf")      # pin the panes; documents() re-finds otherwise
+        worker.doc, worker.win = FakeDoc(lines, drift=drift), FakeWin(WINDOW)
         worker.clip, worker.clip_at = clip, float("inf")   # pin the band; tick() recomputes it
-        monkeypatch.setattr(helper.auto, "ControlFromPoint", doc.ControlFromPoint)
+        monkeypatch.setattr(helper.auto, "ControlFromPoint", worker.doc.ControlFromPoint)
         return worker
 
     ns = types.SimpleNamespace(helper=helper, lines=lines, build=build)
@@ -251,7 +246,7 @@ def overlay(monkeypatch):
 
 def test_only_visible_tokens_outside_the_composer_are_placed(overlay):
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert sorted(it["tok"] for it in w.items) == [
         "TOK_FINANCIAL_ACCOUNT_52940232", "TOK_PERSON_2615D96E"]
     assert [it["value"] for it in w.items if it["tok"].startswith("TOK_PERSON")] == ["Nimal Perera"]
@@ -260,7 +255,7 @@ def test_only_visible_tokens_outside_the_composer_are_placed(overlay):
 def test_the_rectangle_covers_the_token_not_the_line(overlay):
     """The offset drift must be recovered, or the patch lands on the wrong words."""
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     item = next(i for i in w.items if i["tok"] == "TOK_PERSON_2615D96E")
     text = overlay.lines[2][0]
     left = 100 + text.index(item["tok"]) * 8
@@ -271,7 +266,7 @@ def test_the_rectangle_covers_the_token_not_the_line(overlay):
 def test_style_is_read_for_each_token(overlay):
     """Per token, not once per reply: a bold token has to be painted bold."""
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert w.items
     for it in w.items:
         assert it["style"]["size"] == 11.5
@@ -282,7 +277,7 @@ def test_style_is_read_for_each_token(overlay):
 
 def test_frame_carries_one_entry_per_visible_token(overlay):
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     w.emit_frame()
     msg = w.events.get_nowait()
     assert msg["type"] == "overlay" and len(msg["items"]) == 2
@@ -293,7 +288,7 @@ def test_frame_carries_one_entry_per_visible_token(overlay):
 def test_a_scroll_is_reported_as_movement(overlay):
     """Movement is what makes the overlay follow a scroll and re-walk after it."""
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert w.refresh_rects() is False
     for line in overlay.lines:
         line[1] -= 40
@@ -314,7 +309,7 @@ def test_a_range_that_no_longer_holds_its_token_is_not_drawn(overlay):
     """Drawing one person's name over another's token is worse than drawing
     nothing, so a moved range is re-checked against the token it was placed on."""
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert all(it["rect"] for it in w.items)
     # The line is edited under us: same geometry, different text.
     overlay.lines[2][0] = "Patient: TOK_PERSON_99999999 admitted"
@@ -332,7 +327,7 @@ def test_tokens_are_placed_when_offsets_disagree_with_the_text(overlay):
     text, counting landed on the wrong characters, and the token went unpainted.
     Hit testing has to recover it."""
     w = overlay.build(drift=9)          # far beyond any fixed nudge
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert sorted(it["tok"] for it in w.items) == [
         "TOK_FINANCIAL_ACCOUNT_52940232", "TOK_PERSON_2615D96E"]
     item = next(i for i in w.items if i["tok"] == "TOK_PERSON_2615D96E")
@@ -350,7 +345,7 @@ def test_a_token_no_vault_knows_is_reported(overlay, monkeypatch):
     helper = overlay.helper
     helper.SHARED["index"] = helper.TokenIndex({"TOK_PERSON_2615D96E": "Nimal Perera"})
     w = overlay.build()
-    w.walk_all(w.panes, helper.SHARED["index"])
+    w.walk(w.doc, helper.SHARED["index"])
     assert [it["tok"] for it in w.items] == ["TOK_PERSON_2615D96E"]
     assert any("TOK_FINANCIAL_ACCOUNT_52940232" in m and "NOT IN ANY VAULT" in m
                for m in said), said
@@ -361,7 +356,7 @@ def test_nothing_is_painted_outside_the_conversation_band(overlay):
     scrolls *under* the composer. Painting either put values over the header and
     over the reply box."""
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert all(it["tok"] != "TOK_PERSON_AAAA1111" for it in w.items), \
         "a line outside the band was walked"
     w.emit_frame()
@@ -369,16 +364,16 @@ def test_nothing_is_painted_outside_the_conversation_band(overlay):
         assert rect[1] >= BAND[1] and rect[3] <= BAND[3], rect
 
 
-def test_a_patch_straddling_the_composer_edge_is_dropped(overlay):
-    """Half a patch over the reply box is worse than none, so containment has to
-    be total rather than an overlap."""
+def test_a_patch_straddling_the_band_edge_is_dropped(overlay):
+    """Half a patch over the header is worse than none, so containment has to be
+    total rather than an overlap."""
     w = overlay.worker
-    w.walk_all(w.panes, overlay.helper.SHARED["index"])
+    w.walk(w.doc, overlay.helper.SHARED["index"])
     assert w.items
-    w.items[0]["rect"] = (200, BAND[3] - 6, 400, BAND[3] + 12)   # crosses the bottom edge
+    w.items[0]["rect"] = (200, BAND[1] - 4, 400, BAND[1] + 14)   # crosses the top edge
     w.emit_frame()
     drawn = w.events.get_nowait()["items"] or []
-    assert all(r[3] <= BAND[3] for r, *_ in drawn)
+    assert all(r[1] >= BAND[1] for r, *_ in drawn)
     assert len(drawn) == len(w.items) - 1
 
 
@@ -388,11 +383,11 @@ def test_every_walk_reports_its_own_outcome(overlay):
     said = []
     overlay.helper.log, saved = said.append, overlay.helper.log
     try:
-        w.walk_all(w.panes, overlay.helper.SHARED["index"])
-        w.walk_all(w.panes, overlay.helper.SHARED["index"])
+        w.walk(w.doc, overlay.helper.SHARED["index"])
+        w.walk(w.doc, overlay.helper.SHARED["index"])
     finally:
         overlay.helper.log = saved
-    summaries = [m for m in said if "pane(s)" in m]
+    summaries = [m for m in said if "walked" in m]
     assert len(summaries) == 2
     for m in summaries:
         assert "with tokens)" in m and "placed 2" in m
@@ -405,7 +400,7 @@ def test_a_token_under_a_floating_panel_is_not_painted(overlay):
     helper = overlay.helper
     overlay.lines.append(["Behind the usage banner: TOK_PERSON_2615D96E", 595])
     w = overlay.build(clip=(0, 0, 1000, 740))      # deliberately no band at all
-    w.walk_all(w.panes, helper.SHARED["index"])
+    w.walk(w.doc, helper.SHARED["index"])
     painted = [(it["tok"], it["rect"][1]) for it in w.items]
     assert all(y != 595 for _tok, y in painted), painted
     assert any(y == 120 for _tok, y in painted), "visible tokens must still be painted"
@@ -419,10 +414,10 @@ def test_covered_tokens_are_reported_apart_from_unplaced_ones(overlay):
     helper.log, saved = said.append, helper.log
     try:
         w = overlay.build(clip=(0, 0, 1000, 740))
-        w.walk_all(w.panes, helper.SHARED["index"])
+        w.walk(w.doc, helper.SHARED["index"])
     finally:
         helper.log = saved
-    summary = next(m for m in said if "pane(s)" in m)
+    summary = next(m for m in said if "walked" in m)
     assert "behind a panel" in summary, summary
     assert "UNPLACED" not in summary, summary      # a covered token is not a placement fault
 
@@ -564,28 +559,3 @@ def test_a_file_still_being_written_waits_for_the_next_look(watcher, monkeypatch
     watcher.a.downloads_at = 0.0
     watcher.a.poll_downloads()                     # stable now
     assert sent == ["big.csv"]
-
-
-def test_a_preview_pane_is_walked_too(overlay):
-    """Claude renders a file or artifact preview in its own pane. Walking only
-    the biggest one left previews showing raw tokens."""
-    helper = overlay.helper
-    w = overlay.build(panes=2)
-    w.walk_all(w.panes, helper.SHARED["index"])
-    # the same fake page behind both panes, so every token is found twice
-    assert len(w.items) == 4
-    assert sorted({it["tok"] for it in w.items}) == [
-        "TOK_FINANCIAL_ACCOUNT_52940232", "TOK_PERSON_2615D96E"]
-
-
-def test_the_log_names_every_pane_it_walked(overlay):
-    said = []
-    helper = overlay.helper
-    helper.log, saved = said.append, helper.log
-    try:
-        w = overlay.build(panes=2)
-        w.walk_all(w.panes, helper.SHARED["index"])
-    finally:
-        helper.log = saved
-    summary = next(m for m in said if "pane(s)" in m)
-    assert "2 pane(s)" in summary and summary.count("with tokens)") == 2, summary
