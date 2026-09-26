@@ -104,7 +104,10 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
   *File name* box and *Open* button are searched breadth-first through the whole dialog,
   because in the modern dialog they are not direct children, and the search is retried on
   every poll until both are there, since a dialog that has just appeared is not yet built.
-  A dialog with no Open button (a Save dialog) is left alone. A
+  A dialog with no Open button (a Save dialog) is left alone. Their rectangles are then
+  published to the hook, which decides by arithmetic: a low-level hook has to return fast,
+  and it never receives `WM_LBUTTONDBLCLK` at all (Windows synthesises that later), so the
+  double click on a file is timed in the hook itself. A
   double-clicked file is read from the list's selection when the *File name* box has not
   filled in yet. `FileApi` posts a hand-rolled multipart body to `/api/process` and fetches the
   result from `/api/download/<run>/<name>` (the same contract `extension/background.js`

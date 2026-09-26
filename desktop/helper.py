@@ -134,7 +134,8 @@ OVERLAY_WALK_MIN_S = 0.30   # never re-walk the visible lines more often than th
 OVERLAY_WALK_MAX_S = 1.50   # but do walk at least this often while tokens are on screen
 OVERLAY_MAX_LINES = 250     # safety cap on the line walk
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
-          "blocking_since": 0.0, "index": None, "composer_rect": None}
+          "blocking_since": 0.0, "index": None, "composer_rect": None,
+          "dialog_confirm_rect": None, "dialog_list_rect": None}
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
@@ -610,6 +611,7 @@ class Automation(threading.Thread):
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_edit = None
         self.dialog_confirm = None
+        self.dialog_list = None
         self.dialog_seen = 0.0
         self.dialog_said = ""
         self.seen_classes: set[str] = set()
@@ -1154,7 +1156,7 @@ class Automation(threading.Thread):
         down, which is why an earlier version reported it missing on every
         opening and let every pick through unmasked.
         """
-        edit, confirm, edit_score = None, None, -1
+        edit, confirm, listing, edit_score = None, None, None, -1
         queue_, seen = collections.deque([(dlg, 0)]), 0
         while queue_ and seen < 600:
             c, depth = queue_.popleft()
@@ -1176,14 +1178,16 @@ class Automation(threading.Thread):
             elif kind == "ButtonControl" and confirm is None:
                 if name.strip().strip("&").lower() in OPEN_BUTTONS:
                     confirm = c
-            if edit_score >= 2 and confirm is not None:
+            elif kind in ("ListControl", "DataGridControl") and listing is None:
+                listing = c
+            if edit_score >= 2 and confirm is not None and listing is not None:
                 break
             if depth < 10:
                 try:
                     queue_.extend((k, depth + 1) for k in c.GetChildren())
                 except Exception:  # noqa: BLE001
                     pass
-        return edit, confirm
+        return edit, confirm, listing
 
     def dialog_paths(self, dlg, edit) -> list[str]:
         """Absolute paths the dialog would return: the File name box, resolved
@@ -1257,14 +1261,15 @@ class Automation(threading.Thread):
         if dlg is None:
             if self.dialog is not None:
                 log("file dialog closed")
-            self.dialog = self.dialog_edit = self.dialog_confirm = None
+            self.dialog = self.dialog_edit = self.dialog_confirm = self.dialog_list = None
             SHARED["dialog_open"] = False
+            SHARED["dialog_confirm_rect"] = SHARED["dialog_list_rect"] = None
             return
         self.dialog = dlg
         if self.dialog_edit is None:
             # Retried on every poll: a dialog that has just appeared is not
             # fully built, and one failed look used to disarm the guard for good.
-            edit, confirm = self.dialog_parts(dlg)
+            edit, confirm, listing = self.dialog_parts(dlg)
             if edit is None:
                 SHARED["dialog_open"] = False
                 self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} but no "
@@ -1275,12 +1280,30 @@ class Automation(threading.Thread):
                 self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} with no "
                                  f"Open button; left alone")
                 return
-            self.dialog_edit, self.dialog_confirm = edit, confirm
+            self.dialog_edit, self.dialog_confirm, self.dialog_list = edit, confirm, listing
             log(f"file dialog ready: name={(dlg.Name or '')[:40]!r} "
                 f"box={(edit.Name or edit.AutomationId or 'edit')!r} "
-                f"button={(confirm.Name or '')!r}")
+                f"button={(confirm.Name or '')!r} "
+                f"list={'found' if listing is not None else 'NOT FOUND'}")
             self.toast("File dialog: the file you pick will be masked before Claude sees it.")
+        self.publish_dialog_rects()
         SHARED["dialog_open"] = True
+
+    def publish_dialog_rects(self) -> None:
+        """The hook decides with arithmetic, not UIA: a low-level hook must
+        return fast, and a cross-process call inside one is asking for it to be
+        dropped by Windows."""
+        for key, ctrl in (("dialog_confirm_rect", self.dialog_confirm),
+                          ("dialog_list_rect", self.dialog_list)):
+            rect = None
+            if ctrl is not None:
+                try:
+                    r = ctrl.BoundingRectangle
+                    if r.right > r.left and r.bottom > r.top:
+                        rect = (r.left, r.top, r.right, r.bottom)
+                except Exception:  # noqa: BLE001
+                    rect = None
+            SHARED[key] = rect
 
     def warn_dialog(self, message: str) -> None:
         """Say it once per distinct message, not once per poll."""
@@ -1298,7 +1321,7 @@ class Automation(threading.Thread):
             return
         edit, confirm = self.dialog_edit, self.dialog_confirm
         if edit is None:
-            edit, confirm = self.dialog_parts(dlg)
+            edit, confirm, _listing = self.dialog_parts(dlg)
         if edit is None:
             log("file guard: no File name box found; letting the dialog through")
             self.dialog_replay(dlg, confirm)
@@ -1603,6 +1626,8 @@ class Hotkeys(threading.Thread):
         self.events = events
         self.swallow_up = False
         self.swallow_click = False
+        self.last_down_at, self.last_down = 0.0, (0, 0)
+        self.double_click_s = (_user32.GetDoubleClickTime() / 1000.0) if _IS_WIN else 0.5
         self._proc = None            # keep the callback alive for the hook's lifetime
 
     def claude_in_front(self) -> bool:
@@ -1618,7 +1643,7 @@ class Hotkeys(threading.Thread):
 
     WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL = 14, 0x020A, 0x020E
 
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK = 0x0201, 0x0202, 0x0203
+    WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
 
     def mouse_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         """Notes wheel scrolling, and swallows a click on the file dialog's
@@ -1627,21 +1652,14 @@ class Hotkeys(threading.Thread):
             if n_code >= 0:
                 if w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
                     SHARED["scroll_at"] = time.time()
-                elif (w_param in (self.WM_LBUTTONDOWN, self.WM_LBUTTONDBLCLK)
-                      and SHARED["dialog_open"] and self.cfg.get("fileGuard", True)):
+                elif (w_param == self.WM_LBUTTONDOWN and SHARED["dialog_open"]
+                      and self.cfg.get("fileGuard", True)):
                     ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                    if ms.flags & 0x01:                       # LLMHF_INJECTED: our own replay
-                        pass
-                    elif w_param == self.WM_LBUTTONDBLCLK and self.on_dialog_file(ms.pt.x, ms.pt.y):
-                        self.swallow_click = True
-                        self.commands.put(("dialog_confirm", time.time()))
-                        log("hook: dialog file double-click swallowed")
-                        return 1
-                    elif w_param == self.WM_LBUTTONDOWN and self.on_dialog_confirm(ms.pt.x, ms.pt.y):
-                        self.swallow_click = True
-                        self.commands.put(("dialog_confirm", time.time()))
-                        log("hook: dialog Open click swallowed")
-                        return 1
+                    if not (ms.flags & 0x01):                 # LLMHF_INJECTED: our own replay
+                        if self.dialog_click(ms.pt.x, ms.pt.y):
+                            self.swallow_click = True
+                            self.commands.put(("dialog_confirm", time.time()))
+                            return 1
                 elif w_param == self.WM_LBUTTONDOWN and foreground_exe() != CLAUDE_EXE:
                     SHARED["drag_at"] = time.time()     # a drag may have begun elsewhere
                 elif w_param == self.WM_LBUTTONUP and self.swallow_click:
@@ -1652,35 +1670,28 @@ class Hotkeys(threading.Thread):
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     @staticmethod
-    def on_dialog_file(x: int, y: int) -> bool:
-        """Is (x,y) on a file in the dialog's list? Double-clicking one is how
-        most people pick a file, and it confirms the dialog."""
-        try:
-            ctl = auto.ControlFromPoint(x, y)
-            if ctl is None or process_exe(ctl.ProcessId) != CLAUDE_EXE:
-                return False
-            for _ in range(3):
-                if ctl is None:
-                    return False
-                if ctl.ControlTypeName in ("ListItemControl", "DataItemControl"):
-                    return True
-                ctl = ctl.GetParentControl()
-        except Exception:  # noqa: BLE001
-            return False
-        return False
+    def inside(rect, x: int, y: int) -> bool:
+        return rect is not None and rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
 
-    @staticmethod
-    def on_dialog_confirm(x: int, y: int) -> bool:
-        """Is (x,y) inside the confirm button of Claude's file dialog?"""
-        try:
-            ctl = auto.ControlFromPoint(x, y)
-            if ctl is None or ctl.ControlTypeName != "ButtonControl":
-                return False
-            if (ctl.Name or "").strip().strip("&").lower() not in ("open", "ok", "attach", "select"):
-                return False
-            return process_exe(ctl.ProcessId) == CLAUDE_EXE
-        except Exception:  # noqa: BLE001
-            return False
+    def dialog_click(self, x: int, y: int) -> bool:
+        """Should this click in the file dialog be held so the pick can be
+        masked first? True for the Open button, and for the second click of a
+        double click on the file list.
+
+        A low-level mouse hook never receives WM_LBUTTONDBLCLK - Windows
+        synthesises that later, from the window's own message handling - so the
+        double click is timed here instead. That is why double-clicking a file,
+        which is how most people pick one, went straight through.
+        """
+        now = time.time()
+        gap, moved = now - self.last_down_at, abs(x - self.last_down[0]) + abs(y - self.last_down[1])
+        self.last_down_at, self.last_down = now, (x, y)
+        on_confirm = self.inside(SHARED["dialog_confirm_rect"], x, y)
+        on_list = self.inside(SHARED["dialog_list_rect"], x, y)
+        double = gap <= self.double_click_s and moved <= 6
+        log(f"hook: dialog click at ({x},{y}) on_confirm={on_confirm} on_list={on_list} "
+            f"double={double} -> {'held' if on_confirm or (on_list and double) else 'through'}")
+        return on_confirm or (on_list and double)
 
     def hook_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         try:
@@ -1722,6 +1733,10 @@ class Hotkeys(threading.Thread):
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     def run(self) -> None:
+        with auto.UIAutomationInitializerInThread():
+            self.pump()
+
+    def pump(self) -> None:
         mods = self.MOD_CONTROL | self.MOD_SHIFT | self.MOD_NOREPEAT
         for hid, (key, _) in self.BINDINGS.items():
             if not _user32.RegisterHotKey(None, hid, mods, ord(key)):
