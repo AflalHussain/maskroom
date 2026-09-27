@@ -56,7 +56,7 @@ a fleet rollout. P3 is needed for contract signature and for scale.
 | 27 | PKG-4 | `dev-sync.ps1` must never ship | Packaging | minutes |
 | 28 | OPS-2 | No health check, access log, metrics or CI | Operations | days |
 | 29 | MASK-2 | No recall metric, known gaps excluded from assertions | Masking | days |
-| 30 | CODE-1 | Three copies of the token rules, two product names | Code health | days |
+| 30 | CODE-1 | Three copies of the token rules (~~two product names~~ **done**) | Code health | days |
 | 31 | DOC-* | Compliance artefacts | Compliance | weeks |
 
 ---
@@ -370,12 +370,19 @@ secret manager; no code path reads from one.
 
 ## Code health (CODE)
 
-### CODE-1 — Duplication and naming — P2, verified
+### CODE-1 — Duplication and naming — P2, verified (naming **DONE 2026-09-27**)
 The token restore rules exist in three hand-maintained implementations: `maskroom/engine.py`,
 `extension/tokens.js` and `desktop/helper.py`. They already differ, since the Python port
 omits the unresolved report. `MASK_EXTS` has three copies and `RESTORE_EXTS` two. The product
-also has two names: the server and its pages say SafePII, the helper says Maskroom in its bar,
-its config path and its headers.
+also had two names. **Corrected:** the server pages and the extension already said SafePII to
+users; what looked like a count of stray "Maskroom" strings in them is the `MaskroomAuth`
+JavaScript identifier and the `MASKROOM_API_KEY` environment variable, neither of which a
+user sees. Only the helper was wrong, and it now says SafePII in its bar, its windows, its
+sign-in page and its folders, carrying settings over from the old folder on first run so an
+upgrade does not sign anyone out. `X-Requested-With: maskroom` stays as it is: that is the
+CSRF value the server checks, not a product name.
+
+The three copies of the token rules are still outstanding.
 
 ### CODE-2 — The helper is one 2,925-line file — P3
 Clean seams are already visible in the section banners: config and logging, the server API,

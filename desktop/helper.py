@@ -1,9 +1,9 @@
-"""Maskroom desktop helper (Windows prototype).
+"""SafePII desktop helper for Claude Desktop (Windows).
 
 Sits beside Claude Desktop the way the Chrome extension sits inside claude.ai:
 when the composer has focus, a small floating bar appears above it with a Mask
 button. Mask (button, or Ctrl+Shift+M anywhere) reads the composer through UI
-Automation, sends the text to the Maskroom server (POST /api/mask), and writes
+Automation, sends the text to the SafePII server (POST /api/mask), and writes
 the pseudonymized text back in place through ValuePattern.SetValue - the write
 path verified by scripts/desktop/uia_composer_probe.py. You still press send.
 
@@ -20,10 +20,10 @@ anyway. The Send button is not guarded (only the keyboard is hooked).
 Files (guard on): when Claude's paperclip opens the Windows file dialog, the
 helper watches it. Confirming a supported file (.xlsx .xlsm .pdf .docx .pptx
 .csv .tsv .txt .json) is intercepted: the file goes to the server
-(POST /api/process), the masked copy is written to the Maskroom files folder,
+(POST /api/process), the masked copy is written to the SafePII files folder,
 its path is typed into the dialog's File name box and the confirm is
 replayed, so Claude attaches the masked copy and never sees the original.
-A type Maskroom cannot mask (an image, an archive) is attached as it is with
+A type SafePII cannot mask (an image, an archive) is attached as it is with
 a warning on the bar, as the extension does; only a supported type that
 *should* have been masked and could not holds the attachment. Explorer drag-and-drop onto
 Claude is blocked (the overlay window takes the drop and rejects it) so files
@@ -58,7 +58,7 @@ Sessions follow the chat, as the extension's do. The chat is identified by
 the page URL that Chromium exposes as the document's value (claude.ai/chat/
 <id>), else by the tokens visible on the page (every token id is random, so
 a token names its session), else by the chat title. Each chat gets its own
-Maskroom session (vault); switching chats switches the session used for
+SafePII session (vault); switching chats switches the session used for
 masking. Restore (hover, copy, overlay) searches every known vault at once,
 so it never depends on which chat is current.
 
@@ -69,9 +69,9 @@ which the helper exchanges (POST /auth/exchange) for a session token it then
 sends as `Authorization: Bearer`. A service key (mr_...) pasted into settings
 works too, for servers without sign-on or for shared machines.
 
-Config lives in %APPDATA%\\Maskroom\\helper.json (server URL, token, session
+Config lives in %APPDATA%\\SafePII\\helper.json (server URL, token, session
 id). An administrator can pre-set the server URL for every user of a machine
-in %ProgramData%\\Maskroom\\helper.json (read first, like the extension's
+in %ProgramData%\\SafePII\\helper.json (read first, like the extension's
 managed serverUrl key).
 
 Threads: UI Automation and the server calls run on one worker thread (COM is
@@ -108,7 +108,11 @@ except ImportError:  # pragma: no cover
     print("Missing dependency. Run:  py -m pip install uiautomation")
     sys.exit(1)
 
-APP_NAME = "Maskroom"
+APP_NAME = "SafePII"
+OLD_APP_NAME = "Maskroom"   # settings written before the product was named
+# The CSRF value the server checks (webui/auth.py CSRF_VALUE). A wire constant,
+# not a product name: renaming it would need a coordinated server change.
+CSRF_VALUE = "maskroom"
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "helper.json"
 MACHINE_CONFIG = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / APP_NAME / "helper.json"
@@ -167,7 +171,25 @@ POLL_S = 0.12
 HIDE_GRACE_S = 0.8
 
 # ----------------------------------------------------------------------------- config
+def adopt_old_settings() -> None:
+    """Carry settings over from the folder the helper used before the product
+    was named SafePII, so an upgrade does not silently sign the user out and
+    lose every chat-to-session binding."""
+    if CONFIG_FILE.exists() or not _IS_WIN:
+        return
+    old = Path(os.environ.get("APPDATA", str(Path.home()))) / OLD_APP_NAME / "helper.json"
+    try:
+        if not old.is_file():
+            return
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_bytes(old.read_bytes())
+        log(f"adopted settings from the previous {OLD_APP_NAME} folder")
+    except OSError as e:
+        log(f"could not adopt the previous settings: {e}")
+
+
 def load_config() -> dict:
+    adopt_old_settings()
     cfg = dict(DEFAULTS)
     for path in (MACHINE_CONFIG, CONFIG_FILE):   # machine-wide defaults, then the user's own
         try:
@@ -255,7 +277,9 @@ class Server:
 
     def _request(self, path: str, method: str, data, headers: dict):
         url = self.cfg["serverUrl"].rstrip("/") + path
-        headers = {"X-Requested-With": "maskroom", "Accept": "application/json", **headers}
+        # "maskroom" is the CSRF value the server checks (webui/auth.py CSRF_VALUE),
+        # not a product name. It stays put; renaming it would need both sides.
+        headers = {"X-Requested-With": CSRF_VALUE, "Accept": "application/json", **headers}
         token = (self.cfg.get("token") or "").strip()
         key = (self.cfg.get("apiKey") or "").strip()
         if token:
@@ -278,7 +302,7 @@ class Server:
             return {"ok": False, "status": e.code, "data": payload, "error": msg or f"{e.code} {e.reason}"}
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             return {"ok": False, "status": 0, "data": None,
-                    "error": f"Cannot reach Maskroom at {self.cfg['serverUrl']} ({getattr(e, 'reason', e)})."}
+                    "error": f"Cannot reach SafePII at {self.cfg['serverUrl']} ({getattr(e, 'reason', e)})."}
 
     def binary(self, path: str) -> tuple[bytes | None, str | None]:
         """GET bytes (a masked or restored file). Returns (bytes, error)."""
@@ -293,7 +317,7 @@ class Server:
 
     def api(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         url = self.cfg["serverUrl"].rstrip("/") + path
-        headers = {"X-Requested-With": "maskroom", "Accept": "application/json"}
+        headers = {"X-Requested-With": CSRF_VALUE, "Accept": "application/json"}
         token = (self.cfg.get("token") or "").strip()
         key = (self.cfg.get("apiKey") or "").strip()
         if token:
@@ -318,7 +342,7 @@ class Server:
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             reason = getattr(e, "reason", e)
             return {"ok": False, "status": 0, "data": None,
-                    "error": f"Cannot reach Maskroom at {self.cfg['serverUrl']} ({reason}). Is the server running?"}
+                    "error": f"Cannot reach SafePII at {self.cfg['serverUrl']} ({reason}). Is the server running?"}
 
 
 def _multipart(fields: dict, filename: str, blob: bytes) -> tuple[bytes, str]:
@@ -1232,7 +1256,7 @@ class Automation(threading.Thread):
         """Mask one file through the server. Returns (status, path to attach, message):
 
           "masked"    the masked copy; the original never leaves the machine
-          "unmasked"  Maskroom cannot mask this type (an image, an archive…), so
+          "unmasked"  SafePII cannot mask this type (an image, an archive…), so
                       the original is attached and the user is warned - the same
                       choice the extension makes
           "skip"      nothing to do (not a file); left to the dialog
@@ -1984,9 +2008,9 @@ class SignIn(threading.Thread):
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
                 ok = bool(result["code"])
-                self.wfile.write(("<!doctype html><meta charset=utf-8><title>Maskroom</title>"
+                self.wfile.write(("<!doctype html><meta charset=utf-8><title>SafePII</title>"
                                   "<body style='font-family:system-ui;margin:3rem'>"
-                                  + ("<h2>Signed in to Maskroom</h2><p>You can close this tab and go back to Claude.</p>"
+                                  + ("<h2>Signed in to SafePII</h2><p>You can close this tab and go back to Claude.</p>"
                                      if ok else "<h2>Sign-in did not complete</h2><p>Try again from the helper.</p>")
                                   + "</body>").encode("utf-8"))
 
@@ -2892,7 +2916,7 @@ class Bar:
         self.win.withdraw()
         f = tk.Frame(self.win, bg=self.BG, padx=6, pady=4)
         f.pack(fill="both", expand=True)
-        tk.Label(f, text="MASKROOM", bg=self.BG, fg=self.ACCENT, font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 6))
+        tk.Label(f, text="SAFEPII", bg=self.BG, fg=self.ACCENT, font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 6))
         self.mask_btn = tk.Button(f, text="Mask", command=lambda: self.commands.put(("mask",)),
                                   bg="#374151", fg=self.FG, activebackground="#4b5563", relief="flat",
                                   padx=8, font=("Segoe UI", 9, "bold"))
