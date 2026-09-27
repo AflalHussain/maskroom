@@ -598,6 +598,25 @@
 
   // The word differs per state as well as the colour: about eight per cent of
   // men cannot separate red from green.
+  function watchComposer() {
+    addEventListener("resize", repositionSoon, { passive: true });
+    addEventListener("scroll", repositionSoon, { passive: true, capture: true });
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(repositionSoon);
+      let watched = null;
+      setInterval(() => {
+        const el = q(SEL.composer);
+        const box = (el && el.closest(SEL.dropTarget.join(","))) || el;
+        if (box !== watched) {
+          if (watched) ro.unobserve(watched);
+          if (box) ro.observe(box);
+          watched = box;
+          repositionSoon();
+        }
+      }, 700);
+    }
+  }
+
   function pillState() {
     if (contextDead) return { state: "error", word: "Reload the tab" };
     if (busy) return { state: "working", word: "Masking…" };
@@ -614,8 +633,45 @@
     { key: "unmask", label: "Unmask replies", locked: () => false },
   ];
 
+  // Sit just above the composer, right-aligned to it, the way the Windows
+  // helper anchors to Claude Desktop's. A fixed corner is fine until the window
+  // is narrow or the composer grows, and then it is floating over nothing in
+  // particular. Falls back to the corner when the composer cannot be found,
+  // which is also the state before the first message of a chat.
+  function placeBar(root) {
+    const el = q(SEL.composer);
+    const box = el && el.closest(SEL.dropTarget.join(",")) || el;
+    if (!box) { root.style.left = root.style.top = ""; root.classList.remove("sp-anchored"); return; }
+    const r = box.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    root.classList.add("sp-anchored");
+    root.style.left = Math.max(8, r.right - root.offsetWidth) + "px";
+    // Above the composer, or below it when there is no room above.
+    const above = r.top - root.offsetHeight - 10;
+    root.style.top = (above >= 8 ? above : Math.min(r.bottom + 10,
+      window.innerHeight - root.offsetHeight - 8)) + "px";
+  }
+
+  // Cheap to call and called often: the composer grows as the user types, the
+  // window resizes, and Claude re-lays the page out on its own.
+  let placeQueued = false;
+  function repositionSoon() {
+    if (placeQueued || !isTop) return;
+    placeQueued = true;
+    requestAnimationFrame(() => {
+      placeQueued = false;
+      const root = document.getElementById("safepii-root");
+      if (root) placeBar(root);
+    });
+  }
+
   function renderBar() {
     if (!isTop) return;
+    renderBarInner();
+    repositionSoon();     // the pill's width changes with the word and the count
+  }
+
+  function renderBarInner() {
     let root = document.getElementById("safepii-root");
     if (!root) {
       root = document.createElement("div");
@@ -786,6 +842,7 @@
     if (!isTop) { await refreshFrameVault(); return; }  // preview subframe: restore only
     await loadManaged();
     renderBar();
+    watchComposer();
     const sessions = await storedSessions();
     sessionId = sessions[currentKey] || null;
     await api("/api/me");   // learn whether we are signed in (401 -> bar shows "sign in")
