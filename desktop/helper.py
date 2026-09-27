@@ -132,7 +132,7 @@ DEFAULTS = {
     "fileGuard": True,     # intercept the file dialog / paste / drop
     "onGuardFailure": "hold",  # "hold" (nothing sends) or "warn" (sends, loudly)
     "forgetAfterIdleMinutes": 15,   # drop the real values after this much idle time
-    "blockDrops": True,    # refuse Explorer drops on Claude (they cannot be masked in flight)
+    "blockDrops": False,   # an invisible window that eats clicks; opt in (see the README)
     "filesDir": "",        # where masked copies are written (default: <config>/files)
     "watchDownloads": True,   # restore tokens in files Claude produces
     "downloadsDir": "",    # default: the user's Downloads folder
@@ -148,8 +148,9 @@ OVERLAY_MAX_LINES = 250     # safety cap on the line walk
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
           "blocking_since": 0.0, "index": None, "composer_rect": None,
           "dialog_confirm_rect": None, "dialog_list_rect": None,
-          "worker_beat": 0.0, "alarm": ""}
-WORKER_DEAD_S = 15.0       # no heartbeat for this long: the guard is not working
+          "worker_beat": 0.0, "worker_busy": "", "alarm": ""}
+WORKER_DEAD_S = 15.0       # no heartbeat for this long, and not busy: not working
+BLOCKER_MAX_S = 6.0        # the drop blocker comes down after this, drop or no drop
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
@@ -811,12 +812,16 @@ class Automation(threading.Thread):
                     log(f"downloads poll error {type(e).__name__}: {e}")
             self.poll_idle()
             return
-        SHARED["worker_beat"] = time.time()    # a long command must not look dead
+        SHARED["worker_beat"] = time.time()
+        SHARED["worker_busy"] = cmd[0]         # working, not wedged
         try:
             getattr(self, "cmd_" + cmd[0])(*cmd[1:])
         except Exception as e:  # noqa: BLE001 - keep the worker alive
             log(f"command {cmd[0]} failed: {type(e).__name__}: {e}")
             self.toast(f"{type(e).__name__}: {e}", error=True)
+        finally:
+            SHARED["worker_busy"] = ""
+            SHARED["worker_beat"] = time.time()
 
     # ---- focus tracking
     def looks_like_composer(self, ctrl) -> bool:
@@ -1906,6 +1911,14 @@ class Automation(threading.Thread):
                 SHARED["blocking"] = False
                 self.emit(type="block_drop", rect=None)
             return
+        if SHARED["blocking"] and time.time() - SHARED["blocking_since"] > BLOCKER_MAX_S:
+            # Nothing invisible may sit over Claude eating clicks indefinitely:
+            # the bar that would switch it off is underneath it.
+            SHARED["blocking"] = False
+            SHARED["drag_at"] = 0.0
+            self.emit(type="block_drop", rect=None)
+            log(f"drop blocker taken down after {BLOCKER_MAX_S:g}s; no drop arrived")
+            return
         if not SHARED["blocking"]:
             SHARED["blocking"] = True
             SHARED["blocking_since"] = time.time()
@@ -2130,6 +2143,11 @@ class Hotkeys(threading.Thread):
 
     @staticmethod
     def worker_alive() -> bool:
+        """Busy is not dead. Masking a workbook or restoring a download holds
+        the worker for as long as the server takes, and treating that as a
+        failure locked the keyboard mid-upload."""
+        if SHARED["worker_busy"]:
+            return True
         beat = SHARED["worker_beat"]
         return beat > 0 and (time.time() - beat) < WORKER_DEAD_S
 
@@ -2143,7 +2161,7 @@ class Hotkeys(threading.Thread):
         """
         if SHARED["alarm"] != "worker":
             SHARED["alarm"] = "worker"
-            log("hook: the worker thread has stopped answering; guard cannot mask")
+            log(f"hook: the worker has not answered for {WORKER_DEAD_S:g}s; guard cannot mask")
             self.events.put({"type": "alarm", "what": "worker",
                              "msg": "SafePII has stopped protecting this app. Restart it."})
         if self.cfg.get("onGuardFailure", "hold") == "hold":
@@ -2192,9 +2210,12 @@ class Hotkeys(threading.Thread):
                 if kb.vkCode == self.VK_RETURN and w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
                     plain = not (kb.flags & self.LLKHF_ALTDOWN) \
                         and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) and not ctrl_down
-                    if plain and not injected and not self.worker_alive():
-                        return self.guard_failed(n_code, w_param, l_param)
+                    # Whether Claude is in front is asked FIRST and gates everything
+                    # below. Checking the guard's own health before this swallowed
+                    # Enter in every application on the machine, not just Claude.
                     front = self.claude_in_front()
+                    if front and plain and not injected and not self.worker_alive():
+                        return self.guard_failed(n_code, w_param, l_param)
                     if (SHARED["dialog_open"] and plain and not injected
                             and self.cfg.get("fileGuard", True) and front):
                         self.swallow_up = True

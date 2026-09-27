@@ -680,16 +680,23 @@ def test_the_hook_holds_when_the_worker_has_stopped_answering(automation, monkey
     hooks = helper.Hotkeys.__new__(helper.Hotkeys)
     hooks.cfg, hooks.events, hooks.swallow_up = {}, events, False
 
+    helper.SHARED["worker_busy"] = ""
     helper.SHARED["worker_beat"] = time.time()
     assert hooks.worker_alive() is True
 
+    # Busy is not dead: masking a workbook holds the worker for as long as the
+    # server takes, and treating that as failure locked the keyboard mid-upload.
     helper.SHARED["worker_beat"] = time.time() - helper.WORKER_DEAD_S - 1
+    helper.SHARED["worker_busy"] = "mask_files"
+    assert hooks.worker_alive() is True, "a working worker is not a dead one"
+
+    helper.SHARED["worker_busy"] = ""
     helper.SHARED["alarm"] = ""
     assert hooks.worker_alive() is False
     assert hooks.guard_failed(0, 0, 0) == 1, "default is to hold, not to let it through"
     assert hooks.swallow_up is True
     assert events.get_nowait()["what"] == "worker"
-    assert any("stopped answering" in m for m in said), said
+    assert any("has not answered" in m for m in said), said
 
 
 def test_the_hold_or_warn_choice_is_the_customers(automation, monkeypatch):
@@ -807,3 +814,16 @@ def test_messages_carry_a_grade_so_the_bar_can_treat_them_differently(automation
     automation.toast("session abcd1234")
     assert [e["level"] for e in sent] == ["success", "warn", "error", "info"]
     assert all(e["type"] == "alert" for e in sent)
+
+
+def test_the_hook_never_swallows_a_key_outside_claude(automation, monkeypatch):
+    """The regression that made the machine unusable: the guard's own health was
+    checked before which application was in front, so a worker that looked dead
+    swallowed Enter in every program on the desktop."""
+    helper = sys.modules["helper"]
+    import inspect
+    body = inspect.getsource(helper.Hotkeys.hook_proc)
+    front = body.index("front = self.claude_in_front()")
+    health = body.index("not self.worker_alive()")
+    assert front < health, "which app is in front must gate the health check"
+    assert "front and plain" in body, "the hold must be scoped to Claude"
