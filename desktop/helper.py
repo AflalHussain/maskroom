@@ -576,6 +576,9 @@ if _IS_WIN:
     _gdi32 = ctypes.windll.gdi32
     _gdi32.GetPixel.restype = wt.COLORREF
     _gdi32.GetPixel.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
+    _gdi32.CreateRoundRectRgn.restype = wt.HRGN
+    _gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
+    _user32.SetWindowRgn.argtypes = [wt.HWND, wt.HRGN, wt.BOOL]
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
@@ -709,19 +712,27 @@ def workstation_locked() -> bool:
     return False
 
 
-def round_corners(window, small: bool = False) -> None:
-    """Windows 11 rounds the corners of a floating surface for us, through the
-    window manager, which tkinter cannot do itself. Older builds ignore it."""
+def round_corners(window, radius: int = 8) -> None:
+    """Round a frameless window by clipping it to a rounded rectangle.
+
+    Asking the window manager to round it does not work here: it rounds windows
+    that have a frame, and every surface the helper draws is `overrideredirect`,
+    which has none. So the corners stayed square. Clipping the window to a
+    region does work on a popup, and has to be redone whenever the window
+    changes size, because the region is in pixels.
+    """
     if not _IS_WIN:
         return
-    DWMWA_WINDOW_CORNER_PREFERENCE = 33
-    preference = ctypes.c_int(3 if small else 2)     # ROUNDSMALL (4px) / ROUND (8px)
     try:
         window.update_idletasks()
+        w, h = window.winfo_width(), window.winfo_height()
+        if w <= 1 or h <= 1:
+            return
         hwnd = _user32.GetParent(window.winfo_id()) or window.winfo_id()
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            wt.HWND(hwnd), DWMWA_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(preference), ctypes.sizeof(preference))
+        d = min(radius, h // 2, w // 2) * 2
+        region = _gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d)
+        if region:
+            _user32.SetWindowRgn(hwnd, region, True)   # the window owns it now
     except Exception:  # noqa: BLE001 - cosmetic only
         pass
 
@@ -769,6 +780,36 @@ class Box:
 
     def __repr__(self):
         return f"Box({self.left},{self.top},{self.right},{self.bottom})"
+
+
+COMPOSER_BOX_HINT = "rounded-composer"   # the class Claude gives the visible box
+
+
+def composer_box(ctrl):
+    """The composer's *visible* rectangle, not the text element's.
+
+    The editable element sits inside a rounded, padded container, so anchoring
+    to it put the bar on top of that container's border. Claude names the
+    container in its class list; failing that, the nearest ancestor that is
+    meaningfully taller is the box.
+    """
+    best = ctrl.BoundingRectangle
+    node = ctrl
+    for _ in range(5):
+        try:
+            node = node.GetParentControl()
+            if node is None:
+                break
+            r = node.BoundingRectangle
+        except Exception:  # noqa: BLE001
+            break
+        if r.bottom - r.top > (best.bottom - best.top) + 200:
+            break                       # too big to be the composer: a page section
+        if COMPOSER_BOX_HINT in (node.ClassName or ""):
+            return r
+        if r.bottom - r.top > best.bottom - best.top:
+            best = r
+    return best
 
 
 def find_page_document():
@@ -932,7 +973,7 @@ class Automation(threading.Thread):
             ctrl = None
         if ctrl is not None and self.looks_like_composer(ctrl):
             try:
-                r = ctrl.BoundingRectangle
+                r = composer_box(ctrl)
             except Exception:  # noqa: BLE001
                 return
             if self.composer is None:
@@ -3071,36 +3112,51 @@ class Overlay:
 
 
 # ----------------------------------------------------------------------------- UI
-# The shield mark, the same one the extension and the web pages use
-# (extension/icon48.png), carried inline so the helper stays a single file.
-LOGO_PNG_48 = (
-    "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"
+# The shield mark, the same one the extension draws, rendered from
+# webui/static/logo-shield.svg and carried inline so the helper stays a single
+# file. 60 px square so Tk, which only scales by whole numbers, gets exactly 30
+# or 20 with nothing left over. The old build used extension/icon48.png, which
+# is the redaction-mark app tile: a different drawing, so the two halves of the
+# product did not match.
+LOGO_PNG = (
+    "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"
 )
+
+
 def app_logo(root):
     """The mark at a size that suits the display. Tk scales by whole numbers
     only, so 48 gives a clean 24 or 16.
@@ -3114,8 +3170,8 @@ def app_logo(root):
     except Exception:  # noqa: BLE001
         pass
     try:
-        return tk.PhotoImage(master=root, data=LOGO_PNG_48).subsample(
-            2 if scale >= 1.4 else 3)
+        return tk.PhotoImage(master=root, data=LOGO_PNG).subsample(
+            2 if scale >= 1.4 else 3)   # 30 px on a high-density screen, 20 otherwise
     except Exception as e:  # noqa: BLE001 - a missing mark must not stop the bar
         log(f"could not load the logo: {e}")
         return None
@@ -3145,6 +3201,7 @@ class Bar:
 
     # geometry (see the docstring for provenance)
     PILL_H, PANEL_W, ROW_H, PAD, GAP, TIGHT = 32, 300, 30, 16, 12, 8
+    CLEAR = 10          # space left between the pill and the composer's border
     RECENT_KEEP = 10
 
     # A shape for every state, so nothing depends on colour alone: about eight
@@ -3212,7 +3269,6 @@ class Bar:
             w.bind("<Button-1>", lambda e: self.toggle_panel())
             w.bind("<Enter>", lambda e: self.show_pill_tip())
             w.bind("<Leave>", lambda e: self.hide_pill_tip())
-        round_corners(self.win, small=True)
         make_no_activate(self.win)
 
         self.pilltip = self._floating("#10141f")
@@ -3243,7 +3299,6 @@ class Bar:
         w.configure(bg=bg)
         w.withdraw()
         make_no_activate(w)
-        round_corners(w, small=True)
         return w
 
     # ---- the pill
@@ -3298,17 +3353,19 @@ class Bar:
         x = self.win.winfo_x() + self.pill_w - self.pilltip.winfo_reqwidth()
         self.pilltip.geometry(f"+{max(0, x)}+{self.win.winfo_y() + self.PILL_H + 6}")
         self.pilltip.deiconify()
+        round_corners(self.pilltip, 8)
 
     def hide_pill_tip(self) -> None:
         self.pilltip.withdraw()
 
     def place(self, rect, force: bool = False) -> None:
         left, top, right, bottom = rect
-        x, y = right - self.pill_w, top - self.PILL_H - self.TIGHT
+        x, y = right - self.pill_w, top - self.PILL_H - self.CLEAR
         if y < 0:
-            y = bottom + self.TIGHT
+            y = bottom + self.CLEAR
         if rect != self.rect or force:
             self.win.geometry(f"{self.pill_w}x{self.PILL_H}+{x}+{y}")
+            round_corners(self.win, self.PILL_H // 2)   # a pill, and redone on resize
             self.rect = rect
             if self.panel:
                 self.place_panel()
@@ -3419,6 +3476,7 @@ class Bar:
         if y < 0:
             y = self.win.winfo_y() + self.PILL_H + self.TIGHT
         self.panel.geometry(f"{self.PANEL_W}x{h}+{max(0, x)}+{y}")
+        round_corners(self.panel, 10)
 
     def build_panel(self) -> None:
         if not self.panel:
@@ -3565,7 +3623,6 @@ class Bar:
             b.pack(side="left", padx=(0, self.TIGHT))
             b.bind("<Button-1>", lambda e, v=value: answer(v))
         w.protocol("WM_DELETE_WINDOW", lambda: answer("no"))
-        round_corners(w)
 
     # ---- the hover tooltip over Claude's own text
     def show_tip(self, text, x: int, y: int) -> None:
@@ -3581,6 +3638,7 @@ class Bar:
             y = max(0, y - h - 30)
         self.tip.geometry(f"+{x}+{y}")
         self.tip.deiconify()
+        round_corners(self.tip, 8)
 
     def toast(self, msg: str, error: bool = False) -> None:
         self.alert(msg, "error" if error else "info")

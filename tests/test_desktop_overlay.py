@@ -987,7 +987,7 @@ def test_the_mark_survives_a_missing_image(monkeypatch):
     helper = sys.modules["helper"]
     said = []
     monkeypatch.setattr(helper, "log", said.append)
-    monkeypatch.setattr(helper, "LOGO_PNG_48", "not a png")
+    monkeypatch.setattr(helper, "LOGO_PNG", "not a png")
     assert helper.app_logo(None) is None
     assert any("could not load the logo" in m for m in said), said
 
@@ -1199,3 +1199,72 @@ def test_an_unreachable_server_is_not_an_update_problem(automation, monkeypatch)
         "ok": False, "status": 0, "error": "cannot reach", "data": None})
     automation.poll_update()
     assert sent == []
+
+
+def test_the_mark_matches_the_one_the_extension_draws(automation):
+    """They were different drawings: the helper carried the redaction-mark app
+    tile while the extension drew the shield, so the two halves of the product
+    did not look like one product."""
+    import base64
+    helper = sys.modules["helper"]
+    png = base64.b64decode(helper.LOGO_PNG)
+    assert png[:4] == b"\x89PNG"
+    width = int.from_bytes(png[16:20], "big")
+    height = int.from_bytes(png[20:24], "big")
+    # Square, and divisible by the factors Tk subsamples by, so 20 and 30 come
+    # out exact rather than rounded.
+    assert width == height == 60
+    assert width % 2 == 0 and width % 3 == 0
+
+
+def test_the_bar_clears_the_composer_border(bar):
+    """It was anchored to the editable element, which sits inside a rounded,
+    padded container, so the bar landed on that container's border."""
+    composer = (400, 500, 1000, 560)
+    bar.b.place(composer)
+    top = bar.b.win.winfo_y()
+    assert top + bar.b.PILL_H <= composer[1] - 8, "it must sit clear of the box, not on it"
+    assert bar.b.win.winfo_x() + bar.b.pill_w == composer[2], "right edges align"
+
+
+def test_the_bar_flips_below_when_there_is_no_room_above(bar):
+    composer = (400, 4, 1000, 60)
+    bar.b.place(composer)
+    assert bar.b.win.winfo_y() >= composer[3], "below the composer, not off the screen"
+
+
+def test_the_visible_box_is_preferred_over_the_text_element(automation):
+    """Claude names the visible container in its class list."""
+    helper = sys.modules["helper"]
+
+    class Node:
+        def __init__(self, rect, cls="", parent=None):
+            self.BoundingRectangle = Rect(*rect)
+            self.ClassName = cls
+            self._parent = parent
+        def GetParentControl(self):
+            return self._parent
+
+    page = Node((0, 0, 1400, 900), "page")
+    box = Node((400, 480, 1000, 570), "bg-surface-3 rounded-composer px-2", page)
+    text = Node((410, 500, 990, 540), "tiptap ProseMirror", box)
+    got = helper.composer_box(text)
+    assert (got.left, got.top, got.right, got.bottom) == (400, 480, 1000, 570)
+
+
+def test_an_unnamed_container_falls_back_to_the_taller_ancestor(automation):
+    helper = sys.modules["helper"]
+
+    class Node:
+        def __init__(self, rect, parent=None):
+            self.BoundingRectangle = Rect(*rect)
+            self.ClassName = ""
+            self._parent = parent
+        def GetParentControl(self):
+            return self._parent
+
+    page = Node((0, 0, 1400, 900))          # far too tall: a page section, not the box
+    box = Node((400, 480, 1000, 570), page)
+    text = Node((410, 500, 990, 540), box)
+    got = helper.composer_box(text)
+    assert (got.top, got.bottom) == (480, 570)
