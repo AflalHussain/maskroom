@@ -35,13 +35,13 @@ a fleet rollout. P3 is needed for contract signature and for scale.
 | 6 | SEC-4 | Auth defaults to off and fails open on misconfiguration | Security | hours |
 | 7 | ~~GUARD-1~~ | ~~File dialog fails open when its parts are not found~~ **done** | Fail-open | hours |
 | 8 | ~~REL-1~~ | ~~Worker thread can die, leaving Enter swallowed forever~~ **done** | Reliability | hours |
-| 9 | DATA-2 | Downloads watcher uploads every Office file, whatever its origin | Data | 1 day |
-| 10 | DATA-3 | Helper log records conversation text, with no rotation | Data | 1 day |
+| 9 | ~~DATA-2~~ | ~~Downloads watcher uploads every Office file~~ **done** | Data | 1 day |
+| 10 | ~~DATA-3~~ | ~~Helper log records conversation text, no rotation~~ **done** | Data | 1 day |
 | 11 | MASK-1 | PDF redaction reports success when it did not redact | Masking | 1 day |
 | 12 | SEC-5 | Bundled Keycloak is a dev realm with seeded accounts | Security | 1 day |
 | 13 | SEC-6 | Legacy shared API key bypasses single sign-on | Security | hours |
-| 14 | DATA-4 | Overlay paints real PII into every screen capture | Data | hours |
-| 15 | DATA-5 | Vaults survive sign-out in helper memory | Data | hours |
+| 14 | ~~DATA-4~~ | ~~Overlay paints real PII into every screen capture~~ **done** | Data | hours |
+| 15 | ~~DATA-5~~ | ~~Vaults survive sign-out in helper memory~~ **done** | Data | hours |
 | 16 | SEC-7 | Loopback sign-in has no `state` parameter | Security | hours |
 | 17 | GUARD-2 | Remaining fail-open paths in the helper | Fail-open | days |
 | 18 | DATA-6 | Audit trail is a cleartext PII store | Data | days |
@@ -174,31 +174,42 @@ so a partial restore is silent.
 chats sit untracked in `desktop/`, and `*.log` and `*.PNG` are not in `.gitignore`. One
 `git add -A` publishes patient and transaction details.
 
-### DATA-2 — Downloads watcher uploads every Office file — P1, verified
+### DATA-2 — Downloads watcher uploads every Office file — **DONE 2026-09-27**
 `desktop/helper.py:1239` returns true unconditionally for zipped Office formats, and
 `poll_downloads` watches the whole Downloads folder with no filter on origin. A bank
 statement or customer list saved from email is read and posted to the server within seconds.
 `extension/background.js:183` refuses anything not from Claude; the desktop has no referrer
 to check, so "we cannot tell, so we upload everything" is the wrong default.
+**Fixed:** `holds_tokens` answers true, false or *unknown*. Visible tokens are restored as
+before, a file with certainly none is ignored, and a zipped Office file asks the user first,
+with "always" and "never" remembered (`restoreUnreadable`).
 **Why it matters.** This is an unannounced egress channel from the endpoint. A third-party
 risk review stops the rollout here.
 
-### DATA-3 — Helper log records conversation text — P1, verified
+### DATA-3 — Helper log records conversation text — **DONE 2026-09-27**
 `overlayDebug` makes the walk write every walked line to `%APPDATA%\Maskroom\helper.log`.
 The log always records chat titles and URLs, file names and full folder paths, and
 `dump_dialog` writes the name and value of every control in a file dialog. No rotation, no
 size cap, no retention, no redaction. `claude_in_front()` also logs the foreground executable
 on every Enter pressed anywhere in Windows, which is an application-usage trail written by a
 tool not presented as monitoring software.
+**Fixed:** `redact()` reports the shape of a value rather than the value, and every log call
+that touched conversation text, a chat title, a file name, a folder path or a dialog control
+goes through it. The log rotates at 2 MB keeping one previous file. `save_config` also became
+atomic. Still open: the foreground-executable line on every Enter, which is `GUARD-2` work.
 
-### DATA-4 — Overlay paints real PII into screen captures — P1, reported
+### DATA-4 — Overlay paints real PII into screen captures — **DONE 2026-09-27**
 The overlay window does not set `WDA_EXCLUDEFROMCAPTURE`, so restored values appear in Teams
 and Zoom shares, the Snipping Tool, window thumbnails and any screen-recording agent.
+**Fixed:** both the overlay and the hover tooltip are excluded from capture, and a failure to
+apply that is logged rather than passing silently.
 
-### DATA-5 — Vaults survive sign-out — P1, verified
+### DATA-5 — Vaults survive sign-out — **DONE 2026-09-27**
 `cmd_sign_out` (`desktop/helper.py:991`) clears the token and nothing else. Hover, clipboard
 restore and the overlay keep revealing real values from all cached sessions until the process
 is killed. Nothing clears them on idle or on workstation lock either.
+**Fixed:** `forget_vaults()` drops every cached mapping and the published index, on sign-out,
+on workstation lock, and after `forgetAfterIdleMinutes` of no input (default 15).
 
 ### DATA-6 — The audit trail is a cleartext PII store — P1, verified
 `maskroom/store/audit.py:67` writes `input_text` (the raw original) and `output_text` into
