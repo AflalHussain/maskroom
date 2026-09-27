@@ -81,19 +81,11 @@ Invoke-Sign $exe
 
 if ($SkipMsi) { Write-Host "built $appDir (no MSI requested)"; exit 0 }
 
-# ---- 3. the file list for the MSI, generated because a frozen build's
-#         contents change with the Python version
-Write-Host "harvesting files for the MSI"
-& wix extension add -g WixToolset.Heat.wixext 2>$null | Out-Null
-& wix build --help 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
+# ---- 3. the MSI. WiX v4 globs the directory itself, so there is no separate
+#         harvest step and no generated file list to fall out of step.
+if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     throw "The WiX toolset is not on PATH. Install it with: dotnet tool install --global wix"
 }
-& heat dir $appDir -cg HelperFiles -dr INSTALLFOLDER -srd -sreg -scom -gg -sfrag `
-    -var var.AppDir -out (Join-Path $here "HelperFiles.wxi") -t (Join-Path $here "harvest.xslt")
-if ($LASTEXITCODE -ne 0) { throw "harvesting failed" }
-
-# ---- 4. the MSI
 Write-Host "building the MSI"
 $msi = Join-Path $dist "SafePIIHelper-$version.msi"
 & wix build (Join-Path $here "SafePIIHelper.wxs") `

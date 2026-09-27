@@ -28,7 +28,7 @@
     <!-- Windows 10 1809 or later: the accessibility and window APIs the helper
          relies on are not dependable before it. -->
     <Launch Condition="Installed OR (VersionNT &gt;= 603)"
-            Message="The SafePII desktop helper needs Windows 10 or later." />
+            Message="The SafePII desktop helper needs Windows 8.1 or later." />
 
     <Icon Id="SafePIIIcon" SourceFile="safepii.ico" />
     <Property Id="ARPPRODUCTICON" Value="SafePIIIcon" />
@@ -56,9 +56,10 @@
     </Feature>
 
     <ComponentGroup Id="HelperFiles" Directory="INSTALLFOLDER">
-      <!-- Filled by build.ps1 from the PyInstaller output, because a frozen
-           build's file list changes with the Python version. -->
-      <?include HelperFiles.wxi ?>
+      <!-- Everything PyInstaller produced. WiX v4 globs a directory itself, so
+           there is no separate harvest step and no generated file list to get
+           out of step with the build. -->
+      <Files Include="$(var.AppDir)\**" />
     </ComponentGroup>
 
     <Component Id="AutoStart" Directory="INSTALLFOLDER" Guid="B4F1C9A2-77E3-4A55-9C10-6D8E2B3F7A41">

@@ -99,6 +99,10 @@ affects a global low-level keyboard hook and always-on-top windows is the sort
 of thing to establish on a real machine before betting a release on it. MSI is
 plain Win32, deploys through Group Policy, and has no such questions.
 
+**No separate harvest step.** WiX v4 globs the built folder itself, so there is
+no generated file list that can fall out of step with what PyInstaller actually
+produced.
+
 **`comtypes` is named as a hidden import.** It builds its type-library wrappers
 at import time and `uiautomation` reaches for them dynamically, so PyInstaller
 cannot find them by following imports. Without those lines the frozen build

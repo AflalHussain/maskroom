@@ -16,7 +16,6 @@ floating pill, and a console behind it looks like something has gone wrong.
 """
 import os
 
-block_cipher = None
 HERE = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 
 a = Analysis(
@@ -37,12 +36,11 @@ a = Analysis(
     # Nothing here needs the test suite, the REPL or a web server.
     excludes=["pytest", "unittest", "pydoc", "doctest", "idlelib",
               "email", "http.server", "xmlrpc", "distutils", "setuptools"],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+# PyInstaller 6 dropped bytecode encryption, so there is no cipher argument and
+# PYZ takes only the pure modules.
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
