@@ -1,41 +1,124 @@
-/* Maskroom floating bar + toast on claude.ai. A dark "command bar" chip that
-   stays legible over claude's light or dark themes; mirrors the Maskroom
-   design tokens. System font stack (extension pages can't load remote fonts). */
-#maskroom-bar{position:fixed;right:18px;bottom:18px;z-index:2147483646;display:flex;align-items:center;gap:7px;
-  background:#111a2b;color:#e6ebf3;border:1px solid #243149;border-radius:12px;padding:7px 9px 7px 13px;
-  font:12.5px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  box-shadow:0 10px 30px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.2)}
-#maskroom-bar .mr-brand{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-weight:700;font-size:11px;
-  letter-spacing:.14em;color:#8fb0d6;padding-right:2px}
-#maskroom-bar .mr-meta{color:#9fb0c7;white-space:nowrap;font-size:11.5px}
-#maskroom-bar .mr-meta b{color:#e6ebf3;font-weight:600}
-#maskroom-bar button{background:transparent;border:1px solid #334463;color:#e6ebf3;border-radius:999px;
-  padding:6px 12px;cursor:pointer;font:600 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;transition:background .12s,border-color .12s,color .12s}
-#maskroom-bar button:hover{background:#1d2b47;border-color:#4a5f85}
-#maskroom-bar button.mr-primary{background:#3a5578;color:#fff;border-color:transparent;font-weight:700}
-#maskroom-bar button.mr-primary:hover{background:#456490}
-#maskroom-bar button.mr-off{opacity:.5;text-decoration:line-through}
-#maskroom-bar button:disabled{opacity:.5;cursor:wait}
-#maskroom-toast{position:fixed;right:18px;bottom:70px;z-index:2147483647;background:#111a2b;color:#e6ebf3;border:1px solid #243149;
-  border-left:3px solid #8fb0d6;border-radius:10px;padding:11px 15px;
-  font:12.5px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:360px;
-  box-shadow:0 12px 32px rgba(0,0,0,.32);opacity:0;transform:translateY(4px);transition:opacity .15s,transform .15s;pointer-events:none}
-#maskroom-toast.mr-show{opacity:1;transform:translateY(0)}
-#maskroom-toast.mr-bad{border-left-color:#f37166;color:#ffcfc9}
-.maskroom-restored{text-decoration:underline dotted #3a5c86;text-underline-offset:3px}
+/* SafePII on claude.ai: a small pill above the composer that opens into a
+   panel, matching the Windows helper (desktop/helper.py).
 
-/* Adapt to the viewer's OS light/dark setting instead of always-dark. */
-@media (prefers-color-scheme: light) {
-  #maskroom-bar{background:#fff;color:#0f172a;border-color:#e2e8f0;
-    box-shadow:0 10px 30px rgba(16,24,40,.14),0 2px 6px rgba(16,24,40,.08)}
-  #maskroom-bar .mr-brand{color:#3a5c86}
-  #maskroom-bar .mr-meta{color:#64748b}
-  #maskroom-bar .mr-meta b{color:#0f172a}
-  #maskroom-bar button{border-color:#cbd5e1;color:#0f172a}
-  #maskroom-bar button:hover{background:#f1f5f9;border-color:#94a3b8}
-  #maskroom-bar button.mr-primary{background:#1e2a3a;color:#fff;border-color:transparent}
-  #maskroom-bar button.mr-primary:hover{background:#111a27}
-  #maskroom-toast{background:#fff;color:#0f172a;border-color:#e2e8f0;border-left-color:#3a5c86;
-    box-shadow:0 12px 32px rgba(16,24,40,.16)}
-  #maskroom-toast.mr-bad{border-left-color:#b42318;color:#7a271a}
+   The bar used to be a wide strip of eight buttons with a status line, and a
+   toast that faded after three seconds took every message with it, including
+   "that file went out unmasked". Collapsed, the pill now carries the mark, one
+   word of state and a count; everything else moved into the panel, and a
+   warning is kept until it is acknowledged.
+
+   Tokens mirror the helper's. System font stack, because an extension page
+   cannot load a remote font. */
+#safepii-root{
+  --sp-bg:#1b2030; --sp-line:#2f3747; --sp-fg:#e8ebf2; --sp-dim:#97a1b5;
+  --sp-ok:#5bbf87; --sp-warn:#e0b050; --sp-err:#e06c6c; --sp-accent:#6f8fd6;
+  --sp-raise:#2a3346;
+  --sp-shadow:0 10px 30px rgba(0,0,0,.30),0 2px 6px rgba(0,0,0,.22);
+  position:fixed; right:18px; bottom:18px; z-index:2147483646;
+  display:flex; flex-direction:column; align-items:flex-end; gap:8px;
+  font:12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  color:var(--sp-fg);
+}
+#safepii-root *{box-sizing:border-box}
+
+/* ---- the pill ------------------------------------------------------- */
+.sp-pill{display:flex; align-items:stretch; height:32px; background:var(--sp-bg);
+  border:1px solid var(--sp-line); border-radius:16px; overflow:hidden;
+  box-shadow:var(--sp-shadow)}
+.sp-pill button{background:none; border:0; color:inherit; font:inherit; cursor:pointer}
+.sp-mask{padding:0 14px; background:var(--sp-raise); color:var(--sp-fg);
+  font-weight:600; font-size:12.5px; border-right:1px solid var(--sp-line) !important}
+.sp-mask:hover:not(:disabled){background:#33405a}
+.sp-mask:disabled{opacity:.55; cursor:wait}
+.sp-face{display:flex; align-items:center; gap:7px; padding:0 10px 0 9px}
+.sp-face:hover{background:rgba(255,255,255,.04)}
+.sp-face svg{width:17px; height:17px; display:block; flex:none}
+.sp-word{white-space:nowrap; font-size:12px; color:var(--sp-dim)}
+.sp-word[data-state="working"]{color:var(--sp-accent)}
+.sp-word[data-state="warn"],.sp-word[data-state="off"]{color:var(--sp-warn)}
+.sp-word[data-state="error"]{color:var(--sp-err)}
+.sp-word[data-state="flash"]{color:var(--sp-ok)}
+.sp-count{min-width:17px; height:17px; padding:0 5px; border-radius:9px;
+  background:var(--sp-err); color:#fff; font-size:10.5px; font-weight:700;
+  display:flex; align-items:center; justify-content:center}
+.sp-count[hidden]{display:none}
+.sp-chev{color:var(--sp-dim); font-size:11px; transition:transform .12s}
+.sp-pill[data-open="1"] .sp-chev{transform:rotate(180deg)}
+
+/* ---- the hover readout ---------------------------------------------- */
+.sp-hint{position:absolute; right:0; bottom:40px; background:#10141f;
+  border:1px solid var(--sp-line); border-radius:8px; padding:7px 10px;
+  white-space:nowrap; font-size:11px; color:var(--sp-dim);
+  box-shadow:var(--sp-shadow); pointer-events:none; opacity:0; transition:opacity .1s}
+.sp-hint b{color:var(--sp-fg); font-weight:600; display:block; margin-bottom:3px}
+.sp-pill:hover + .sp-hint{opacity:1}
+.sp-pill[data-open="1"] + .sp-hint{opacity:0}
+
+/* ---- the panel ------------------------------------------------------ */
+.sp-panel{width:308px; max-height:min(70vh,460px); overflow:auto;
+  background:var(--sp-bg); border:1px solid var(--sp-line); border-radius:10px;
+  box-shadow:var(--sp-shadow)}
+.sp-panel[hidden]{display:none}
+.sp-head{display:flex; align-items:center; gap:8px; padding:12px 16px 0}
+.sp-head strong{font-size:13px; font-weight:600; flex:1}
+.sp-head button{background:none; border:0; color:var(--sp-dim); cursor:pointer;
+  font:inherit; font-size:13px; padding:2px 4px; border-radius:4px}
+.sp-head button:hover{color:var(--sp-fg); background:rgba(255,255,255,.06)}
+.sp-sub{padding:2px 16px 0; color:var(--sp-dim); font-size:11px}
+.sp-rule{height:1px; background:var(--sp-line); margin:12px 0 0}
+
+.sp-problem{display:flex; gap:9px; padding:12px 16px 0}
+.sp-problem i{width:3px; border-radius:2px; background:var(--sp-warn); flex:none}
+.sp-problem[data-level="error"] i{background:var(--sp-err)}
+.sp-problem div{flex:1}
+.sp-problem p{margin:0; font-size:12px; color:var(--sp-fg)}
+.sp-problem button{background:none; border:0; padding:3px 0 0; cursor:pointer;
+  color:var(--sp-dim); font:inherit; font-size:11px; text-decoration:underline}
+.sp-problem button:hover{color:var(--sp-fg)}
+
+.sp-row{display:flex; align-items:center; gap:10px; height:32px; padding:0 16px;
+  cursor:pointer}
+.sp-row:hover{background:rgba(255,255,255,.04)}
+.sp-row span{flex:1; font-size:12px}
+.sp-row em{font-style:normal; font-weight:600; font-size:11.5px; color:var(--sp-dim)}
+.sp-row[data-on="1"] em{color:var(--sp-ok)}
+.sp-row[data-locked="1"]{cursor:default}
+
+.sp-label{padding:10px 16px 2px; color:var(--sp-dim); font-size:11px}
+.sp-recent{display:flex; gap:8px; padding:2px 16px; font-size:11px}
+.sp-recent time{color:var(--sp-dim); flex:none}
+.sp-recent span{color:var(--sp-dim)}
+.sp-recent[data-level="warn"] span{color:var(--sp-warn)}
+.sp-recent[data-level="error"] span{color:var(--sp-err)}
+
+.sp-foot{display:flex; flex-wrap:wrap; gap:8px; padding:12px 16px}
+.sp-foot button{background:var(--sp-raise); border:1px solid var(--sp-line);
+  color:var(--sp-fg); border-radius:6px; padding:6px 11px; cursor:pointer;
+  font:inherit; font-size:11.5px}
+.sp-foot button:hover:not(:disabled){background:#33405a}
+.sp-foot button:disabled{opacity:.5; cursor:not-allowed}
+.sp-foot button.sp-primary{background:var(--sp-accent); border-color:transparent;
+  color:#0e1420; font-weight:600}
+.sp-foot button.sp-primary:hover:not(:disabled){background:#82a0e0}
+
+.safepii-restored,.maskroom-restored{text-decoration:underline dotted #6f8fd6;
+  text-underline-offset:3px}
+
+/* ---- the viewer's light theme --------------------------------------- */
+@media (prefers-color-scheme: light){
+  #safepii-root{
+    --sp-bg:#ffffff; --sp-line:#e2e8f0; --sp-fg:#0f172a; --sp-dim:#64748b;
+    --sp-ok:#15803d; --sp-warn:#a16207; --sp-err:#b42318; --sp-accent:#3a5c86;
+    --sp-raise:#f1f5f9;
+    --sp-shadow:0 10px 30px rgba(16,24,40,.14),0 2px 6px rgba(16,24,40,.08);
+  }
+  .sp-mask:hover:not(:disabled),.sp-foot button:hover:not(:disabled){background:#e2e8f0}
+  .sp-face:hover,.sp-row:hover,.sp-head button:hover{background:rgba(15,23,42,.05)}
+  .sp-hint{background:#ffffff}
+  .sp-foot button.sp-primary{color:#fff}
+  .sp-foot button.sp-primary:hover:not(:disabled){background:#2c4766}
+}
+
+@media (prefers-reduced-motion: reduce){
+  .sp-chev,.sp-hint{transition:none}
 }

@@ -37,8 +37,27 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     sw.on("console", (m) => console.log("  [worker console]", m.text()));
     await page.route("https://claude.ai/**", (route) => route.fulfill({ status: 200, contentType: "text/html", body: HARNESS }));
     await page.goto("https://claude.ai/chat/0a1b2c3d-e2e0-4000-8000-000000000001");
-    await page.waitForSelector("#maskroom-bar", { timeout: 15000 });
+    await page.waitForSelector("#safepii-root", { timeout: 15000 });
     assert(true, "bar injected on claude.ai page");
+
+    // The pill collapses to a mark, a word and a count; the toggles and the
+    // file actions live in the panel, so a test that used to click a button on
+    // the bar has to open it first.
+    const openPanel = async () => {
+      const open = await page.evaluate(() => !document.querySelector("#safepii-root .sp-panel").hidden);
+      if (!open) await page.click('#safepii-root [data-act="toggle"]');
+      await page.waitForSelector("#safepii-root .sp-panel:not([hidden])");
+    };
+    const flip = async (key) => {
+      await openPanel();
+      await page.click(`#safepii-root .sp-row[data-key="${key}"]`);
+    };
+    const guardIs = (on) => page.waitForFunction(
+      (want) => {
+        const row = document.querySelector('#safepii-root .sp-row[data-key="guard"]');
+        return row && (row.dataset.on === "1") === want;
+      }, on, { timeout: 10000 });
+    const pillWord = () => page.locator("#safepii-root .sp-word").innerText();
 
     // 1. Guard: Enter with unmasked text masks instead of sending.
     const composer = page.locator(".ProseMirror");
@@ -58,7 +77,9 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     await page.waitForFunction(() => window.sent.length === 1);
     const sent = await page.evaluate(() => window.sent[0]);
     assert(sent.includes(personTok) && !sent.includes("Nimal"), "masked text was what got sent");
-    assert(await page.locator("#maskroom-bar .mr-meta").innerText().then((t) => /session \w+ · \d+ pseudonyms/.test(t)), "bar shows session and vault size");
+    const barState = () => page.evaluate(() => ({ ...document.querySelector("#safepii-root").dataset }));
+    const st = await barState();
+    assert(st.session && Number(st.entries) > 0, "bar publishes the session and the vault size");
 
     // 3. Replies streamed with mangled tokens are restored on screen.
     await page.evaluate((tok) => window.addReply(`Summary: ${tok.toLowerCase().replace(/_/g, " ")} has an overdue loan; unknown TOK_PERSON_99999999 stays.`), personTok);
@@ -68,10 +89,10 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     assert(await page.locator(".msg.assistant.maskroom-restored").count() === 1, "restored element marked");
 
     // 3b. Unmask view is two-way: off puts the tokens back, on restores again.
-    await page.click('#maskroom-bar [data-act="unmask"]');
+    await flip("unmask");
     await page.waitForFunction((tok) => document.querySelector(".msg.assistant").textContent.includes(tok), personTok.toLowerCase().replace(/_/g, " "));
     assert(await page.locator(".msg.assistant.maskroom-restored").count() === 0, "unmask view off: tokens back on screen, marker removed");
-    await page.click('#maskroom-bar [data-act="unmask"]');
+    await flip("unmask");
     await page.waitForFunction(() => document.querySelector(".msg.assistant").textContent.includes("Nimal Perera"));
     assert(await page.locator(".msg.assistant.maskroom-restored").count() === 1, "unmask view on again: restored");
 
@@ -89,13 +110,13 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     let pv = await page.frameLocator("#preview").locator("#pv").innerText();
     assert(pv.includes("Nimal Perera") && !pv.includes(personTok) && pv.includes("TOK_PERSON_00000000"),
       "iframe preview restored (known token replaced, unknown left)");
-    await page.click('#maskroom-bar [data-act="unmask"]');  // off
+    await flip("unmask");  // off
     await page.waitForFunction((tok) => {
       const fr = document.querySelector("#preview");
       return fr && fr.contentDocument && fr.contentDocument.body && fr.contentDocument.body.textContent.includes(tok);
     }, personTok, { timeout: 8000 });
     assert(true, "iframe preview reverts to tokens when the view is turned off");
-    await page.click('#maskroom-bar [data-act="unmask"]');  // on again
+    await flip("unmask");  // on again
     await page.waitForFunction(() => {
       const fr = document.querySelector("#preview");
       return fr && fr.contentDocument && fr.contentDocument.body && /Nimal Perera/.test(fr.contentDocument.body.textContent);
@@ -142,15 +163,14 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
 
     // 6. Session survives a reload of the same chat.
     await page.reload();
-    await page.waitForSelector("#maskroom-bar");
-    await page.waitForFunction(() => /pseudonyms/.test(document.querySelector("#maskroom-bar .mr-meta").textContent));
-    const meta = await page.locator("#maskroom-bar .mr-meta").innerText();
-    assert(/\d+ pseudonyms/.test(meta) && !/no session/.test(meta), "session restored after reload");
+    await page.waitForSelector("#safepii-root");
+    await page.waitForFunction(() => Number(document.querySelector("#safepii-root").dataset.entries) > 0);
+    const meta = await page.evaluate(() => document.querySelector("#safepii-root").dataset.session);
+    assert(meta && meta.length > 6, "session restored after reload");
 
     // ---------------------------------------------------------- guard
     const sentCount = () => page.evaluate(() => window.sent.length);
     const lastSent = () => page.evaluate(() => window.sent[window.sent.length - 1]);
-    const bar = (act) => page.click(`#maskroom-bar [data-act="${act}"]`);
 
     // 6a. Shift+Enter is a newline, not a send: nothing masked, nothing sent.
     let before = await sentCount();
@@ -185,16 +205,19 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     assert(edited.includes("please hurry") && edited.includes("TOK_LK_NIC_") && !edited.includes("853421234V"), "edited-after-mask text re-checked and sent on the next Enter");
 
     // 6d. Guard off: raw text goes straight through; guard on again: intercepted.
-    await bar("guard");
-    await page.waitForFunction(() => document.querySelector('#maskroom-bar [data-act="guard"]').classList.contains("mr-off"));
+    await flip("guard");
+    await guardIs(false);
+    // Guard off is the one toggle whose state has to reach the collapsed pill,
+    // because it changes whether the product is doing its job at all.
+    assert((await pillWord()) === "Guard off", "guard off is readable without opening the panel");
     before = await sentCount();
     await composer.click();
     await page.keyboard.type("Raw note about Kumari Bandara with guard off");
     await page.keyboard.press("Enter");
     await page.waitForFunction((n) => window.sent.length === n + 1, before);
     assert((await lastSent()).includes("Kumari Bandara"), "guard off: text sent unmasked, as configured");
-    await bar("guard");
-    await page.waitForFunction(() => !document.querySelector('#maskroom-bar [data-act="guard"]').classList.contains("mr-off"));
+    await flip("guard");
+    await guardIs(true);
     before = await sentCount();
     await composer.click();
     await page.keyboard.type("Guard back on, NIC 853421234V");
@@ -207,12 +230,12 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     // ---------------------------------------------------------- files
     const fixture = path.join(__dirname, "fixture.xlsx");
     const attachments = () => page.evaluate(() => [...document.querySelectorAll(".attachment")].map((a) => a.textContent));
-    const idle = () => page.waitForFunction(() => !document.querySelector('#maskroom-bar [data-act="mask"]').disabled, null, { timeout: 60000 });
+    const idle = () => page.waitForFunction(() => !document.querySelector('#safepii-root .sp-mask').disabled, null, { timeout: 60000 });
     const lastAttachedText = () => page.evaluate(async () => { const f = window.attached[window.attached.length - 1]; return { name: f.name, size: f.size, text: await f.text() }; });
 
     // 7. Mask file through the bar: masked workbook attached via the page's file input.
     await idle();
-    await page.setInputFiles("#maskroom-file", fixture);
+    await page.setInputFiles("#safepii-file", fixture);
     await page.waitForFunction(() => document.querySelector(".attachment"), null, { timeout: 60000 });
     let att = await lastAttachedText();
     assert(att.name === "fixture_masked.xlsx" && att.size > 0, "masked workbook attached with _masked name");
@@ -231,7 +254,7 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     // 8. Markdown mode: attached .md holds tokens, not names.
     await sw.evaluate(() => chrome.storage.local.set({ excelAttach: "md" }));
     await idle();
-    await page.setInputFiles("#maskroom-file", fixture);
+    await page.setInputFiles("#safepii-file", fixture);
     await page.waitForFunction(() => document.querySelectorAll(".attachment").length === 2, null, { timeout: 60000 });
     att = await lastAttachedText();
     assert(att.name === "fixture_masked.md" && att.text.includes("TOK_PERSON_") && !att.text.includes("Nimal") && att.text.includes("120000"), "markdown attachment is masked and keeps the salary");
@@ -244,15 +267,15 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     assert(att.name === "fixture_masked.md" && !(await attachments()).includes("fixture.xlsx"), "guard intercepted the native file picker");
 
     // 9b. Guard off: a file picked through claude.ai's own input is attached raw; guard on again catches it.
-    await bar("guard");
-    await page.waitForFunction(() => document.querySelector('#maskroom-bar [data-act="guard"]').classList.contains("mr-off"));
+    await flip("guard");
+    await guardIs(false);
     let nAtt = (await attachments()).length;
     await idle();
     await page.setInputFiles("#native-file", fixture);
     await page.waitForFunction((n) => document.querySelectorAll(".attachment").length === n + 1, nAtt);
     assert((await lastAttachedText()).name === "fixture.xlsx", "guard off: native picker attaches the raw file, as configured");
-    await bar("guard");
-    await page.waitForFunction(() => !document.querySelector('#maskroom-bar [data-act="guard"]').classList.contains("mr-off"));
+    await flip("guard");
+    await guardIs(true);
     nAtt = (await attachments()).length;
     await idle();
     await page.setInputFiles("#native-file", fixture);
@@ -262,13 +285,13 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     // 10. Drop path: with no file input on the page the extension drops the file on the composer area.
     await page.evaluate(() => window.disableFileInput());
     await idle();
-    await page.setInputFiles("#maskroom-file", fixture);
+    await page.setInputFiles("#safepii-file", fixture);
     nAtt = (await attachments()).length;
     await page.waitForFunction((n) => document.querySelectorAll(".attachment").length === n + 1, nAtt, { timeout: 60000 });
     assert((await lastAttachedText()).name === "fixture_masked.md", "synthetic drop attached the masked file");
 
     // 11. Adopt a session created elsewhere (the staging page).
-    const chatSession = await page.evaluate(() => document.querySelector("#maskroom-bar").dataset.session);
+    const chatSession = await page.evaluate(() => document.querySelector("#safepii-root").dataset.session);
     const other = await sw.evaluate(async (base) => {
       const s = await (await fetch(`${base}/api/session`, { method: "POST" })).json();
       const m = await (await fetch(`${base}/api/mask`, { method: "POST", headers: { "Content-Type": "application/json" },
@@ -276,15 +299,15 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
       return { id: s.session_id, token: m.findings.find((f) => f.entity === "PERSON").token };
     }, SERVER);
     page.once("dialog", (d) => d.accept(other.id));
-    await page.click('#maskroom-bar [data-act="adopt"]');
-    await page.waitForFunction((p) => document.querySelector("#maskroom-bar .mr-meta").textContent.includes(p), other.id.slice(0, 6), { timeout: 10000 });
+    await page.click('#safepii-root [data-act="adopt"]');
+    await page.waitForFunction((id) => document.querySelector("#safepii-root").dataset.session === id, other.id, { timeout: 10000 });
     await page.evaluate((tok) => window.addReply(`Adopted: ${tok} is the borrower.`), other.token);
     await page.waitForFunction(() => [...document.querySelectorAll(".msg.assistant")].some((m) => m.textContent.includes("Ruwan Jayawardena")), null, { timeout: 10000 });
     assert(true, "adopted session's tokens restore on screen");
     // back to the chat's own session for the file round trips below
     page.once("dialog", (d) => d.accept(chatSession));
-    await page.click('#maskroom-bar [data-act="adopt"]');
-    await page.waitForFunction((id) => document.querySelector("#maskroom-bar").dataset.session === id, chatSession, { timeout: 10000 });
+    await page.click('#safepii-root [data-act="adopt"]');
+    await page.waitForFunction((id) => document.querySelector("#safepii-root").dataset.session === id, chatSession, { timeout: 10000 });
 
     // ------------------------------------------------ generated files
     const saved = () => sw.evaluate(() => self.__savedFiles.map((f) => ({ name: f.name, text: atob(f.b64) })));
@@ -298,7 +321,7 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     fs.writeFileSync(mdPath, await page.evaluate(async () => { const f = window.attached.find((a) => a.name.endsWith(".md")); return f.text(); }));
     let nSaved = (await saved()).length;
     await idle();
-    await page.setInputFiles("#maskroom-unmask-file", mdPath);
+    await page.setInputFiles("#safepii-unmask-file", mdPath);
     await waitSaved(nSaved + 1);
     let last = (await saved()).pop();
     assert(last.name === "fixture_masked_restored.md" && last.text.includes("Nimal Perera") && last.text.includes("Kumari Bandara") && !/TOK_/.test(last.text), `Unmask file restored the Markdown and saved it as *_restored.md (got ${last.name}: ${last.text.slice(0, 80)})`);
@@ -359,6 +382,28 @@ const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); console.log(
     await page.waitForTimeout(800);
     assert((await saved()).length === nSaved, "intercept off: nothing extra saved");
     await sw.evaluate(() => chrome.storage.local.set({ interceptDownloads: true }));
+
+    // 16. A warning is kept and counted, rather than fading away unseen.
+    //     This is the point of the pill: the old toast took "that file was not
+    //     masked" off the screen after three seconds whether it was read or not.
+    await page.evaluate(() => {
+      const root = document.getElementById("safepii-root");
+      root.dispatchEvent(new CustomEvent("safepii-test-alert", {
+        detail: { text: "photo.png attached unmasked", level: "warn" }, bubbles: false }));
+    });
+    await page.waitForFunction(() => document.querySelector("#safepii-root").dataset.problems === "1",
+                               null, { timeout: 5000 });
+    assert((await pillWord()) === "Check this", "a warning shows on the collapsed pill");
+    assert(await page.locator("#safepii-root .sp-count").innerText() === "1", "and is counted");
+    await page.waitForTimeout(4500);   // longer than the old toast lived
+    assert((await page.evaluate(() => document.querySelector("#safepii-root").dataset.problems)) === "1",
+           "it is still there after the time a toast would have vanished");
+    await openPanel();
+    assert((await page.locator("#safepii-root .sp-problem p").innerText()).includes("photo.png"),
+           "the panel says what it was");
+    await page.click('#safepii-root .sp-problem [data-act="got"]');
+    await page.waitForFunction(() => document.querySelector("#safepii-root").dataset.problems === "0");
+    assert((await pillWord()) !== "Check this", "acknowledging it clears the pill");
 
     console.log("\nALL EXTENSION E2E CHECKS PASSED");
   } finally {

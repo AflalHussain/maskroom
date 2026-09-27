@@ -55,7 +55,7 @@
       chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r); });
     } catch (e) {
       contextDead = true;
-      if (isTop) { try { const el = document.getElementById("maskroom-bar"); if (el) { const m = el.querySelector(".mr-meta"); if (m) m.textContent = "reload this tab (extension was updated)"; } } catch (_) {} }
+      if (isTop) { try { renderBar(); } catch (_) {} }
       res(undefined);
     }
   });
@@ -88,13 +88,36 @@
     if (guardLocked) settings.guard = true;
   }
 
-  let toastTimer = null;
-  function toast(text, bad = false) {
+  // Messages are graded, because "3 values masked" and "that file went out
+  // unmasked" are not the same kind of thing and a toast that fades after three
+  // seconds treated them as if they were. Anything above info is kept on the
+  // pill as a count and in the panel until it is acknowledged.
+  let panelOpen = false;
+  const problems = [];      // unacknowledged warnings and errors
+  const recent = [];        // the last few messages, whatever their grade
+  const RECENT_KEEP = 10;
+  let flash = "", flashTimer = null;
+
+  function alert_(text, level = "info") {
     if (!isTop) return;
-    let el = document.getElementById("maskroom-toast");
-    if (!el) { el = document.createElement("div"); el.id = "maskroom-toast"; document.body.appendChild(el); }
-    el.textContent = text; el.classList.toggle("mr-bad", bad); el.classList.add("mr-show");
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("mr-show"), bad ? 6000 : 3200);
+    const at = new Date().toTimeString().slice(0, 5);
+    recent.unshift({ at, level, text });
+    recent.length = Math.min(recent.length, RECENT_KEEP);
+    if (level === "warn" || level === "error") {
+      if (!problems.some((p) => p.text === text)) problems.push({ at, level, text });
+    } else {
+      flash = text;
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => { flash = ""; renderBar(); }, 4000);
+    }
+    renderBar();
+  }
+  // The 32 existing call sites keep working: `true` still means an error.
+  const toast = (text, bad = false) => alert_(text, bad ? "error" : "info");
+  function clearProblem(text) {
+    const i = problems.findIndex((p) => p.text === text);
+    if (i >= 0) problems.splice(i, 1);
+    renderBar();
   }
 
   // Conversation key: one SafePII session per claude.ai chat. A brand-new
@@ -278,7 +301,7 @@
     fr.onerror = () => rej(fr.error || new Error("read failed"));
     fr.readAsDataURL(file);
   });
-  const isOurs = (el) => !!(el && el.closest && el.closest("#maskroom-bar, #maskroom-toast"));
+  const isOurs = (el) => !!(el && el.closest && el.closest("#safepii-root"));
 
   // Hand a File to claude.ai the way a user would: through its hidden file
   // input if there is one, else a synthetic drop on the composer area. The
@@ -512,7 +535,7 @@
         const v = n.nodeValue;
         if (!v || !/tok/i.test(v)) return NodeFilter.FILTER_REJECT;
         const p = n.parentElement;
-        if (!p || p.closest('[contenteditable="true"], script, style, textarea, #maskroom-bar, #maskroom-toast')) return NodeFilter.FILTER_REJECT;
+        if (!p || p.closest('[contenteditable="true"], script, style, textarea, #safepii-root')) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       },
     });
@@ -564,69 +587,168 @@
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
   // --------------------------------------------------------------- bar
+  // A small pill above the composer that opens into a panel, matching the
+  // Windows helper. The old bar was eight buttons and a status line in a row,
+  // which read as clutter; collapsed, this carries the mark, one word of state
+  // and a count, and everything else lives in the panel.
+  const MARK = `<svg viewBox="0 0 96 104" aria-hidden="true">
+      <path fill="#3c4854" d="M48 98C28 90 12 77 12 51V26l11-9 11 14 14-16 14 16 11-14 11 9v25c0 26-16 39-36 47Z"/>
+      <path fill="#18bccb" fill-rule="evenodd" d="M25 51c0-4 4-5 8-5h30c4 0 8 1 8 5 0 7-5 13-11 13-4 0-7-2-9-5-2 3-5 5-9 5-6 0-11-6-11-13Zm11 6a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm22 0a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/>
+    </svg>`;
+
+  // The word differs per state as well as the colour: about eight per cent of
+  // men cannot separate red from green.
+  function pillState() {
+    if (contextDead) return { state: "error", word: "Reload the tab" };
+    if (busy) return { state: "working", word: "Masking…" };
+    const worst = problems.find((p) => p.level === "error") || problems[0];
+    if (worst) return { state: worst.level, word: worst.level === "error" ? "Problem" : "Check this" };
+    if (signedOut) return { state: "warn", word: "Signed out" };
+    if (!settings.guard && !guardLocked) return { state: "off", word: "Guard off" };
+    if (flash) return { state: "flash", word: flash.length > 32 ? flash.slice(0, 31) + "…" : flash };
+    return { state: "idle", word: "SafePII" };
+  }
+
+  const TOGGLES = [
+    { key: "guard", label: "Guard", locked: () => guardLocked },
+    { key: "unmask", label: "Unmask replies", locked: () => false },
+  ];
+
   function renderBar() {
     if (!isTop) return;
-    let bar = document.getElementById("maskroom-bar");
-    if (contextDead && bar) { const m = bar.querySelector(".mr-meta"); if (m) m.textContent = "reload this tab — extension was updated"; return; }
-    if (!bar) {
-      bar = document.createElement("div"); bar.id = "maskroom-bar";
-      bar.innerHTML = `<span class="mr-brand">SAFEPII</span><span class="mr-meta"></span>
-        <button class="mr-primary" data-act="login" title="Sign in to the SafePII server" hidden>sign in</button>
-        <button class="mr-primary" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
-        <button data-act="file" title="Mask a .xlsx/.pdf/.docx and attach the masked version">Mask file</button>
-        <input type="file" id="maskroom-file" accept=".xlsx,.xlsm,.pdf,.docx,.pptx,.csv,.tsv,.txt,.json" multiple hidden>
-        <button data-act="unmaskfile" title="Restore the real values inside a file Claude produced (saved as *_restored)">Unmask file</button>
-        <input type="file" id="maskroom-unmask-file" accept=".md,.txt,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.xlsx,.xlsm,.docx,.pptx" multiple hidden>
-        <button data-act="guard" title="Guard: Enter/send and file drops go through SafePII first — click to turn on/off">guard: on</button>
-        <button data-act="unmask" title="Show real values in replies (on screen only) — click to turn on/off">unmask: on</button>
-        <button data-act="new" title="Start a new vault for this chat">new session</button>
-        <button data-act="adopt" title="Use a different session id — from another chat or the SafePII staging page — so they share one vault">use session id…</button>
-        <button data-act="opts" title="Settings">⚙</button>`;
-      bar.addEventListener("click", async (e) => {
+    let root = document.getElementById("safepii-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "safepii-root";
+      root.innerHTML = `
+        <div class="sp-panel" hidden></div>
+        <div class="sp-pill">
+          <button class="sp-mask" data-act="mask" title="Pseudonymize the composer text (Ctrl/Cmd+Shift+M)">Mask</button>
+          <button class="sp-face" data-act="toggle" aria-expanded="false" title="SafePII">
+            ${MARK}<span class="sp-word"></span><span class="sp-count" hidden></span><span class="sp-chev">⌄</span>
+          </button>
+        </div>
+        <div class="sp-hint"></div>
+        <input type="file" id="safepii-file" accept=".xlsx,.xlsm,.pdf,.docx,.pptx,.csv,.tsv,.txt,.json" multiple hidden>
+        <input type="file" id="safepii-unmask-file" accept=".md,.txt,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.xlsx,.xlsm,.docx,.pptx" multiple hidden>`;
+      root.addEventListener("click", async (e) => {
         const hit = e.target.closest && e.target.closest("[data-act]");
         const act = hit && hit.dataset.act;
+        if (!act) return;
         if (contextDead) { renderBar(); return; }
         try {
-          if (act === "login") signIn();
+          if (act === "toggle") { panelOpen = !panelOpen; renderBar(); }
           else if (act === "mask") maskComposer();
-          else if (act === "file") bar.querySelector("#maskroom-file").click();
-          else if (act === "unmaskfile") bar.querySelector("#maskroom-unmask-file").click();
+          else if (act === "login") signIn();
+          else if (act === "file") root.querySelector("#safepii-file").click();
+          else if (act === "unmaskfile") root.querySelector("#safepii-unmask-file").click();
           else if (act === "new") newSession();
           else if (act === "adopt") adoptSession(window.prompt("Enter a session id to use here (from another chat, or the SafePII staging page):", sessionId || ""));
-          else if (act === "guard") { if (guardLocked) { toast("Guard is locked on by your administrator.", true); } else { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); } }
-          else if (act === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
           else if (act === "opts") call({ type: "openOptions" });
+          else if (act === "got") clearProblem(hit.dataset.msg);
+          else if (act === "flip") {
+            const key = hit.dataset.key;
+            if (key === "guard" && guardLocked) { alert_("Guard is locked on by your administrator.", "warn"); return; }
+            if (key === "unmask") { setUnmask(!settings.unmask); await safeSet({ unmask: settings.unmask }); }
+            else { settings.guard = !settings.guard; await safeSet({ guard: settings.guard }); renderBar(); }
+          }
         } catch (err) { contextDead = true; renderBar(); }
       });
-      bar.querySelector("#maskroom-file").addEventListener("change", (e) => {
+      root.querySelector("#safepii-file").addEventListener("change", (e) => {
         const files = [...e.target.files]; e.target.value = "";
         maskFiles(files);
       });
-      bar.querySelector("#maskroom-unmask-file").addEventListener("change", (e) => {
+      root.querySelector("#safepii-unmask-file").addEventListener("change", (e) => {
         const files = [...e.target.files]; e.target.value = "";
         for (const f of files) fileQueue = fileQueue.then(() => unmaskFile(f)).catch(() => {});
       });
-      document.body.appendChild(bar);
+      // A way for the end-to-end test to raise a message without having to
+      // provoke a real failure. Listened for on our own element only, so a
+      // page cannot reach it by accident.
+      root.addEventListener("safepii-test-alert", (e) => {
+        if (e.detail) alert_(String(e.detail.text), String(e.detail.level || "info"));
+      });
+      document.body.appendChild(root);
     }
-    bar.querySelector(".mr-meta").innerHTML = signedOut
-      ? `signed out — sign in to mask`
-      : sessionId ? `session <b>${sessionId.slice(0, 6)}</b> · <b>${entries}</b> pseudonyms` : `no session yet`;
-    bar.querySelector('[data-act="login"]').hidden = !signedOut;
-    bar.dataset.signedOut = signedOut ? "1" : "";
-    bar.dataset.session = sessionId || ""; bar.dataset.entries = String(entries);
-    bar.dataset.vault = String(Object.keys(idx.vault).length);  // state for tests/debugging
-    bar.querySelector('[data-act="mask"]').disabled = busy || signedOut;
-    bar.querySelector('[data-act="mask"]').textContent = busy ? "masking…" : "Mask";
-    bar.querySelector('[data-act="file"]').disabled = busy || signedOut;
-    bar.querySelector('[data-act="unmaskfile"]').disabled = busy || signedOut;
-    const gb = bar.querySelector('[data-act="guard"]');
-    gb.textContent = guardLocked ? "guard: on 🔒" : "guard: " + (settings.guard ? "on" : "off");
-    gb.title = guardLocked ? "Guard is locked on by your administrator" : "Guard: Enter/send and file drops go through SafePII first — click to turn on/off";
-    gb.classList.toggle("mr-off", !settings.guard && !guardLocked);
-    const ub = bar.querySelector('[data-act="unmask"]');
-    ub.textContent = "unmask: " + (settings.unmask ? "on" : "off");
-    ub.classList.toggle("mr-off", !settings.unmask);
+
+    const { state, word } = pillState();
+    const pill = root.querySelector(".sp-pill");
+    const wordEl = root.querySelector(".sp-word");
+    wordEl.textContent = word;
+    wordEl.dataset.state = state;
+    const count = root.querySelector(".sp-count");
+    count.textContent = String(problems.length);
+    count.hidden = !problems.length;
+    pill.dataset.open = panelOpen ? "1" : "";
+    root.querySelector(".sp-face").setAttribute("aria-expanded", panelOpen ? "true" : "false");
+    const maskBtn = root.querySelector(".sp-mask");
+    maskBtn.disabled = busy || signedOut || contextDead;
+    maskBtn.textContent = busy ? "Masking…" : "Mask";
+
+    // The two toggles are reported on hover rather than shown as controls,
+    // which is how a tray agent reports several services without showing
+    // several switches.
+    root.querySelector(".sp-hint").innerHTML =
+      `<b>SafePII</b>Guard ${guardLocked ? "on 🔒" : settings.guard ? "on" : "off"}` +
+      `   Unmask ${settings.unmask ? "on" : "off"}`;
+
+    // state the tests and any debugging read
+    root.dataset.signedOut = signedOut ? "1" : "";
+    root.dataset.session = sessionId || "";
+    root.dataset.entries = String(entries);
+    root.dataset.vault = String(Object.keys(idx.vault).length);
+    root.dataset.problems = String(problems.length);
+
+    const panel = root.querySelector(".sp-panel");
+    panel.hidden = !panelOpen;
+    if (panelOpen) panel.innerHTML = panelHtml();
   }
+
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function panelHtml() {
+    const summary = contextDead ? "This tab is running an old copy of SafePII. Reload it."
+      : signedOut ? "Signed out — sign in to mask anything."
+      : problems.length ? `${problems.length} thing${problems.length === 1 ? "" : "s"} to look at`
+      : !settings.guard && !guardLocked ? "Guard is off — messages are not checked before they send"
+      : sessionId ? `Session ${esc(sessionId.slice(0, 6))} · ${entries} pseudonym${entries === 1 ? "" : "s"}`
+      : "No session yet. One starts with your first mask.";
+
+    const head = `<div class="sp-head"><strong>SafePII</strong>
+      <button data-act="opts" title="Settings">⚙</button>
+      <button data-act="toggle" title="Close">✕</button></div>
+      <div class="sp-sub">${esc(summary)}</div>`;
+
+    const probs = problems.map((p) => `<div class="sp-problem" data-level="${p.level}"><i></i><div>
+        <p>${esc(p.text)}</p>
+        <button data-act="got" data-msg="${esc(p.text)}">Got it</button>
+      </div></div>`).join("");
+
+    const rows = TOGGLES.map((t) => {
+      const on = t.key === "guard" ? (settings.guard || t.locked()) : settings.unmask;
+      const lock = t.locked();
+      return `<div class="sp-row" data-on="${on ? "1" : ""}" data-locked="${lock ? "1" : ""}"
+        ${lock ? "" : `data-act="flip" data-key="${t.key}"`}>
+        <span>${t.label}</span><em>${lock ? "🔒 " : ""}${on ? "on" : "off"}</em></div>`;
+    }).join("");
+
+    const hist = recent.length ? `<div class="sp-rule"></div><div class="sp-label">Recent</div>` +
+      recent.slice(0, 5).map((r) => `<div class="sp-recent" data-level="${r.level}">
+        <time>${esc(r.at)}</time><span>${esc(r.text)}</span></div>`).join("") : "";
+
+    const busyOrOut = busy || signedOut || contextDead;
+    const foot = `<div class="sp-rule"></div><div class="sp-foot">
+      ${signedOut ? `<button class="sp-primary" data-act="login">Sign in</button>` : ""}
+      <button data-act="file" ${busyOrOut ? "disabled" : ""}>Mask a file</button>
+      <button data-act="unmaskfile" ${busyOrOut ? "disabled" : ""}>Unmask a file</button>
+      <button data-act="new">New session</button>
+      <button data-act="adopt">Use session id…</button>
+    </div>`;
+
+    return head + probs + `<div class="sp-rule"></div>` + rows + hist + foot;
+  }
+
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "m") { e.preventDefault(); maskComposer(); }
   });
