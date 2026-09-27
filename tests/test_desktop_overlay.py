@@ -14,6 +14,7 @@ composer are not, the rectangle covers the token rather than the line, a
 character-offset drift is recovered by nudging, the font style is read once, and
 a scroll is reported as movement.
 """
+import json
 import os
 import queue
 import sys
@@ -468,7 +469,7 @@ def test_a_folder_is_recognised_in_an_accessible_value(automation):
 
 # --------------------------------------------------------------------- downloads
 @pytest.fixture
-def watcher(automation, tmp_path):
+def watcher(automation, tmp_path, monkeypatch):
     """An Automation wired to a fake server and a temporary Downloads folder."""
     helper = sys.modules["helper"]
     calls = {}
@@ -490,20 +491,51 @@ def watcher(automation, tmp_path):
     automation.downloads_size = {}
     automation.emit = lambda **kw: None
     automation.toast = lambda msg, error=False: calls.setdefault("toasts", []).append(msg)
-    helper.log = lambda m: None
+    monkeypatch.setattr(helper, "log", lambda m: None)    # restored, or later tests see no log
     return types.SimpleNamespace(a=automation, dir=tmp_path, calls=calls, helper=helper)
 
 
-def test_only_files_that_hold_tokens_are_sent(watcher):
+def test_a_file_whose_tokens_cannot_be_seen_is_not_sent_silently(watcher):
+    """Uploading every Office file that lands in Downloads is an unannounced
+    egress channel: a bank statement saved from email would have gone too."""
     plain = watcher.dir / "notes.md"
     plain.write_text("nothing to restore here")
     tokened = watcher.dir / "reply.md"
     tokened.write_text("Call TOK_PERSON_2615D96E today")
     book = watcher.dir / "sheet.xlsx"
-    book.write_bytes(b"PK\\x03\\x04 zipped, tokens are deflated out of sight")
-    assert watcher.a.holds_tokens(plain) is False
-    assert watcher.a.holds_tokens(tokened) is True
-    assert watcher.a.holds_tokens(book) is True
+    book.write_bytes(b"PK\x03\x04 zipped, tokens are deflated out of sight")
+    assert watcher.a.holds_tokens(plain) is False, "certainly nothing to restore"
+    assert watcher.a.holds_tokens(tokened) is True, "certainly has tokens"
+    assert watcher.a.holds_tokens(book) is None, "cannot be told without sending it"
+
+
+def test_an_unreadable_file_asks_before_it_leaves(watcher, monkeypatch):
+    asked, sent = [], []
+    monkeypatch.setattr(watcher.a, "emit", lambda **kw: asked.append(kw))
+    monkeypatch.setattr(watcher.a, "restore_download", lambda p: sent.append(p.name))
+    book = watcher.dir / "sheet.xlsx"
+    book.write_bytes(b"PK\x03\x04 nothing visible here")
+    watcher.a.poll_downloads()
+    watcher.a.downloads_at = 0.0
+    watcher.a.poll_downloads()
+    assert sent == [], "nothing may leave before the user says so"
+    assert [a["type"] for a in asked] == ["ask_restore"]
+
+
+def test_the_answer_can_be_remembered_either_way(watcher, monkeypatch):
+    sent = []
+    monkeypatch.setattr(watcher.a, "restore_download", lambda p: sent.append(p.name))
+    book = watcher.dir / "sheet.xlsx"
+    book.write_bytes(b"PK\x03\x04")
+    watcher.a.cmd_restore_answer(str(book), "no")
+    assert sent == [] and "restoreUnreadable" not in watcher.a.cfg
+    watcher.a.cmd_restore_answer(str(book), "always")
+    assert sent == ["sheet.xlsx"] and watcher.a.cfg["restoreUnreadable"] == "always"
+    watcher.a.offer_restore(book)
+    assert sent == ["sheet.xlsx", "sheet.xlsx"], "remembered yes needs no further asking"
+    watcher.a.cmd_restore_answer(str(book), "never")
+    watcher.a.offer_restore(book)
+    assert len(sent) == 2, "remembered no must stop it leaving"
 
 
 def test_a_download_is_restored_beside_itself_and_the_original_is_kept(watcher):
@@ -671,3 +703,59 @@ def test_the_hold_or_warn_choice_is_the_customers(automation, monkeypatch):
     assert hooks.guard_failed(0, 0, 0) == 0, "warn mode passes the key through"
     assert hooks.swallow_up is False
     assert hooks.events.get_nowait()["what"] == "worker"
+
+
+# --------------------------------------------------------- endpoint hygiene
+def test_the_log_never_carries_user_content(automation):
+    """The log is an ordinary file on the endpoint: backed up, roamed, and
+    collected by whatever agent the customer runs. A product whose promise is
+    that content does not leave unmasked cannot write content into it."""
+    helper = sys.modules["helper"]
+    assert helper.redact("Nimal Perera owes LKR 410,000") == "<29 chars>"
+    assert helper.redact("report.xlsx", keep=4) == "<11 chars: repo…>"
+    assert helper.redact("") == "<empty>"
+    assert helper.redact(None) == "<empty>"
+    assert "\n" not in helper.redact("two\nlines", keep=9)
+
+
+def test_the_log_rotates_rather_than_growing_without_end(automation, tmp_path, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(helper, "LOG_FILE", tmp_path / "helper.log")
+    monkeypatch.setattr(helper, "LOG_MAX_BYTES", 200)
+    for i in range(40):
+        helper.log(f"line {i} " + "x" * 20)
+    assert (tmp_path / "helper.log").stat().st_size <= 400
+    assert (tmp_path / "helper.1.log").exists(), "one previous run is kept for diagnosis"
+
+
+def test_config_is_written_atomically(automation, tmp_path, monkeypatch):
+    """Three threads call this, and a torn write silently reverted every
+    setting, including the server URL, to the defaults."""
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(helper, "CONFIG_FILE", tmp_path / "helper.json")
+    helper.save_config({"serverUrl": "https://safepii.example", "token": "t"})
+    assert json.loads((tmp_path / "helper.json").read_text())["token"] == "t"
+    assert not (tmp_path / "helper.tmp").exists(), "the temporary file is renamed, not left"
+
+
+def test_signing_out_forgets_every_real_value(automation, monkeypatch):
+    """They used to outlive sign-out, so hover, clipboard restore and the
+    overlay kept revealing them until the process was killed."""
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    monkeypatch.setattr(helper, "save_config", lambda c: None)
+    a = automation
+    a.cfg = {"token": "t"}
+    a.vaults = {"s1": {"TOK_PERSON_2615D96E": "Nimal Perera"}}
+    a.token_owner = {"TOK_PERSON_2615D96E": "s1"}
+    a.index = helper.TokenIndex({"TOK_PERSON_2615D96E": "Nimal Perera"})
+    helper.SHARED["index"] = a.index
+    a.server = types.SimpleNamespace(api=lambda *args, **kw: {"ok": True, "data": {}})
+    a.emit = lambda **kw: None
+    a.set_tip = lambda *args: None
+    a.cmd_sign_out()
+    assert a.vaults == {} and a.index.vault == {}
+    assert helper.SHARED["index"].vault == {}
+    assert a.cfg["token"] == ""

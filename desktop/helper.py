@@ -127,11 +127,14 @@ DEFAULTS = {
     "overlayDebug": False,  # log every walked line (to find out why a token was missed)
     "fileGuard": True,     # intercept the file dialog / paste / drop
     "onGuardFailure": "hold",  # "hold" (nothing sends) or "warn" (sends, loudly)
+    "forgetAfterIdleMinutes": 15,   # drop the real values after this much idle time
     "blockDrops": True,    # refuse Explorer drops on Claude (they cannot be masked in flight)
     "filesDir": "",        # where masked copies are written (default: <config>/files)
     "watchDownloads": True,   # restore tokens in files Claude produces
     "downloadsDir": "",    # default: the user's Downloads folder
     "deleteTokenCopy": False,  # keep both by default: deleting a download is the user's call
+    "restoreUnreadable": "ask",  # ask | always | never: send Office files whose tokens
+                                 # cannot be seen from here to the server to be checked
     "preambleSent": [],
 }
 OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
@@ -182,15 +185,50 @@ def load_config() -> dict:
 
 
 LOG_FILE = CONFIG_DIR / "helper.log"
+LOG_MAX_BYTES = 2 * 1024 * 1024
 _log_lock = threading.Lock()
+_config_lock = threading.RLock()
+
+
+def redact(value, keep: int = 0) -> str:
+    """What may be written about a piece of user content: its shape, not itself.
+
+    The log is an ordinary file on an endpoint. It is backed up, roamed, and
+    collected by whatever agent the customer runs, so a product whose promise is
+    that content does not leave the machine unmasked cannot write that content
+    into it. `keep` allows a short prefix where one is genuinely diagnostic, such
+    as a file extension.
+    """
+    text = "" if value is None else str(value)
+    if not text:
+        return "<empty>"
+    head = text[:keep].replace("\n", " ") if keep else ""
+    return f"<{len(text)} chars{': ' + head + '…' if head else ''}>"
+
+
+def _rotate_log() -> None:
+    """One previous file is kept, so a long session cannot fill the disk and a
+    diagnostic report still has the run before it."""
+    try:
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_MAX_BYTES:
+            previous = LOG_FILE.with_suffix(".1.log")
+            previous.unlink(missing_ok=True)
+            LOG_FILE.rename(previous)
+    except OSError:
+        pass
 
 
 def log(msg: str) -> None:
-    """Diagnostic trail (guard decisions, hook status). Paste it back when something misbehaves."""
-    line = f"{time.strftime('%H:%M:%S')} [{threading.current_thread().name}] {msg}\n"
+    """Diagnostic trail: guard decisions, hook status, counts and outcomes.
+
+    Never user content. Pass anything derived from a document, a message or a
+    file name through `redact` first.
+    """
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{threading.current_thread().name}] {msg}\n"
     try:
         with _log_lock:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            _rotate_log()
             with open(LOG_FILE, "a", encoding="utf-8") as fh:
                 fh.write(line)
     except OSError:
@@ -198,8 +236,14 @@ def log(msg: str) -> None:
 
 
 def save_config(cfg: dict) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2), "utf-8")
+    """Written through a temporary file: three threads call this, and a torn
+    write silently reverted every setting, including the server URL, to the
+    defaults."""
+    with _config_lock:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cfg, indent=2), "utf-8")
+        os.replace(tmp, CONFIG_FILE)
 
 
 # ----------------------------------------------------------------------------- server
@@ -401,6 +445,12 @@ if _IS_WIN:
     _user32.GetAsyncKeyState.restype = ctypes.c_short
     _user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
     _user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+    _user32.GetLastInputInfo.argtypes = [ctypes.c_void_p]
+    _kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+    _user32.OpenInputDesktop.restype = wt.HANDLE
+    _user32.OpenInputDesktop.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    _user32.CloseDesktop.argtypes = [wt.HANDLE]
+    _user32.SetWindowDisplayAffinity.argtypes = [wt.HWND, wt.DWORD]
     _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
     _user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
     _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
@@ -533,6 +583,46 @@ def foreground_window():
     pid = wt.DWORD(0)
     _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return hwnd, window_class(hwnd), process_exe(pid.value)
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+
+
+def idle_seconds():
+    """Seconds since the last keyboard or mouse input, or None if unknown."""
+    if not _IS_WIN:
+        return None
+    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+    if not _user32.GetLastInputInfo(ctypes.byref(info)):
+        return None
+    return max(0.0, (_kernel32.GetTickCount64() - info.dwTime) / 1000.0)
+
+
+def workstation_locked() -> bool:
+    """True when the desktop is locked. OpenInputDesktop fails for the caller
+    while the secure desktop is up, which is the documented way to tell."""
+    if not _IS_WIN:
+        return False
+    desk = _user32.OpenInputDesktop(0, False, 0x0100)    # DESKTOP_READOBJECTS
+    if not desk:
+        return True
+    _user32.CloseDesktop(desk)
+    return False
+
+
+def exclude_from_capture(hwnd, what: str) -> None:
+    """Keep a window out of screen shares, recordings and the Snipping Tool.
+
+    The overlay and the tooltip paint *real* values over the tokens, so without
+    this they are exactly the thing that leaks into a Teams share or whatever
+    screen-recording agent the customer runs."""
+    if not _IS_WIN:
+        return
+    WDA_EXCLUDEFROMCAPTURE = 0x11
+    if not _user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE):
+        log(f"{what}: could not exclude it from screen capture "
+            f"(error {ctypes.get_last_error()}); restored values will appear in shares")
 
 
 def foreground_exe() -> str:
@@ -689,6 +779,7 @@ class Automation(threading.Thread):
                     self.poll_downloads()
                 except Exception as e:  # noqa: BLE001
                     log(f"downloads poll error {type(e).__name__}: {e}")
+            self.poll_idle()
             return
         SHARED["worker_beat"] = time.time()    # a long command must not look dead
         try:
@@ -810,6 +901,22 @@ class Automation(threading.Thread):
         self.token_owner = owner
         log(f"vault index: {len(union)} tokens across {len(self.vaults)} sessions")
 
+    def poll_idle(self) -> None:
+        """Forget the real values after a spell of no input, and at once when
+        the workstation is locked. Held indefinitely, they are a standing
+        disclosure on an unattended desk."""
+        minutes = float(self.cfg.get("forgetAfterIdleMinutes") or 0)
+        if not self.index.vault:
+            return
+        if workstation_locked():
+            self.forget_vaults("the workstation was locked")
+            return
+        if minutes <= 0:
+            return
+        idle = idle_seconds()
+        if idle is not None and idle > minutes * 60:
+            self.forget_vaults(f"no input for {minutes:g} minutes")
+
     # ---- which chat is on screen
     def chat_identity(self) -> tuple[str | None, str | None]:
         """(url, title) of the chat on screen, from the page document."""
@@ -855,7 +962,8 @@ class Automation(threading.Thread):
         self.doc, self.doc_ctrl, self.claude_win = find_page_document()
         if self.doc is not None:
             url, title = self.chat_identity()
-            log(f"page document found url={url!r} title={title!r}")
+            log(f"page document found, chat {'identified by url' if url else 'url unknown'}"
+                f", title {redact(title)}")
         else:
             log("page document not found")
         return self.doc
@@ -996,7 +1104,8 @@ class Automation(threading.Thread):
             how = "new session"
             self.vaults[sid] = {}
         if self.cfg.get("sessionId") != sid:
-            log(f"session {sid[:8]} for chat url={url!r} title={title!r} ({how})")
+            log(f"session {sid[:8]} for chat ({how}; "
+                f"url {'known' if url else 'unknown'}, title {redact(title)})")
             self.emit(type="session", id=sid, title=title)
         self.bind_session(sid, url, title)
         return sid
@@ -1010,10 +1119,28 @@ class Automation(threading.Thread):
         self.rebuild_index()
         self.toast(f"New session {sid[:8]}… for {title or 'this chat'}")
 
+    def forget_vaults(self, why: str) -> None:
+        """Drop every real value held in this process.
+
+        The vaults are the re-identification key for up to 25 sessions. They
+        used to outlive sign-out, so hover, clipboard restore and the overlay
+        kept revealing real values until the process was killed."""
+        if not self.vaults and not self.index.vault:
+            return
+        n = len(self.index.vault)
+        self.vaults.clear()
+        self.token_owner.clear()
+        self.index = TokenIndex({})
+        SHARED["index"] = self.index
+        self.set_tip(None)
+        self.emit(type="overlay", items=None)
+        log(f"vaults cleared ({n} tokens): {why}")
+
     def cmd_sign_out(self) -> None:
         r = self.server.api("/auth/logout", "POST", {})
         self.cfg["token"] = ""
         save_config(self.cfg)
+        self.forget_vaults("signed out")
         redirect = (r["data"] or {}).get("redirect") if r["ok"] else None
         if redirect and redirect.startswith("http"):
             webbrowser.open(redirect)    # let the identity provider end its session too
@@ -1152,7 +1279,9 @@ class Automation(threading.Thread):
                 attach.append(p)                   # already one of ours
                 continue
             status, out, msg = self.mask_file(p)
-            log(f"file guard: {msg}")
+            # The message names the file, because the user needs to know which
+            # one. The log gets the shape of it only.
+            log(f"file guard: {Path(p).suffix.lower() or 'no extension'} -> {status}")
             if status == "failed":
                 failed.append(msg)
                 continue
@@ -1210,10 +1339,22 @@ class Automation(threading.Thread):
                 continue
             self.downloads_done.add(key)
             self.downloads_size.pop(key, None)
-            self.restore_download(entry)
+            seen = self.holds_tokens(entry)
+            if seen is True:
+                self.restore_download(entry)
+            elif seen is None:
+                self.offer_restore(entry)
+
+    def cmd_restore_answer(self, path: str, answer: str) -> None:
+        """The user's reply to offer_restore: yes, no, always or never."""
+        if answer in ("always", "never"):
+            self.cfg["restoreUnreadable"] = answer
+            save_config(self.cfg)
+        if answer in ("yes", "always"):
+            self.restore_download(Path(path))
 
     def restore_download(self, path: Path) -> None:
-        if not self.holds_tokens(path):
+        if self.holds_tokens(path) is False:
             return
         sid = self.cfg.get("sessionId")
         if not sid:
@@ -1226,7 +1367,7 @@ class Automation(threading.Thread):
         finally:
             self.emit(type="busy", busy=False)
         if not r["ok"]:
-            log(f"downloads: {path.name}: {r['error']}")
+            log(f"downloads: {redact(path.name, keep=0)}{path.suffix}: {r['error']}")
             self.toast(f"{path.name}: could not restore ({r['error']})", error=True)
             return
         d = r["data"] or {}
@@ -1243,7 +1384,8 @@ class Automation(threading.Thread):
         out.write_bytes(blob)
         self.downloads_done.add(str(out).lower())
         restored, unresolved = d.get("restored", 0), len(d.get("unresolved") or [])
-        log(f"downloads: {path.name} -> {out.name}: {restored} restored, {unresolved} unresolved")
+        log(f"downloads: {redact(path.name, keep=0)}{path.suffix} restored: "
+            f"{restored} value(s), {unresolved} unresolved")
         if self.cfg.get("deleteTokenCopy"):
             try:
                 path.unlink()
@@ -1255,16 +1397,37 @@ class Automation(threading.Thread):
                    error=bool(unresolved))
 
     @staticmethod
-    def holds_tokens(path: Path) -> bool:
-        """Cheap pre-check, so the server is not sent every download. A zipped
-        Office file hides its text, so those are always sent."""
-        if path.suffix.lower() in ZIP_EXTS:
-            return True
+    def holds_tokens(path: Path) -> bool | None:
+        """True when the file certainly holds tokens, False when it certainly
+        does not, None when it cannot be told without opening it on the server.
+
+        A zipped Office file deflates its text out of sight, so its tokens are
+        not visible from here. Uploading every such file that lands in Downloads
+        was the wrong answer: a bank statement or a customer list saved from
+        email would have gone to the server too. Those come back as None and are
+        the user's decision."""
         try:
             with open(path, "rb") as fh:
-                return b"TOK_" in fh.read(4 * 1024 * 1024).upper()
+                head = fh.read(4 * 1024 * 1024)
         except OSError:
             return False
+        if b"TOK_" in head.upper():
+            return True                      # true even inside a stored zip entry
+        return None if path.suffix.lower() in ZIP_EXTS else False
+
+    def offer_restore(self, path: Path) -> None:
+        """Ask before sending a file whose tokens cannot be seen from here.
+
+        Silently uploading anything that lands in Downloads is an unannounced
+        egress channel from the endpoint, which is what a third-party risk
+        review stops a rollout over."""
+        remembered = self.cfg.get("restoreUnreadable")
+        if remembered == "never":
+            return
+        if remembered == "always":
+            self.restore_download(path)
+            return
+        self.emit(type="ask_restore", name=path.name, path=str(path))
 
     # ---- the Windows file dialog Claude opens for its paperclip
     def find_dialog(self):
@@ -1350,14 +1513,16 @@ class Automation(threading.Thread):
         for names in ((picked, "list selection"), (typed, "File name box")):
             hits = [p for p in (self.resolve_pick(n, folder) for n in names[0]) if p]
             if hits and len(hits) == len(names[0]):
-                log(f"file guard: {names[1]} {names[0]} in folder {folder or 'UNKNOWN'} -> {hits}")
+                log(f"file guard: {names[1]} gave {len(names[0])} name(s) in "
+                    f"{'a known folder' if folder else 'an UNKNOWN folder'}, all resolved")
                 return hits, []
         for n in (typed or picked):
             p = self.resolve_pick(n, folder)
             (found if p else missing).append(p or n)
         if missing:
-            log(f"file guard: could not locate {missing}; typed={typed} picked={picked} "
-                f"folder={folder or 'UNKNOWN'}")
+            log(f"file guard: could not locate {len(missing)} pick(s): "
+                f"{', '.join(redact(m, keep=0) for m in missing[:3])}; "
+                f"folder {'known' if folder else 'UNKNOWN'}")
             self.dump_dialog(dlg)
         return found, missing
 
@@ -1375,9 +1540,10 @@ class Automation(threading.Thread):
             seen += 1
             try:
                 value = self.value_of(c)
-                log(f"file guard:   {' ' * depth}{c.ControlTypeName} name={(c.Name or '')[:40]!r} "
-                    f"id={(c.AutomationId or '')!r} class={(c.ClassName or '')[:24]!r}"
-                    + (f" value={value[:60]!r}" if value else ""))
+                log(f"file guard:   {' ' * depth}{c.ControlTypeName} "
+                    f"name={redact(c.Name)} id={(c.AutomationId or '')!r} "
+                    f"class={(c.ClassName or '')[:24]!r}"
+                    + (f" value={redact(value)}" if value else ""))
                 if depth < 8:
                     stack.extend((k, depth + 1) for k in reversed(c.GetChildren()))
             except Exception:  # noqa: BLE001
@@ -1517,7 +1683,7 @@ class Automation(threading.Thread):
                 # No Open button: a Save dialog, or one we do not understand.
                 # Nothing is being attached, so there is nothing to guard.
                 SHARED["dialog_open"] = False
-                self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} with no "
+                self.warn_dialog(f"file dialog open: title {redact(dlg.Name)} with no "
                                  f"Open button; left alone")
                 return
             self.dialog_confirm, self.dialog_list = confirm, listing
@@ -1525,13 +1691,13 @@ class Automation(threading.Thread):
                 # An open-type dialog we cannot read yet. Stay armed: the confirm
                 # is held rather than let through, and the box is looked for again
                 # on the next poll.
-                self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} but no "
+                self.warn_dialog(f"file dialog open: title {redact(dlg.Name)} but no "
                                  f"File name box yet; holding the dialog")
                 self.publish_dialog_rects()
                 SHARED["dialog_open"] = True
                 return
             self.dialog_edit = edit
-            log(f"file dialog ready: name={(dlg.Name or '')[:40]!r} "
+            log(f"file dialog ready: title {redact(dlg.Name)} "
                 f"box={(edit.Name or edit.AutomationId or 'edit')!r} "
                 f"button={(confirm.Name or '')!r} "
                 f"list={'found' if listing is not None else 'NOT FOUND'}")
@@ -2340,12 +2506,12 @@ class OverlayWorker(threading.Thread):
             if not rects:
                 blind += 1                  # a stretch with no geometry: do not walk forever
                 if debug:
-                    log(f"overlay:   line {lines}: no rect, {text[:60]!r}")
+                    log(f"overlay:   line {lines}: no rect, {redact(text)}")
             else:
                 blind = 0
                 r = rects[0]
                 if debug:
-                    log(f"overlay:   line {lines}: y={r.top}..{r.bottom} {text[:60]!r}")
+                    log(f"overlay:   line {lines}: y={r.top}..{r.bottom} {redact(text)}")
                 if r.top > win.bottom:
                     break                       # walked past the bottom of the view
                 if r.top >= win.top and "TOK_" in text.upper():
@@ -2485,8 +2651,8 @@ class OverlayWorker(threading.Thread):
             if it is not None:
                 return it
         if self.cfg.get("overlayDebug"):
-            log(f"overlay:   {tok} at offset {m.start()} in {text[:60]!r}: "
-                f"counting reached {self.text_of(rng)[:30]!r}, hit test "
+            log(f"overlay:   {tok} at offset {m.start()} in a {len(text)}-char line: "
+                f"counting reached {redact(self.text_of(rng))}, hit test "
                 f"{'found nothing' if word is None else 'gave no usable rectangle'}")
         return None
 
@@ -2636,6 +2802,7 @@ class Overlay:
         style = _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
         _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                                   style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+        exclude_from_capture(hwnd, "overlay")
         self.fonts: dict[tuple, tkfont.Font] = {}
         self.families = {f.lower() for f in tkfont.families(root)}
         self.dpi = root.winfo_fpixels("1i")
@@ -2771,6 +2938,8 @@ class Bar:
                                   justify="left", wraplength=520, padx=10, pady=6)
         self.tip_label.pack()
         make_no_activate(self.tip)
+        exclude_from_capture(_user32.GetParent(self.tip.winfo_id()) or self.tip.winfo_id(),
+                             "tooltip") if _IS_WIN else None
 
         self.overlay = Overlay(self.root)
         self.blocker = DropBlocker(self.root)
@@ -2785,6 +2954,32 @@ class Bar:
 
     def set_guard_label(self, on: bool) -> None:
         self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+
+    def ask_restore(self, name: str, path: str) -> None:
+        """Consent before a file leaves the machine. The helper cannot see
+        inside a zipped Office file, so it cannot know whether this one came
+        from Claude or from the user's email."""
+        w = tk.Toplevel(self.root)
+        w.title("SafePII")
+        w.resizable(False, False)
+        w.attributes("-topmost", True)
+        tk.Label(w, text=f"{name} may hold masked values.", font=("Segoe UI", 10, "bold"),
+                 anchor="w").pack(fill="x", padx=14, pady=(14, 2))
+        tk.Label(w, text="SafePII cannot see inside this file without sending it to your\n"
+                         "SafePII server. Send it, so any tokens in it can be restored?",
+                 justify="left", anchor="w").pack(fill="x", padx=14, pady=(0, 10))
+        row = tk.Frame(w)
+        row.pack(fill="x", padx=14, pady=(0, 12))
+
+        def answer(value):
+            w.destroy()
+            self.commands.put(("restore_answer", path, value))
+
+        for text, value in (("Send", "yes"), ("Not this one", "no"),
+                            ("Always", "always"), ("Never ask", "never")):
+            tk.Button(row, text=text, command=lambda v=value: answer(v), width=11).pack(
+                side="left", padx=3)
+        w.protocol("WM_DELETE_WINDOW", lambda: answer("no"))
 
     def set_alarm(self, msg) -> None:
         """A banner that stays until the cause is gone. A six-second toast is
@@ -2893,6 +3088,8 @@ class Bar:
                     self.set_overlay_label(ev["on"])
                 elif t == "file_guard":
                     self.set_fileguard_label(ev["on"])
+                elif t == "ask_restore":
+                    self.ask_restore(ev["name"], ev["path"])
                 elif t == "alarm":
                     self.set_alarm(ev["msg"])
                 elif t == "alarm_clear":
@@ -2932,6 +3129,13 @@ class Bar:
         watch_dl = tk.BooleanVar(value=self.cfg.get("watchDownloads", True))
         tk.Checkbutton(w, text="Restore tokens in files Claude produces, as they land in Downloads",
                        variable=watch_dl).grid(row=9, column=0, columnspan=2, sticky="w", **pad)
+        tk.Label(w, text="Files whose tokens SafePII cannot see\nwithout sending them").grid(
+            row=11, column=0, sticky="w", **pad)
+        unreadable = tk.StringVar(value=self.cfg.get("restoreUnreadable", "ask"))
+        row_u = tk.Frame(w)
+        row_u.grid(row=11, column=1, sticky="w", **pad)
+        for text, value in (("Ask me", "ask"), ("Always send", "always"), ("Never send", "never")):
+            tk.Radiobutton(row_u, text=text, variable=unreadable, value=value).pack(side="left")
         del_tok = tk.BooleanVar(value=self.cfg.get("deleteTokenCopy", False))
         tk.Checkbutton(w, text="…and delete the token copy afterwards (off: both files are kept)",
                        variable=del_tok).grid(row=10, column=0, columnspan=2, sticky="w", **pad)
@@ -2951,7 +3155,7 @@ class Bar:
                          f"Config: {CONFIG_FILE}", justify="left", fg="#6b7280").grid(
             row=4, column=0, columnspan=2, sticky="w", **pad)
         btns = tk.Frame(w)
-        btns.grid(row=11, column=0, columnspan=2, sticky="e", **pad)
+        btns.grid(row=12, column=0, columnspan=2, sticky="e", **pad)
 
         def apply():
             self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
@@ -2962,6 +3166,7 @@ class Bar:
             self.cfg["overlayDebug"] = bool(ov_debug.get())
             self.cfg["watchDownloads"] = bool(watch_dl.get())
             self.cfg["deleteTokenCopy"] = bool(del_tok.get())
+            self.cfg["restoreUnreadable"] = unreadable.get()
             save_config(self.cfg)
 
         def test():
