@@ -109,10 +109,15 @@ except ImportError:  # pragma: no cover
     sys.exit(1)
 
 APP_NAME = "SafePII"
+# Its own number, because the helper ships on its own cadence. Sent to the
+# server on every call, so support can answer "which build?" without asking,
+# and an update check has something to compare against.
+__version__ = "0.3.0"
 OLD_APP_NAME = "Maskroom"   # settings written before the product was named
 # The CSRF value the server checks (webui/auth.py CSRF_VALUE). A wire constant,
 # not a product name: renaming it would need a coordinated server change.
 CSRF_VALUE = "maskroom"
+USER_AGENT = f"SafePII-helper/{__version__} (Windows)"
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "helper.json"
 MACHINE_CONFIG = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / APP_NAME / "helper.json"
@@ -280,7 +285,8 @@ class Server:
         url = self.cfg["serverUrl"].rstrip("/") + path
         # "maskroom" is the CSRF value the server checks (webui/auth.py CSRF_VALUE),
         # not a product name. It stays put; renaming it would need both sides.
-        headers = {"X-Requested-With": CSRF_VALUE, "Accept": "application/json", **headers}
+        headers = {"X-Requested-With": CSRF_VALUE, "Accept": "application/json",
+                   "User-Agent": USER_AGENT, **headers}
         token = (self.cfg.get("token") or "").strip()
         key = (self.cfg.get("apiKey") or "").strip()
         if token:
@@ -318,7 +324,8 @@ class Server:
 
     def api(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         url = self.cfg["serverUrl"].rstrip("/") + path
-        headers = {"X-Requested-With": CSRF_VALUE, "Accept": "application/json"}
+        headers = {"X-Requested-With": CSRF_VALUE, "Accept": "application/json",
+                   "User-Agent": USER_AGENT}
         token = (self.cfg.get("token") or "").strip()
         key = (self.cfg.get("apiKey") or "").strip()
         if token:
@@ -3538,6 +3545,8 @@ class Bar:
         self.check_label = tk.Label(w, text="", anchor="w")
         self.check_label.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         self.commands.put(("check",))   # show who we are, if anyone
+        tk.Label(w, text=f"SafePII helper {__version__}").grid(row=12, column=0, columnspan=2,
+                                                               sticky="w", **pad)
         tk.Label(w, text=f"Sessions: {len(self.cfg.get('sessions') or {})} known, "
                          f"{len(self.cfg.get('chats') or {})} chats bound; current {(self.cfg.get('sessionId') or 'none')[:8]}    "
                          f"Hotkeys: Ctrl+Shift+M mask, Ctrl+Shift+U unmask clipboard\n"
@@ -3589,7 +3598,8 @@ def main() -> int:
         pass
     cfg = load_config()
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    log(f"start: server={cfg.get('serverUrl')} guard={cfg.get('guard', True)} log={LOG_FILE}"
+    log(f"start: SafePII helper {__version__} "
+        f"server={cfg.get('serverUrl')} guard={cfg.get('guard', True)} log={LOG_FILE}"
         + (f" mask={len(args)} file(s)" if args else ""))
     commands: "queue.Queue[tuple]" = queue.Queue()
     events: "queue.Queue[dict]" = queue.Queue()

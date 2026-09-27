@@ -1046,3 +1046,22 @@ def test_a_double_click_outside_the_dialog_is_ignored(clicks):
 def test_two_clicks_far_apart_are_not_a_double_click(clicks):
     clicks.h.dialog_click(200, 200)
     assert clicks.h.dialog_click(260, 260) is False
+
+
+def test_the_helper_states_its_version_to_the_server(automation, monkeypatch):
+    """Support cannot ask "which build?" of a fleet, and an update check needs
+    something to compare against."""
+    helper = sys.modules["helper"]
+    import re as _re
+    assert _re.fullmatch(r"\d+\.\d+\.\d+", helper.__version__), helper.__version__
+    assert helper.__version__ in helper.USER_AGENT
+
+    seen = {}
+
+    class Req:
+        def __init__(self, url, data=None, method="GET", headers=None):
+            seen.update(headers or {})
+    monkeypatch.setattr(helper.urllib.request, "Request", Req)
+    srv = helper.Server({"serverUrl": "https://safepii.example", "token": "t"})
+    srv._request("/api/me", "GET", None, {})
+    assert seen["User-Agent"] == helper.USER_AGENT
