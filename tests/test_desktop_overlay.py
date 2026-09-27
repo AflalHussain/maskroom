@@ -1268,3 +1268,38 @@ def test_an_unnamed_container_falls_back_to_the_taller_ancestor(automation):
     text = Node((410, 500, 990, 540), box)
     got = helper.composer_box(text)
     assert (got.top, got.bottom) == (480, 570)
+
+
+def test_the_panel_is_measured_after_it_is_shown(bar):
+    """It used to be measured while still hidden, so it opened at whatever
+    tkinter had guessed and only settled when something rebuilt it."""
+    bar.b.alert("could not reach the server", "error")
+    bar.b.place((400, 500, 1000, 560))
+    bar.b.open_panel()
+    bar.b.root.update()
+    panel = bar.b.panel
+    assert panel.winfo_ismapped(), "it has to be on screen to measure it"
+    needed = panel.winfo_reqheight()
+    assert needed > 80, needed
+    assert panel.winfo_height() >= needed - 1, (panel.winfo_height(), needed)
+
+
+def test_reopening_the_panel_gives_the_same_size(bar):
+    bar.b.place((400, 500, 1000, 560))
+    bar.b.open_panel()
+    bar.b.root.update()
+    first = bar.b.panel.winfo_height()
+    bar.b.close_panel()
+    bar.b.open_panel()
+    bar.b.root.update()
+    assert bar.b.panel.winfo_height() == first
+
+
+def test_a_redraw_that_changes_nothing_does_not_move_the_panel(bar):
+    """Re-clipping on every rebuild made it flicker."""
+    bar.b.place((400, 500, 1000, 560))
+    bar.b.open_panel()
+    bar.b.root.update()
+    at = bar.b.panel_at
+    bar.b.place_panel()
+    assert bar.b.panel_at == at

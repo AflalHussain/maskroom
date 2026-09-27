@@ -3202,6 +3202,11 @@ class Bar:
     # geometry (see the docstring for provenance)
     PILL_H, PANEL_W, ROW_H, PAD, GAP, TIGHT = 32, 300, 30, 16, 12, 8
     CLEAR = 10          # space left between the pill and the composer's border
+    # Clipping a window to a region cannot antialias, so every curve is drawn in
+    # whole pixels. A half-height radius made a pill whose ends were visibly
+    # stepped; 8 is what Windows itself uses for a floating surface, and at that
+    # size the steps are one pixel each and read as a corner rather than stairs.
+    RADIUS = 8
     RECENT_KEEP = 10
 
     # A shape for every state, so nothing depends on colour alone: about eight
@@ -3226,6 +3231,7 @@ class Bar:
         self.flash_after = None
         self.busy = False
         self.panel = None
+        self.panel_at = None
         self.settings_win = None
         self.blocked = False               # a blocking alert opened the panel once
         self.update = None                 # (version, url) when the server has a newer build
@@ -3235,6 +3241,8 @@ class Bar:
         self.win = tk.Toplevel(self.root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
+        # The 1 px border is what a clipped corner cuts through, so keeping it
+        # close to the fill makes the steps far less obvious than a bright edge.
         self.win.configure(bg=self.LINE)
         self.win.withdraw()
         shell = tk.Frame(self.win, bg=self.BG)
@@ -3353,7 +3361,7 @@ class Bar:
         x = self.win.winfo_x() + self.pill_w - self.pilltip.winfo_reqwidth()
         self.pilltip.geometry(f"+{max(0, x)}+{self.win.winfo_y() + self.PILL_H + 6}")
         self.pilltip.deiconify()
-        round_corners(self.pilltip, 8)
+        round_corners(self.pilltip, self.RADIUS)
 
     def hide_pill_tip(self) -> None:
         self.pilltip.withdraw()
@@ -3365,7 +3373,7 @@ class Bar:
             y = bottom + self.CLEAR
         if rect != self.rect or force:
             self.win.geometry(f"{self.pill_w}x{self.PILL_H}+{x}+{y}")
-            round_corners(self.win, self.PILL_H // 2)   # a pill, and redone on resize
+            round_corners(self.win, self.RADIUS)   # redone on resize: a clip is in pixels
             self.rect = rect
             if self.panel:
                 self.place_panel()
@@ -3456,27 +3464,36 @@ class Bar:
         self.hide_pill_tip()
         self.panel = self._floating(self.LINE)
         self.build_panel()
-        self.place_panel()
         self.panel.deiconify()
+        # Measured only once it is on screen. A hidden window reports the size
+        # tkinter guessed, not the size its contents need, which is why the
+        # panel opened short and did not settle until something rebuilt it.
+        self.place_panel()
+        self.root.after_idle(self.place_panel)
         self.chev.configure(text="⌃")
 
     def close_panel(self) -> None:
+        self.panel_at = None
         if self.panel:
             self.panel.destroy()
             self.panel = None
             self.chev.configure(text="⌄")
 
     def place_panel(self) -> None:
-        if not self.panel:
+        if not self.panel or not self.panel.winfo_exists():
             return
         self.panel.update_idletasks()
-        h = self.panel.winfo_reqheight()
+        h = max(self.panel.winfo_reqheight(), 80)
         x = self.win.winfo_x() + self.pill_w - self.PANEL_W
         y = self.win.winfo_y() - h - self.TIGHT
         if y < 0:
             y = self.win.winfo_y() + self.PILL_H + self.TIGHT
+        if (self.PANEL_W, h, x, y) == self.panel_at:
+            return                       # nothing moved: do not re-clip and flicker
+        self.panel_at = (self.PANEL_W, h, x, y)
         self.panel.geometry(f"{self.PANEL_W}x{h}+{max(0, x)}+{y}")
-        round_corners(self.panel, 10)
+        self.panel.update_idletasks()    # the clip is in pixels, so size it first
+        round_corners(self.panel, self.RADIUS)
 
     def build_panel(self) -> None:
         if not self.panel:
@@ -3638,7 +3655,7 @@ class Bar:
             y = max(0, y - h - 30)
         self.tip.geometry(f"+{x}+{y}")
         self.tip.deiconify()
-        round_corners(self.tip, 8)
+        round_corners(self.tip, self.RADIUS)
 
     def toast(self, msg: str, error: bool = False) -> None:
         self.alert(msg, "error" if error else "info")
