@@ -1065,3 +1065,88 @@ def test_the_helper_states_its_version_to_the_server(automation, monkeypatch):
     srv = helper.Server({"serverUrl": "https://safepii.example", "token": "t"})
     srv._request("/api/me", "GET", None, {})
     assert seen["User-Agent"] == helper.USER_AGENT
+
+
+# ---------------------------------------------------------- administrator policy
+def test_a_machine_file_is_a_default_and_the_user_may_override_it(automation, tmp_path, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    monkeypatch.setattr(helper, "adopt_old_settings", lambda: None)
+    monkeypatch.setattr(helper, "read_policy", dict)
+    machine = tmp_path / "machine.json"
+    machine.write_text(json.dumps({"serverUrl": "https://set-by-admin.example", "guard": False}))
+    user = tmp_path / "user.json"
+    user.write_text(json.dumps({"guard": True}))
+    monkeypatch.setattr(helper, "MACHINE_CONFIG", machine)
+    monkeypatch.setattr(helper, "CONFIG_FILE", user)
+    cfg = helper.load_config()
+    assert cfg["serverUrl"] == "https://set-by-admin.example"
+    assert cfg["guard"] is True, "a machine file is only a default"
+
+
+def test_policy_overrides_the_user_and_is_reported_as_locked(automation, tmp_path, monkeypatch):
+    """The difference between a default and a policy, and the control a fleet's
+    security team asks for by name."""
+    helper = sys.modules["helper"]
+    said = []
+    monkeypatch.setattr(helper, "log", said.append)
+    monkeypatch.setattr(helper, "adopt_old_settings", lambda: None)
+    monkeypatch.setattr(helper, "read_policy", lambda: {"guard": True, "blockDrops": True})
+    user = tmp_path / "user.json"
+    user.write_text(json.dumps({"guard": False, "unmask": False}))
+    monkeypatch.setattr(helper, "MACHINE_CONFIG", tmp_path / "absent.json")
+    monkeypatch.setattr(helper, "CONFIG_FILE", user)
+    cfg = helper.load_config()
+    assert cfg["guard"] is True, "policy has the last word"
+    assert cfg["unmask"] is False, "a setting with no policy stays the user's"
+    assert helper.locked("guard") and not helper.locked("unmask")
+    assert any("administrator sets" in m for m in said), said
+
+
+def test_a_locked_setting_is_not_written_back_as_the_user_s_choice(automation, tmp_path, monkeypatch):
+    """Or it would look chosen after the policy is withdrawn."""
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(helper, "CONFIG_FILE", tmp_path / "helper.json")
+    monkeypatch.setattr(helper, "POLICY", {"guard": True})
+    helper.save_config({"guard": True, "unmask": False, "token": "t"})
+    written = json.loads((tmp_path / "helper.json").read_text())
+    assert "guard" not in written
+    assert written["unmask"] is False and written["token"] == "t"
+
+
+def test_a_toggle_refuses_a_locked_setting_and_says_why(automation, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "POLICY", {"guard": True})
+    said = []
+    automation.toast = lambda msg, error=False, level="": said.append((msg, level))
+    assert automation.refuse_if_locked("guard", "The send guard") is True
+    assert "administrator" in said[0][0] and said[0][1] == "warn"
+    assert automation.refuse_if_locked("unmask", "Unmasking replies") is False
+
+
+def test_a_stray_or_mistyped_policy_value_is_ignored(automation, monkeypatch):
+    """A bad registry value must not stop the helper starting."""
+    helper = sys.modules["helper"]
+    said = []
+    monkeypatch.setattr(helper, "log", said.append)
+    monkeypatch.setattr(helper, "_IS_WIN", True)
+
+    class FakeKey:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    values = [("guard", 1, 4), ("notASetting", "x", 1), ("forgetAfterIdleMinutes", "ten", 1)]
+    fake = types.ModuleType("winreg")
+    fake.HKEY_LOCAL_MACHINE = 0
+    fake.OpenKey = lambda hive, path: FakeKey()
+    def enum(key, i):
+        if i >= len(values):
+            raise OSError
+        return values[i]
+    fake.EnumValue = enum
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    got = helper.read_policy()
+    assert got == {"guard": True}
+    assert any("unknown setting" in m for m in said)
+    assert any("not a int" in m for m in said), said

@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Group Policy template for the SafePII desktop helper.
+
+     Copy SafePII.admx to C:\Windows\PolicyDefinitions\ (or the domain central
+     store, \\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\) and
+     en-US\SafePII.adml beside it in the matching language folder. The settings
+     then appear under Computer Configuration > Administrative Templates >
+     SafePII > Desktop helper.
+
+     Everything here writes to HKLM\SOFTWARE\Policies\SafePII\Helper, which only
+     an administrator can write. The helper reads that key last, after its own
+     defaults and the user's file, so a setting here cannot be changed by the
+     user: the panel shows it with a padlock and the toggle refuses. -->
+<policyDefinitions revision="1.0" schemaVersion="1.0">
+  <policyNamespaces>
+    <target prefix="safepii" namespace="SafePII.Policies.Helper"/>
+    <using prefix="windows" namespace="Microsoft.Policies.Windows"/>
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0"/>
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_SAFEPII_1" displayName="$(string.SUPPORTED_SAFEPII_1)"/>
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="SafePII" displayName="$(string.SafePII)"/>
+    <category name="Helper" displayName="$(string.Helper)">
+      <parentCategory ref="SafePII"/>
+    </category>
+  </categories>
+
+  <policies>
+    <policy name="ServerUrl" class="Machine" displayName="$(string.ServerUrl)"
+            explainText="$(string.ServerUrl_Help)" presentation="$(presentation.ServerUrl)"
+            key="SOFTWARE\Policies\SafePII\Helper">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <elements>
+        <text id="ServerUrlText" valueName="serverUrl" required="true"/>
+      </elements>
+    </policy>
+
+    <policy name="Guard" class="Machine" displayName="$(string.Guard)"
+            explainText="$(string.Guard_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="guard">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="FileGuard" class="Machine" displayName="$(string.FileGuard)"
+            explainText="$(string.FileGuard_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="fileGuard">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="BlockDrops" class="Machine" displayName="$(string.BlockDrops)"
+            explainText="$(string.BlockDrops_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="blockDrops">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="Unmask" class="Machine" displayName="$(string.Unmask)"
+            explainText="$(string.Unmask_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="unmask">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="Overlay" class="Machine" displayName="$(string.Overlay)"
+            explainText="$(string.Overlay_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="overlay">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="WatchDownloads" class="Machine" displayName="$(string.WatchDownloads)"
+            explainText="$(string.WatchDownloads_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="watchDownloads">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="RestoreUnreadable" class="Machine" displayName="$(string.RestoreUnreadable)"
+            explainText="$(string.RestoreUnreadable_Help)"
+            presentation="$(presentation.RestoreUnreadable)"
+            key="SOFTWARE\Policies\SafePII\Helper">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <elements>
+        <enum id="RestoreUnreadableEnum" valueName="restoreUnreadable" required="true">
+          <item displayName="$(string.Restore_Ask)"><value><string>ask</string></value></item>
+          <item displayName="$(string.Restore_Always)"><value><string>always</string></value></item>
+          <item displayName="$(string.Restore_Never)"><value><string>never</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="OnGuardFailure" class="Machine" displayName="$(string.OnGuardFailure)"
+            explainText="$(string.OnGuardFailure_Help)"
+            presentation="$(presentation.OnGuardFailure)"
+            key="SOFTWARE\Policies\SafePII\Helper">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <elements>
+        <enum id="OnGuardFailureEnum" valueName="onGuardFailure" required="true">
+          <item displayName="$(string.Failure_Hold)"><value><string>hold</string></value></item>
+          <item displayName="$(string.Failure_Warn)"><value><string>warn</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="ForgetAfterIdle" class="Machine" displayName="$(string.ForgetAfterIdle)"
+            explainText="$(string.ForgetAfterIdle_Help)"
+            presentation="$(presentation.ForgetAfterIdle)"
+            key="SOFTWARE\Policies\SafePII\Helper">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <elements>
+        <decimal id="ForgetAfterIdleValue" valueName="forgetAfterIdleMinutes"
+                 minValue="0" maxValue="480" required="true"/>
+      </elements>
+    </policy>
+
+    <policy name="OverlayDebug" class="Machine" displayName="$(string.OverlayDebug)"
+            explainText="$(string.OverlayDebug_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="overlayDebug">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+  </policies>
+</policyDefinitions>

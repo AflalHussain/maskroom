@@ -194,6 +194,58 @@ def adopt_old_settings() -> None:
         log(f"could not adopt the previous settings: {e}")
 
 
+POLICY_KEY = r"SOFTWARE\\Policies\\SafePII\\Helper"
+# What an administrator may set, and how it is stored in the registry. Anything
+# outside this list is ignored, so a stray value cannot break the helper.
+POLICY_TYPES = {"serverUrl": str, "guard": bool, "unmask": bool, "overlay": bool,
+                "fileGuard": bool, "blockDrops": bool, "watchDownloads": bool,
+                "deleteTokenCopy": bool, "restoreUnreadable": str, "onGuardFailure": str,
+                "preamble": bool, "forgetAfterIdleMinutes": int, "filesDir": str,
+                "downloadsDir": str, "overlayDebug": bool}
+POLICY: dict = {}      # what the administrator has actually set, this run
+
+
+def read_policy() -> dict:
+    """Administrator settings from HKLM, which only an administrator can write.
+
+    This is the difference between a default and a policy. The machine-wide
+    JSON file is read before the user's own and can therefore be overridden by
+    them; anything here cannot be, which is the control a fleet's security team
+    asks for by name.
+    """
+    if not _IS_WIN:
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    found = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, POLICY_KEY) as key:
+            i = 0
+            while True:
+                try:
+                    name, value, _kind = winreg.EnumValue(key, i)
+                except OSError:
+                    break
+                i += 1
+                want = POLICY_TYPES.get(name)
+                if want is None:
+                    log(f"policy: ignoring unknown setting {name!r}")
+                    continue
+                try:
+                    found[name] = bool(value) if want is bool else want(value)
+                except (TypeError, ValueError):
+                    log(f"policy: ignoring {name!r}, not a {want.__name__}")
+    except OSError:
+        pass                                   # no policy key: the normal case
+    return found
+
+
+def locked(name: str) -> bool:
+    return name in POLICY
+
+
 def load_config() -> dict:
     adopt_old_settings()
     cfg = dict(DEFAULTS)
@@ -204,6 +256,11 @@ def load_config() -> dict:
                 cfg.update(data)
         except (OSError, ValueError):
             pass
+    POLICY.clear()
+    POLICY.update(read_policy())                 # last word, and not the user's
+    cfg.update(POLICY)
+    if POLICY:
+        log("policy: administrator sets " + ", ".join(f"{k}={v!r}" for k, v in sorted(POLICY.items())))
     cfg["chats"] = dict(cfg.get("chats") or {})
     cfg["sessions"] = dict(cfg.get("sessions") or {})
     sid = cfg.get("sessionId")
@@ -269,8 +326,11 @@ def save_config(cfg: dict) -> None:
     defaults."""
     with _config_lock:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # Policy values are not the user's to keep: leaving them in the file
+        # would make a setting look chosen after the policy is withdrawn.
+        keep = {k: v for k, v in cfg.items() if k not in POLICY}
         tmp = CONFIG_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cfg, indent=2), "utf-8")
+        tmp.write_text(json.dumps(keep, indent=2), "utf-8")
         os.replace(tmp, CONFIG_FILE)
 
 
@@ -1088,7 +1148,18 @@ class Automation(threading.Thread):
             self.clip_seq = _user32.GetClipboardSequenceNumber()
             self.toast(f"Clipboard restored: {n} value{'' if n == 1 else 's'}.")
 
+    def refuse_if_locked(self, key: str, label: str) -> bool:
+        """A setting an administrator has fixed cannot be changed here, and the
+        user is told so rather than left wondering why the switch sprang back."""
+        if locked(key):
+            self.toast(f"{label} is set by your administrator and cannot be changed here.",
+                       level="warn")
+            return True
+        return False
+
     def cmd_toggle_overlay(self) -> None:
+        if self.refuse_if_locked("overlay", "The overlay"):
+            return
         self.cfg["overlay"] = not self.cfg.get("overlay", True)
         save_config(self.cfg)
         self.emit(type="overlay", items=None)
@@ -1097,6 +1168,8 @@ class Automation(threading.Thread):
                    else "Overlay off.")
 
     def cmd_toggle_unmask(self) -> None:
+        if self.refuse_if_locked("unmask", "Unmasking replies"):
+            return
         self.cfg["unmask"] = not self.cfg.get("unmask", True)
         save_config(self.cfg)
         self.set_tip(None)
@@ -1952,6 +2025,8 @@ class Automation(threading.Thread):
             log("drop blocker up")
 
     def cmd_toggle_file_guard(self) -> None:
+        if self.refuse_if_locked("fileGuard", "The file guard"):
+            return
         self.cfg["fileGuard"] = not self.cfg.get("fileGuard", True)
         save_config(self.cfg)
         self.emit(type="file_guard", on=self.cfg["fileGuard"])
@@ -1997,6 +2072,8 @@ class Automation(threading.Thread):
             self.toast("Send held: the text could not be checked. Fix the connection, or switch the guard off.", error=True)
 
     def cmd_toggle_guard(self) -> None:
+        if self.refuse_if_locked("guard", "The send guard"):
+            return
         self.cfg["guard"] = not self.cfg.get("guard", True)
         save_config(self.cfg)
         self.emit(type="guard", on=self.cfg["guard"])
@@ -3337,7 +3414,7 @@ class Bar:
                                 ("Unmask replies", "unmask", "toggle_unmask"),
                                 ("Overlay", "overlay", "toggle_overlay"),
                                 ("Files", "fileGuard", "toggle_file_guard")):
-            self.toggle_row(body, label, bool(self.cfg.get(key, True)), cmd)
+            self.toggle_row(body, label, bool(self.cfg.get(key, True)), cmd, locked(key))
 
         if self.recent:
             tk.Frame(body, bg=self.LINE, height=1).pack(fill="x", pady=(self.GAP, 0))
@@ -3371,6 +3448,8 @@ class Bar:
             return f"{n} thing{'' if n == 1 else 's'} to look at"
         if not self.cfg.get("guard", True):
             return "Guard is off — messages are not checked before they send"
+        if POLICY:
+            return f"Guard on. {len(POLICY)} setting(s) fixed by your administrator."
         return "Guard on. Enter is checked before it sends."
 
     def problem_row(self, parent, p) -> None:
@@ -3390,16 +3469,19 @@ class Bar:
             got.pack(anchor="w", pady=(2, 0))
             got.bind("<Button-1>", lambda e, m=p["msg"]: self.clear_problem(m))
 
-    def toggle_row(self, parent, label: str, on: bool, cmd: str) -> None:
-        row = tk.Frame(parent, bg=self.BG, height=self.ROW_H, cursor="hand2")
+    def toggle_row(self, parent, label: str, on: bool, cmd: str, fixed: bool = False) -> None:
+        row = tk.Frame(parent, bg=self.BG, height=self.ROW_H,
+                       cursor="arrow" if fixed else "hand2")
         row.pack(fill="x", padx=self.PAD, pady=1)
         row.pack_propagate(False)
-        tk.Label(row, text=label, bg=self.BG, fg=self.FG, font=("Segoe UI", 9),
-                 anchor="w").pack(side="left")
+        tk.Label(row, text=label, bg=self.BG, fg=self.DIM if fixed else self.FG,
+                 font=("Segoe UI", 9), anchor="w").pack(side="left")
         # The word, not only the colour, says which way it is set.
-        tk.Label(row, text="on" if on else "off", bg=self.BG,
-                 fg=self.OK if on else self.DIM, font=("Segoe UI", 9, "bold"),
-                 anchor="e").pack(side="right")
+        tk.Label(row, text=("🔒 " if fixed else "") + ("on" if on else "off"), bg=self.BG,
+                 fg=self.DIM if fixed else (self.OK if on else self.DIM),
+                 font=("Segoe UI", 9, "bold"), anchor="e").pack(side="right")
+        if fixed:
+            return               # set by an administrator: not ours to change
         for w in (row,) + tuple(row.winfo_children()):
             w.bind("<Button-1>", lambda e, c=cmd: self.commands.put((c,)))
 
@@ -3508,10 +3590,13 @@ class Bar:
         w.resizable(False, False)
         w.attributes("-topmost", True)
         pad = {"padx": 10, "pady": 4}
-        tk.Label(w, text="Server URL").grid(row=0, column=0, sticky="w", **pad)
+        tk.Label(w, text="Server URL" + (" 🔒" if locked("serverUrl") else "")).grid(
+            row=0, column=0, sticky="w", **pad)
         url = tk.Entry(w, width=48)
         url.insert(0, self.cfg.get("serverUrl") or DEFAULTS["serverUrl"])
         url.grid(row=0, column=1, **pad)
+        if locked("serverUrl"):
+            url.configure(state="readonly")
         tk.Label(w, text="Service key (optional; mr_…\nor the legacy shared key)").grid(row=1, column=0, sticky="w", **pad)
         key = tk.Entry(w, width=48, show="•")
         key.insert(0, self.cfg.get("apiKey") or "")
@@ -3556,15 +3641,17 @@ class Bar:
         btns.grid(row=12, column=0, columnspan=2, sticky="e", **pad)
 
         def apply():
-            self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
+            # A value an administrator has fixed is never taken from this window.
+            if not locked("serverUrl"):
+                self.cfg["serverUrl"] = url.get().strip() or DEFAULTS["serverUrl"]
             self.cfg["apiKey"] = key.get().strip()
-            self.cfg["preamble"] = bool(pre.get())
-            self.cfg["overlayHideOnScroll"] = bool(hide_scroll.get())
-            self.cfg["blockDrops"] = bool(block_drops.get())
-            self.cfg["overlayDebug"] = bool(ov_debug.get())
-            self.cfg["watchDownloads"] = bool(watch_dl.get())
-            self.cfg["deleteTokenCopy"] = bool(del_tok.get())
-            self.cfg["restoreUnreadable"] = unreadable.get()
+            for name, var in (("preamble", pre), ("overlayHideOnScroll", hide_scroll),
+                              ("blockDrops", block_drops), ("overlayDebug", ov_debug),
+                              ("watchDownloads", watch_dl), ("deleteTokenCopy", del_tok)):
+                if not locked(name):
+                    self.cfg[name] = bool(var.get())
+            if not locked("restoreUnreadable"):
+                self.cfg["restoreUnreadable"] = unreadable.get()
             save_config(self.cfg)
 
         def test():

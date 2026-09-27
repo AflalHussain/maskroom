@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- English strings for SafePII.admx. Goes in the en-US folder beside it. -->
+<policyDefinitionResources revision="1.0" schemaVersion="1.0">
+  <displayName>SafePII desktop helper</displayName>
+  <description>Settings an administrator fixes for the SafePII desktop helper.</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_SAFEPII_1">SafePII desktop helper 0.3.0 or later</string>
+      <string id="SafePII">SafePII</string>
+      <string id="Helper">Desktop helper</string>
+
+      <string id="ServerUrl">SafePII server address</string>
+      <string id="ServerUrl_Help">The SafePII server the helper sends text and files to, for example https://safepii.example.com.
+
+When this is set, the address is fixed and the user cannot change it in the helper's settings window. Leave it Not Configured to let each user enter their own, which is only appropriate for a trial.</string>
+
+      <string id="Guard">Check messages before they are sent</string>
+      <string id="Guard_Help">Enabled: pressing Enter in Claude runs the message through SafePII first. If anything was masked the send is held so the user can read what will leave the machine.
+
+Disabled: messages are sent as typed, unchecked.
+
+Either way the user cannot change it. Leave Not Configured to let the user decide.</string>
+
+      <string id="FileGuard">Mask files before they are attached</string>
+      <string id="FileGuard_Help">Enabled: a file picked through Claude's attach menu, or pasted in, is masked first and the masked copy is attached instead. A file that cannot be located or masked is held rather than attached.
+
+Disabled: files are attached as they are.
+
+Leave Not Configured to let the user decide.</string>
+
+      <string id="BlockDrops">Refuse files dragged onto Claude</string>
+      <string id="BlockDrops_Help">A file dragged from Explorer cannot be masked on its way in, because a drop is a shell handshake rather than a message the helper can rewrite.
+
+Enabled: dragged files are refused, and the user is told to use the attach menu, which is masked. This is all-or-nothing: a dragged image is refused along with a dragged spreadsheet, and it works by putting an invisible window over Claude while a drag is held, which eats clicks for that moment.
+
+Disabled (the helper's own default): dragged files go through unmasked.</string>
+
+      <string id="Unmask">Show real values in replies</string>
+      <string id="Unmask_Help">Enabled: hovering a token in a reply shows the real value, and text copied out of Claude is restored before it is pasted.
+
+Disabled: replies stay as tokens. Consider disabling on shared or public-facing machines, where a tooltip could be read over the user's shoulder.</string>
+
+      <string id="Overlay">Paint real values over tokens</string>
+      <string id="Overlay_Help">Enabled: the real values are painted over the tokens in replies, so the conversation reads normally. The painted values are excluded from screen capture.
+
+Disabled: replies show the tokens as Claude returned them. This is the more conservative setting and costs nothing but readability.</string>
+
+      <string id="WatchDownloads">Restore files that Claude produces</string>
+      <string id="WatchDownloads_Help">Enabled: a file Claude generates that lands in the Downloads folder is restored through the SafePII server, and the restored copy is written beside it.
+
+Disabled: downloaded files keep their tokens.</string>
+
+      <string id="RestoreUnreadable">Files whose contents cannot be checked locally</string>
+      <string id="RestoreUnreadable_Help">A zipped Office file hides its text, so the helper cannot tell from the endpoint whether it holds SafePII tokens without sending it to the server.
+
+Ask the user (the helper's own default): the user decides each time.
+Always send: any such file that lands in Downloads is sent to the server to be checked. Convenient, but it means files that did not come from Claude are sent too.
+Never send: those files are left alone.</string>
+      <string id="Restore_Ask">Ask the user</string>
+      <string id="Restore_Always">Always send them to the server</string>
+      <string id="Restore_Never">Never send them</string>
+
+      <string id="OnGuardFailure">When the guard cannot run</string>
+      <string id="OnGuardFailure_Help">What happens if the helper's own worker stops answering, so nothing can be masked.
+
+Hold (the helper's own default): Enter is held in Claude and a banner says the helper is no longer protecting it. Nothing unmasked can be sent, but Claude cannot be used until it recovers.
+Warn: Enter is passed through and the same banner is shown. The user can carry on, and unmasked text can reach Claude.
+
+Choose deliberately. Holding is the stricter setting; warning is the one users will not work around.</string>
+      <string id="Failure_Hold">Hold everything until it recovers</string>
+      <string id="Failure_Warn">Let messages through, and warn loudly</string>
+
+      <string id="ForgetAfterIdle">Forget real values after idle minutes</string>
+      <string id="ForgetAfterIdle_Help">How long the helper keeps the real values in memory with no keyboard or mouse input before dropping them. They are always dropped when the workstation is locked and when the user signs out.
+
+Set 0 to keep them until the workstation is locked. The helper's own default is 15 minutes.</string>
+
+      <string id="OverlayDebug">Write diagnostic detail to the helper log</string>
+      <string id="OverlayDebug_Help">Enabled: the helper records every line it examines while placing the overlay, which is what a support engineer needs to diagnose a token that is not being painted.
+
+This is noisy and it records the shape of conversation content, so leave it Not Configured or Disabled except while investigating a fault.</string>
+    </stringTable>
+
+    <presentationTable>
+      <presentation id="ServerUrl">
+        <textBox refId="ServerUrlText">
+          <label>Server address</label>
+          <defaultValue>https://safepii.example.com</defaultValue>
+        </textBox>
+      </presentation>
+      <presentation id="RestoreUnreadable">
+        <dropdownList refId="RestoreUnreadableEnum" noSort="true"
+                      defaultItem="0">Behaviour</dropdownList>
+      </presentation>
+      <presentation id="OnGuardFailure">
+        <dropdownList refId="OnGuardFailureEnum" noSort="true"
+                      defaultItem="0">Behaviour</dropdownList>
+      </presentation>
+      <presentation id="ForgetAfterIdle">
+        <decimalTextBox refId="ForgetAfterIdleValue" defaultValue="15">Minutes</decimalTextBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>
