@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WiX v4/v5 source for the SafePII desktop helper MSI.
+
+     An MSI rather than a plain setup executable, because that is what deploys
+     through Group Policy software installation and what an endpoint team can
+     inventory, repair and remove. Built by desktop/packaging/build.ps1.
+
+     Per machine, into Program Files, so a standard user cannot replace the
+     binary that reads their screen. It starts per user, through an HKLM Run
+     value, because the helper has to run as the interactive user: it reads the
+     accessibility tree of that user's session and installs hooks in it, which a
+     Windows service running as SYSTEM cannot do.
+
+     The upgrade code never changes. It is what tells Windows that a new build
+     replaces the old one rather than installing beside it. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="SafePII desktop helper"
+           Manufacturer="hSenid Mobile Solutions"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="7C3A9E14-5D2B-4B8F-9E77-2A6C1F0B4D83"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of the SafePII desktop helper is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Windows 10 1809 or later: the accessibility and window APIs the helper
+         relies on are not dependable before it. -->
+    <Launch Condition="Installed OR (VersionNT &gt;= 603)"
+            Message="The SafePII desktop helper needs Windows 10 or later." />
+
+    <Icon Id="SafePIIIcon" SourceFile="safepii.ico" />
+    <Property Id="ARPPRODUCTICON" Value="SafePIIIcon" />
+    <Property Id="ARPHELPLINK" Value="https://safepii.hsenidmobile.com/" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- Set SERVERURL=https://... on the command line and the installer writes
+         it as policy, so the fleet is configured at install time and the user
+         cannot change it:
+           msiexec /i SafePIIHelper.msi SERVERURL=https://safepii.example.com /qn -->
+    <Property Id="SERVERURL" Secure="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="SafePII" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="SafePII" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="SafePII desktop helper" Level="1">
+      <ComponentGroupRef Id="HelperFiles" />
+      <ComponentRef Id="AutoStart" />
+      <ComponentRef Id="PolicyServerUrl" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <ComponentGroup Id="HelperFiles" Directory="INSTALLFOLDER">
+      <!-- Filled by build.ps1 from the PyInstaller output, because a frozen
+           build's file list changes with the Python version. -->
+      <?include HelperFiles.wxi ?>
+    </ComponentGroup>
+
+    <Component Id="AutoStart" Directory="INSTALLFOLDER" Guid="B4F1C9A2-77E3-4A55-9C10-6D8E2B3F7A41">
+      <!-- HKLM Run, so every user who signs in to this machine gets it, while
+           the program itself lives somewhere they cannot write. -->
+      <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+                     Name="SafePIIHelper" Type="string"
+                     Value="&quot;[INSTALLFOLDER]SafePIIHelper.exe&quot;" KeyPath="yes" />
+    </Component>
+
+    <Component Id="PolicyServerUrl" Directory="INSTALLFOLDER" Guid="E2D7A8B1-3C46-4F09-B5A7-1E9C4D206B58"
+               Condition="SERVERURL">
+      <RegistryValue Root="HKLM" Key="SOFTWARE\Policies\SafePII\Helper"
+                     Name="serverUrl" Type="string" Value="[SERVERURL]" KeyPath="yes" />
+    </Component>
+
+    <Component Id="StartMenuShortcut" Directory="AppMenuFolder" Guid="9A0B5E63-1F82-4D37-8C94-5B7E2A1C6F09">
+      <Shortcut Id="HelperShortcut" Name="SafePII helper"
+                Description="Masks personal data before it is sent to Claude"
+                Target="[INSTALLFOLDER]SafePIIHelper.exe" WorkingDirectory="INSTALLFOLDER"
+                Icon="SafePIIIcon" />
+      <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="SOFTWARE\SafePII\Helper" Name="shortcut"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>

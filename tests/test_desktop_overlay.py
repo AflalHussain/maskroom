@@ -1150,3 +1150,52 @@ def test_a_stray_or_mistyped_policy_value_is_ignored(automation, monkeypatch):
     assert got == {"guard": True}
     assert any("unknown setting" in m for m in said)
     assert any("not a int" in m for m in said), said
+
+
+# ------------------------------------------------------------------- updates
+def test_versions_compare_as_numbers_not_as_text(automation):
+    helper = sys.modules["helper"]
+    assert helper.version_tuple("0.10.0") > helper.version_tuple("0.9.0")
+    assert helper.version_tuple("1.0.0") > helper.version_tuple("0.99.99")
+    assert helper.version_tuple("0.3.0") == helper.version_tuple("0.3.0")
+
+
+def test_the_helper_reports_a_newer_build_and_installs_nothing(automation, monkeypatch):
+    """On a managed fleet updating is the endpoint team's job through the MSI,
+    and a program that can replace its own binary is one worth attacking."""
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    sent = []
+    automation.emit = lambda **kw: sent.append(kw)
+    automation.update_checked = 0.0
+    automation.server = types.SimpleNamespace(api=lambda *a, **k: {
+        "ok": True, "status": 200, "error": None,
+        "data": {"version": "9.9.9", "url": "https://safepii.example/desktop/SafePIIHelper.msi"}})
+    automation.poll_update()
+    assert sent == [{"type": "update", "version": "9.9.9",
+                     "url": "https://safepii.example/desktop/SafePIIHelper.msi"}]
+
+
+def test_the_same_or_an_older_build_is_not_announced(automation, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    for served in (helper.__version__, "0.0.1", "", "not-a-version", None):
+        sent = []
+        automation.emit = lambda **kw: sent.append(kw)
+        automation.update_checked = 0.0
+        automation.server = types.SimpleNamespace(api=lambda *a, **k: {
+            "ok": True, "status": 200, "error": None, "data": {"version": served}})
+        automation.poll_update()
+        assert sent == [], served
+
+
+def test_an_unreachable_server_is_not_an_update_problem(automation, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    sent = []
+    automation.emit = lambda **kw: sent.append(kw)
+    automation.update_checked = 0.0
+    automation.server = types.SimpleNamespace(api=lambda *a, **k: {
+        "ok": False, "status": 0, "error": "cannot reach", "data": None})
+    automation.poll_update()
+    assert sent == []

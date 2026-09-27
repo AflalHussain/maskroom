@@ -50,8 +50,8 @@ a fleet rollout. P3 is needed for contract signature and for scale.
 | 21 | REL-2 | One global engine lock serialises all analysis | Reliability | days |
 | 22 | SEC-8 | No rate limiting or request size cap | Security | 1 day |
 | 23 | REL-3 | Engine cache is unbounded and client-controlled | Reliability | hours |
-| 24 | PKG-1 | No admin lock for the helper | Packaging | days |
-| 25 | PKG-2 | No installer, no signing, no version, no auto-update | Packaging | weeks |
+| 24 | ~~PKG-1~~ | ~~No admin lock for the helper~~ **done** | Packaging | days |
+| 25 | PKG-2 | No installer, no signing, no version, no auto-update — **build kit done, signing certificate outstanding** | Packaging | weeks |
 | 26 | PKG-3 | Desktop users are invisible in the audit console | Packaging | days |
 | 27 | PKG-4 | `dev-sync.ps1` must never ship | Packaging | minutes |
 | 28 | OPS-2 | No health check, access log, metrics or CI | Operations | days |
@@ -309,21 +309,42 @@ runs is also missed.
 
 ## Packaging and enterprise deployment (PKG)
 
-### PKG-1 — No admin lock — P2, verified
+### PKG-1 — No admin lock — **DONE 2026-09-28**
 `desktop/helper.py:164` reads the machine-wide config **then lets the user's file override
 it**, so it is a default, not a policy. Every toggle is a one-click button writing to a
 user-writable file, and nothing records that the guard was turned off. The browser extension
 already has this ([`ENTERPRISE_ENFORCEMENT.md`](ENTERPRISE_ENFORCEMENT.md),
 `extension/managed_schema.json`). Needs policy keys under `HKLM` with an ADMX template, a
 locked set the user file cannot override, disabled controls in the bar, and an audit event.
-**This is the control the buyer's security team will ask for by name.**
+**This was the control the buyer's security team will ask for by name.**
+**Fixed:** the helper reads `HKLM\SOFTWARE\Policies\SafePII\Helper` last, which only an
+administrator can write. A locked setting shows a padlock, its toggle refuses with a message
+naming the administrator, the settings window greys the field, and it is never written back
+into the user's file. Ships with an ADMX/ADML template and a deployment README at
+`enterprise/policies/windows/admx/`.
 
-### PKG-2 — No installer, signing, version or auto-update — P2, verified
+### PKG-2 — No installer, signing, version or auto-update — **build kit DONE 2026-09-28; certificate outstanding**
 The install today is "install Python, pip install a package, run a script". There is no
 version string anywhere in `desktop/helper.py`. An unsigned program that installs a global
 keyboard hook is blocked by SmartScreen, quarantined by endpoint protection, and refused by
-application allowlisting. Needs a bundled executable, an extended-validation signature, an
-installer that sets ACLs on the machine-wide config, and a way to push a fail-open fix.
+application allowlisting. **Done:** `desktop/packaging/` holds a PyInstaller spec (one directory, no UPX, `comtypes`
+named as a hidden import), a generated Windows version resource, a WiX MSI that installs per
+machine and starts per user through an HKLM Run value and takes `SERVERURL=` at install time,
+a multi-size icon, and `build.ps1` tying it together. The server serves
+`/desktop/latest.json` and `/desktop/SafePIIHelper.msi` in the same shape as the extension's
+update route, choosing the newest by version number rather than file date; the helper checks
+every six hours and reports, deliberately installing nothing.
+
+**Outstanding, and it is a purchase, not code.** Since **1 June 2023** the CA/Browser Forum
+has required the private key of every code signing certificate, OV as well as EV, to live in
+FIPS 140-2 Level 2 or Common Criteria EAL4+ hardware, so a certificate file is no longer
+issued. Either a hardware token or a cloud signing service (Azure Trusted Signing, DigiCert
+KeyLocker, SSL.com eSigner) is needed; `build.ps1` calls whatever `SAFEPII_SIGN_COMMAND`
+names, so the choice does not change the build. **Start the procurement now: it blocks
+release and nothing else.**
+
+**Not yet verified on Windows.** Nothing in `desktop/packaging/` has been run, because this
+repository is developed on Linux. The first build on a Windows machine is the test.
 
 ### PKG-3 — Desktop users are invisible in the audit console — P2, verified
 The extension records intercept outcomes; the helper sends nothing to the server. The only

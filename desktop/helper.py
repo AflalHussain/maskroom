@@ -154,6 +154,7 @@ SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": Fa
           "blocking_since": 0.0, "index": None, "composer_rect": None,
           "dialog_confirm_rect": None, "dialog_list_rect": None, "dialog_rect": None,
           "worker_beat": 0.0, "worker_busy": "", "alarm": ""}
+UPDATE_EVERY_S = 6 * 3600   # how often to ask the server what the current build is
 WORKER_DEAD_S = 15.0       # no heartbeat for this long, and not busy: not working
 BLOCKER_MAX_S = 6.0        # the drop blocker comes down after this, drop or no drop
 OVERLAY_MAX_TOKENS = 80
@@ -244,6 +245,11 @@ def read_policy() -> dict:
 
 def locked(name: str) -> bool:
     return name in POLICY
+
+
+def version_tuple(text: str) -> tuple:
+    """So 0.10.0 sorts above 0.9.0, which a string comparison gets wrong."""
+    return tuple(int(part) for part in text.split("."))
 
 
 def load_config() -> dict:
@@ -895,6 +901,10 @@ class Automation(threading.Thread):
                 except Exception as e:  # noqa: BLE001
                     log(f"downloads poll error {type(e).__name__}: {e}")
             self.poll_idle()
+            try:
+                self.poll_update()
+            except Exception as e:  # noqa: BLE001
+                log(f"update check error {type(e).__name__}: {e}")
             return
         SHARED["worker_beat"] = time.time()
         SHARED["worker_busy"] = cmd[0]         # working, not wedged
@@ -1019,6 +1029,27 @@ class Automation(threading.Thread):
         SHARED["index"] = self.index          # the overlay thread reads this
         self.token_owner = owner
         log(f"vault index: {len(union)} tokens across {len(self.vaults)} sessions")
+
+    def poll_update(self) -> None:
+        """Ask the server what the current helper is.
+
+        It reports; it does not install. On a managed fleet updating is the
+        endpoint team's job through the MSI, and a program that can replace its
+        own binary is a program worth attacking."""
+        now = time.time()
+        if now - self.update_checked < UPDATE_EVERY_S:
+            return
+        self.update_checked = now
+        r = self.server.api("/desktop/latest.json")
+        if not r["ok"] or not isinstance(r["data"], dict):
+            return
+        latest = (r["data"].get("version") or "").strip()
+        if not latest or not re.fullmatch(r"\d+(\.\d+)*", latest):
+            return
+        if version_tuple(latest) <= version_tuple(__version__):
+            return
+        log(f"update: the server has {latest}, this is {__version__}")
+        self.emit(type="update", version=latest, url=r["data"].get("url") or "")
 
     def poll_idle(self) -> None:
         """Forget the real values after a spell of no input, and at once when
@@ -2420,6 +2451,7 @@ class OverlayWorker(threading.Thread):
         self.composer = None          # the composer element, focused or not
         self.composer_at = 0.0
         self.covered = False          # last placement failed because something covered it
+        self.update_checked = 0.0
 
     # ---- plumbing
     def run(self) -> None:
@@ -3139,6 +3171,7 @@ class Bar:
         self.panel = None
         self.settings_win = None
         self.blocked = False               # a blocking alert opened the panel once
+        self.update = None                 # (version, url) when the server has a newer build
         self.rect = None
         self.visible = False
 
@@ -3430,6 +3463,22 @@ class Bar:
                          font=("Segoe UI", 8), anchor="w", wraplength=self.PANEL_W - 80,
                          justify="left").pack(side="left", fill="x", expand=True)
 
+        if self.update:
+            # Quiet and persistent: neither a problem to acknowledge nor a
+            # message that should scroll away.
+            newer, url = self.update
+            tk.Frame(body, bg=self.LINE, height=1).pack(fill="x", pady=(self.GAP, 0))
+            row = tk.Frame(body, bg=self.BG)
+            row.pack(fill="x", padx=self.PAD, pady=(self.TIGHT, 0))
+            tk.Label(row, text=f"Version {newer} is available. You have {__version__}.",
+                     bg=self.BG, fg=self.DIM, font=("Segoe UI", 8), anchor="w",
+                     wraplength=self.PANEL_W - 2 * self.PAD, justify="left").pack(fill="x")
+            if url:
+                link = tk.Label(row, text="Download it", bg=self.BG, fg=self.ACCENT,
+                                font=("Segoe UI", 8, "underline"), cursor="hand2", anchor="w")
+                link.pack(anchor="w")
+                link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+
         foot = tk.Frame(body, bg=self.BG)
         foot.pack(fill="x", padx=self.PAD, pady=self.GAP)
         mask = tk.Label(foot, text="Mask now", bg=self.ACCENT, fg="#0e1420", padx=14, pady=4,
@@ -3566,6 +3615,10 @@ class Bar:
                         self.build_panel()
                 elif t == "overlay":
                     self.overlay.render(ev["items"], ev.get("win"))
+                elif t == "update":
+                    self.update = (ev["version"], ev.get("url") or "")
+                    if self.panel:
+                        self.build_panel()
                 elif t == "ask_restore":
                     self.ask_restore(ev["name"], ev["path"])
                 elif t == "alarm":

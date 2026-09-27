@@ -186,6 +186,7 @@ def get_engine(options):
 
 # ------------------------------------------------ self-hosted extension
 import glob as _glob
+import hashlib as _hashlib
 import re as _re
 import zipfile as _zipfile
 
@@ -195,6 +196,38 @@ def _latest_crx():
     crxs = sorted(_glob.glob(os.path.join(EXT_DIST_DIR, "*.crx")), key=os.path.getmtime)
     # Absolute: send_file resolves relative paths against the Flask app root, not CWD.
     return os.path.abspath(crxs[-1]) if crxs else None
+
+
+_HELPER_MSI_RE = _re.compile(r"SafePIIHelper-(\d+\.\d+\.\d+)\.msi$", _re.IGNORECASE)
+
+
+def _latest_helper_msi():
+    """The highest-numbered SafePIIHelper-<version>.msi in EXT_DIST_DIR.
+
+    By version rather than by modification time: re-copying an old file must not
+    make it look like a new release."""
+    best, best_key = None, ()
+    for path in _glob.glob(os.path.join(EXT_DIST_DIR, "SafePIIHelper-*.msi")):
+        m = _HELPER_MSI_RE.search(os.path.basename(path))
+        if not m:
+            continue
+        key = tuple(int(n) for n in m.group(1).split("."))
+        if key > best_key:
+            best, best_key = os.path.abspath(path), key
+    return best
+
+
+def _helper_version(path):
+    m = _HELPER_MSI_RE.search(os.path.basename(path))
+    return m.group(1) if m else None
+
+
+def _file_sha256(path):
+    h = _hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _crx_version(path):
@@ -290,6 +323,40 @@ def ext_update_xml():
            '  </app>\n</gupdate>\n')
     return Response(xml, mimetype="application/xml",
                     headers={"Cache-Control": "no-store"})
+
+
+@app.get("/desktop/latest.json")
+def desktop_latest():
+    """What the newest desktop helper is, and where to get it.
+
+    The helper polls this and tells the user when it is behind. It deliberately
+    does not download or install anything itself: on a managed fleet that is the
+    endpoint team's job through the MSI, and a program that can replace its own
+    binary is a program an attacker would like to own. Same shape as the
+    extension's update route, and the URL is built from this request so it is
+    right on any deployment without editing."""
+    msi = _latest_helper_msi()
+    if not msi:
+        return jsonify({"version": None,
+                        "notes": "No desktop helper package has been published on this server."}), 404
+    version = _helper_version(msi)
+    return jsonify({
+        "version": version,
+        "url": f"{_external_base()}/desktop/SafePIIHelper.msi",
+        "filename": os.path.basename(msi),
+        "size": os.path.getsize(msi),
+        "sha256": _file_sha256(msi),
+        "published": os.path.getmtime(msi),
+    })
+
+
+@app.get("/desktop/SafePIIHelper.msi")
+def desktop_msi():
+    msi = _latest_helper_msi()
+    if not msi:
+        return jsonify({"error": "No desktop helper package available."}), 404
+    return send_file(msi, mimetype="application/x-msi", as_attachment=True,
+                     download_name=os.path.basename(msi))
 
 
 @app.get("/ext/maskroom.crx")

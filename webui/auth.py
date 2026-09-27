@@ -51,7 +51,9 @@ COOKIE = "maskroom_session"
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "maskroom"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-OPEN_PREFIXES = ("/ext/", "/auth/", "/static/")
+# /desktop/ serves the helper's update manifest and its installer: a machine
+# fetches both before anyone has signed in, exactly as Chrome fetches /ext/.
+OPEN_PREFIXES = ("/ext/", "/desktop/", "/auth/", "/static/")
 OPEN_PATHS = frozenset({"/", "/staging", "/admin", "/admin/rules", "/admin/users",
                         "/api/config", "/favicon.ico"})
 ADMIN_API_PREFIXES = ("/api/policy", "/api/users", "/api/keys")

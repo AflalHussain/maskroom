@@ -278,3 +278,33 @@ def test_process_masks_csv_column_aware(client):
     out = client.get(f"/api/download/{d['run_id']}/masked.csv").data.decode()
     assert "Nimal Perera" not in out and "853421234V" not in out
     assert "TOK_PERSON_" in out and "120000" in out
+
+
+# --------------------------------------------------- desktop helper packaging
+def test_desktop_update_manifest_reports_the_newest_package(client, tmp_path, monkeypatch):
+    """By version rather than by modification time: re-copying an old file must
+    not look like a new release."""
+    from webui import app as webapp
+    monkeypatch.setattr(webapp, "EXT_DIST_DIR", str(tmp_path))
+    assert client.get("/desktop/latest.json").status_code == 404
+
+    (tmp_path / "SafePIIHelper-0.9.0.msi").write_bytes(b"old")
+    (tmp_path / "SafePIIHelper-0.10.0.msi").write_bytes(b"new")
+    (tmp_path / "notes.txt").write_bytes(b"ignored")
+    body = client.get("/desktop/latest.json").get_json()
+    assert body["version"] == "0.10.0"
+    assert body["filename"] == "SafePIIHelper-0.10.0.msi"
+    assert body["size"] == 3
+    assert body["url"].endswith("/desktop/SafePIIHelper.msi")
+    import hashlib
+    assert body["sha256"] == hashlib.sha256(b"new").hexdigest()
+
+    got = client.get("/desktop/SafePIIHelper.msi")
+    assert got.status_code == 200 and got.data == b"new"
+
+
+def test_the_installer_is_reachable_without_signing_in(client, tmp_path, monkeypatch):
+    """A machine fetches it before anyone has signed in, as Chrome does for the
+    extension."""
+    from webui import auth as auth_mod
+    assert "/desktop/" in auth_mod.OPEN_PREFIXES
