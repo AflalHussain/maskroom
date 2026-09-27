@@ -36,3 +36,8 @@ deploy/aws/*.env
 certs/
 scripts/desktop/uia_probe_report.txt
 scripts/desktop/uia_reply_probe_report.txt
+
+# Diagnostics and screenshots: these hold real conversation content
+desktop/*.log
+desktop/*.PNG
+desktop/*.png

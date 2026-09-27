@@ -27,7 +27,9 @@ A pseudonymization and redaction engine for Excel workbooks and PDF documents, b
 
 Further reading: [`docs/TECHNICAL_DESIGN.md`](docs/TECHNICAL_DESIGN.md) (architecture,
 security, performance), [`docs/TECHNOLOGIES.md`](docs/TECHNOLOGIES.md) (techniques explained),
-and [`ROADMAP.md`](ROADMAP.md) (evaluated next steps with pros/cons).
+[`ROADMAP.md`](ROADMAP.md) (evaluated next steps with pros/cons), and
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) (what stands between this and
+a regulated-customer sale, in priority order).
 
 ## Project layout
 
