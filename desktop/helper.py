@@ -636,6 +636,23 @@ def workstation_locked() -> bool:
     return False
 
 
+def round_corners(window, small: bool = False) -> None:
+    """Windows 11 rounds the corners of a floating surface for us, through the
+    window manager, which tkinter cannot do itself. Older builds ignore it."""
+    if not _IS_WIN:
+        return
+    DWMWA_WINDOW_CORNER_PREFERENCE = 33
+    preference = ctypes.c_int(3 if small else 2)     # ROUNDSMALL (4px) / ROUND (8px)
+    try:
+        window.update_idletasks()
+        hwnd = _user32.GetParent(window.winfo_id()) or window.winfo_id()
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            wt.HWND(hwnd), DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(preference), ctypes.sizeof(preference))
+    except Exception:  # noqa: BLE001 - cosmetic only
+        pass
+
+
 def exclude_from_capture(hwnd, what: str) -> None:
     """Keep a window out of screen shares, recordings and the Snipping Tool.
 
@@ -2927,10 +2944,39 @@ class Overlay:
 
 # ----------------------------------------------------------------------------- UI
 class Bar:
-    """The floating bar above the composer, plus toast, settings and the event pump."""
+    """A small pill above the composer that opens into a panel.
 
-    W, H = 620, 34
-    BG, FG, ACCENT, ERR = "#1f2937", "#e5e7eb", "#93a4c4", "#f87171"
+    The old form was a 620 px strip carrying a label, five buttons, four
+    toggles and a status line that faded after six seconds, so it read as
+    clutter and a warning nobody happened to be looking at was simply lost.
+
+    Shape follows what shipping products in this category settle on. The pill
+    is a split button, primary action on the left and status plus a chevron on
+    the right, which is how Windows draws a SplitButton: outer corners rounded,
+    no gap and no radius at the seam. Collapsed, the four toggles live in the
+    hover tooltip rather than on screen, which is how Netskope's tray icon
+    reports per-service state without showing four controls. Numbers come from
+    the Windows spacing scale: 16 px from a surface to its text, 12 between
+    groups, 8 between siblings, 32 px rows, 1 px strokes, 8 px panel radius.
+
+    Nothing here re-opens the panel on a background event. Zoom's floating
+    toolbar re-appearing whenever a participant joins is the most complained
+    about behaviour in this whole category; only a blocking alert opens it, and
+    only once.
+    """
+
+    # geometry (see the docstring for provenance)
+    PILL_H, PANEL_W, ROW_H, PAD, GAP, TIGHT = 32, 300, 30, 16, 12, 8
+    RECENT_KEEP = 10
+
+    # A shape for every state, so nothing depends on colour alone: about eight
+    # per cent of men cannot separate red from green.
+    GLYPH = {"protected": "●", "working": "◐", "off": "⊘",
+             "warn": "▲", "error": "✖", "detached": "◌"}
+
+    BG, LINE = "#1b2030", "#2f3747"
+    FG, DIM = "#e8ebf2", "#97a1b5"
+    OK, WARN, ERR, ACCENT = "#5bbf87", "#e0b050", "#e06c6c", "#6f8fd6"
 
     def __init__(self, cfg: dict, commands: "queue.Queue[tuple]", events: "queue.Queue[dict]"):
         self.cfg, self.commands, self.events = cfg, commands, events
@@ -2938,131 +2984,380 @@ class Bar:
         self.root.withdraw()
         self.root.title(APP_NAME)
 
+        self.problems: list[dict] = []     # unacknowledged warnings and errors
+        self.recent: list[tuple] = []      # (time, level, message)
+        self.state = "protected"
+        self.flash = ""                    # a transient line on the pill
+        self.flash_after = None
+        self.busy = False
+        self.panel = None
+        self.settings_win = None
+        self.blocked = False               # a blocking alert opened the panel once
+        self.rect = None
+        self.visible = False
+
         self.win = tk.Toplevel(self.root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.win.configure(bg=self.BG)
+        self.win.configure(bg=self.LINE)
         self.win.withdraw()
-        f = tk.Frame(self.win, bg=self.BG, padx=6, pady=4)
-        f.pack(fill="both", expand=True)
-        tk.Label(f, text="SAFEPII", bg=self.BG, fg=self.ACCENT, font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 6))
-        self.mask_btn = tk.Button(f, text="Mask", command=lambda: self.commands.put(("mask",)),
-                                  bg="#374151", fg=self.FG, activebackground="#4b5563", relief="flat",
-                                  padx=8, font=("Segoe UI", 9, "bold"))
-        self.mask_btn.pack(side="left")
-        self.guard_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_guard",)),
-                                   bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
-                                   font=("Segoe UI", 8))
-        self.guard_btn.pack(side="left", padx=(6, 0))
-        self.set_guard_label(cfg.get("guard", True))
-        self.unmask_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_unmask",)),
-                                    bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
-                                    font=("Segoe UI", 8))
-        self.unmask_btn.pack(side="left", padx=(6, 0))
-        self.set_unmask_label(cfg.get("unmask", True))
-        self.overlay_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_overlay",)),
-                                     bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
-                                     font=("Segoe UI", 8))
-        self.overlay_btn.pack(side="left", padx=(6, 0))
-        self.set_overlay_label(cfg.get("overlay", True))
-        self.fileguard_btn = tk.Button(f, text="", command=lambda: self.commands.put(("toggle_file_guard",)),
-                                       bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
-                                       font=("Segoe UI", 8))
-        self.fileguard_btn.pack(side="left", padx=(6, 0))
-        self.set_fileguard_label(cfg.get("fileGuard", True))
-        tk.Button(f, text="new session", command=lambda: self.commands.put(("new_session",)),
-                  bg=self.BG, fg=self.ACCENT, activebackground=self.BG, relief="flat",
-                  font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
-        tk.Button(f, text="⚙", command=self.open_settings, bg=self.BG, fg=self.ACCENT,
-                  activebackground=self.BG, relief="flat", font=("Segoe UI", 9)).pack(side="right")
-        self.status = tk.Label(f, text="", bg=self.BG, fg=self.FG, font=("Segoe UI", 8), anchor="w")
-        self.status.pack(side="left", padx=(8, 0), fill="x", expand=True)
-        self.alarm = tk.Label(self.win, text="", bg=self.ERR, fg="#ffffff", anchor="w",
-                              font=("Segoe UI", 8, "bold"), padx=8, pady=3, wraplength=self.W - 16)
-        self.alarm_shown = False
+        shell = tk.Frame(self.win, bg=self.BG)
+        shell.pack(fill="both", expand=True, padx=1, pady=1)
+
+        self.mask_btn = tk.Label(shell, text="Mask", bg="#2a3346", fg=self.FG, padx=12,
+                                 font=("Segoe UI", 9, "bold"), cursor="hand2")
+        self.mask_btn.pack(side="left", fill="y")
+        self.mask_btn.bind("<Button-1>", lambda e: self.commands.put(("mask",)))
+        tk.Frame(shell, bg=self.LINE, width=1).pack(side="left", fill="y")
+
+        face = tk.Frame(shell, bg=self.BG, cursor="hand2")
+        face.pack(side="left", fill="both", expand=True)
+        self.glyph = tk.Label(face, text=self.GLYPH["protected"], bg=self.BG, fg=self.OK,
+                              font=("Segoe UI", 11), padx=8)
+        self.glyph.pack(side="left")
+        self.status = tk.Label(face, text="Protected", bg=self.BG, fg=self.FG,
+                               font=("Segoe UI", 9), anchor="w")
+        self.status.pack(side="left")
+        self.badge = tk.Label(face, text="", bg=self.ERR, fg="#ffffff", padx=5,
+                              font=("Segoe UI", 8, "bold"))
+        self.chev = tk.Label(face, text="⌄", bg=self.BG, fg=self.DIM,
+                             font=("Segoe UI", 10), padx=8)
+        self.chev.pack(side="right")
+        for w in (face, self.glyph, self.status, self.chev):
+            w.bind("<Button-1>", lambda e: self.toggle_panel())
+            w.bind("<Enter>", lambda e: self.show_pill_tip())
+            w.bind("<Leave>", lambda e: self.hide_pill_tip())
+        round_corners(self.win, small=True)
         make_no_activate(self.win)
 
-        self.tip = tk.Toplevel(self.root)
-        self.tip.overrideredirect(True)
-        self.tip.attributes("-topmost", True)
-        self.tip.configure(bg="#111827")
-        self.tip.withdraw()
-        self.tip_label = tk.Label(self.tip, text="", bg="#111827", fg="#f9fafb", font=("Segoe UI", 10),
-                                  justify="left", wraplength=520, padx=10, pady=6)
+        self.pilltip = self._floating("#10141f")
+        self.pilltip_label = tk.Label(self.pilltip, text="", bg="#10141f", fg=self.FG,
+                                      font=("Segoe UI", 8), justify="left", padx=10, pady=6)
+        self.pilltip_label.pack()
+
+        self.tip = self._floating("#111827")
+        self.tip_label = tk.Label(self.tip, text="", bg="#111827", fg="#f9fafb",
+                                  font=("Segoe UI", 10), justify="left", wraplength=520,
+                                  padx=10, pady=6)
         self.tip_label.pack()
-        make_no_activate(self.tip)
-        exclude_from_capture(_user32.GetParent(self.tip.winfo_id()) or self.tip.winfo_id(),
-                             "tooltip") if _IS_WIN else None
+        if _IS_WIN:
+            exclude_from_capture(_user32.GetParent(self.tip.winfo_id()) or self.tip.winfo_id(),
+                                 "tooltip")
 
         self.overlay = Overlay(self.root)
         self.blocker = DropBlocker(self.root)
-
-        self.toast_after = None
-        self.settings_win = None
-        self.visible = False
-        self.rect = None
-        self.root.after(15, self.pump)
+        self.render_pill()
+        self.root.after(100, self.pump)
         if not ((cfg.get("apiKey") or "").strip() or (cfg.get("token") or "").strip()):
             self.root.after(300, self.open_settings)
 
-    def set_guard_label(self, on: bool) -> None:
-        self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+    def _floating(self, bg: str) -> tk.Toplevel:
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=bg)
+        w.withdraw()
+        make_no_activate(w)
+        round_corners(w, small=True)
+        return w
+
+    # ---- the pill
+    def render_pill(self) -> None:
+        """One place decides what the pill says, so two subsystems cannot fight
+        over it. Severity wins, in the order errors, warnings, then normal."""
+        worst = self.worst_problem()
+        if self.busy:
+            state, text, colour = "working", "Masking…", self.ACCENT
+        elif worst and worst["level"] == "error":
+            state, text, colour = "error", "Problem", self.ERR
+        elif worst:
+            state, text, colour = "warn", "Check this", self.WARN
+        elif not self.cfg.get("guard", True):
+            state, text, colour = "off", "Guard off", self.WARN
+        else:
+            state, text, colour = "protected", self.flash or "Protected", self.OK
+        self.state = state
+        self.glyph.configure(text=self.GLYPH[state], fg=colour)
+        self.status.configure(text=text, fg=self.FG if state != "protected" or self.flash else self.DIM)
+        n = len(self.problems)
+        if n:
+            self.badge.configure(text=str(n))
+            self.badge.pack(side="right", padx=(0, 4))
+        else:
+            # Cleared as well as hidden, or a stale count flashes if it returns.
+            self.badge.configure(text="")
+            self.badge.pack_forget()
+        self.win.update_idletasks()
+        need = (self.mask_btn.winfo_reqwidth() + self.glyph.winfo_reqwidth()
+                + self.status.winfo_reqwidth() + self.chev.winfo_reqwidth()
+                + (self.badge.winfo_reqwidth() + 4 if n else 0) + 10)
+        self.pill_w = max(176, need)
+        if self.rect:
+            self.place(self.rect, force=True)
+
+    def pill_tip_text(self) -> str:
+        """The four toggles, reported on hover instead of shown as controls."""
+        parts = [("Guard", self.cfg.get("guard", True)), ("Unmask", self.cfg.get("unmask", True)),
+                 ("Overlay", self.cfg.get("overlay", True)), ("Files", self.cfg.get("fileGuard", True))]
+        return "   ".join(f"{name} {'on' if on else 'off'}" for name, on in parts)
+
+    def show_pill_tip(self) -> None:
+        if self.panel or not self.visible:
+            return
+        self.pilltip_label.configure(text=self.pill_tip_text())
+        self.pilltip.update_idletasks()
+        x = self.win.winfo_x() + self.pill_w - self.pilltip.winfo_reqwidth()
+        self.pilltip.geometry(f"+{max(0, x)}+{self.win.winfo_y() + self.PILL_H + 6}")
+        self.pilltip.deiconify()
+
+    def hide_pill_tip(self) -> None:
+        self.pilltip.withdraw()
+
+    def place(self, rect, force: bool = False) -> None:
+        left, top, right, bottom = rect
+        x, y = right - self.pill_w, top - self.PILL_H - self.TIGHT
+        if y < 0:
+            y = bottom + self.TIGHT
+        if rect != self.rect or force:
+            self.win.geometry(f"{self.pill_w}x{self.PILL_H}+{x}+{y}")
+            self.rect = rect
+            if self.panel:
+                self.place_panel()
+        if not self.visible:
+            self.win.deiconify()
+            self.visible = True
+
+    def hide(self) -> None:
+        self.hide_pill_tip()
+        if self.visible:
+            self.win.withdraw()
+            self.visible = False
+            self.rect = None
+        if self.panel and not self.problems:
+            self.close_panel()
+
+    def show_somewhere(self) -> None:
+        """When the composer is not on screen there is nothing to anchor to, so
+        a problem still gets shown, bottom right."""
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.win.geometry(f"{self.pill_w}x{self.PILL_H}+{sw - self.pill_w - 24}+{sh - 120}")
+        self.win.deiconify()
+
+    # ---- alerts
+    def worst_problem(self):
+        for level in ("error", "warn"):
+            for p in self.problems:
+                if p["level"] == level:
+                    return p
+        return None
+
+    def alert(self, msg: str, level: str = "info") -> None:
+        self.recent.insert(0, (time.strftime("%H:%M"), level, msg))
+        del self.recent[self.RECENT_KEEP:]
+        if level in ("warn", "error"):
+            # Kept until acknowledged. A line that fades is the wrong shape for
+            # "that file was not masked".
+            if not any(p["msg"] == msg for p in self.problems):
+                self.problems.append({"msg": msg, "level": level, "at": time.strftime("%H:%M")})
+            if not self.visible:
+                self.show_somewhere()
+            if self.panel:
+                self.build_panel()
+        else:
+            self.flash = msg if len(msg) <= 34 else msg[:33] + "…"
+            if self.flash_after:
+                self.root.after_cancel(self.flash_after)
+            self.flash_after = self.root.after(4000, self.clear_flash)
+            if self.panel:
+                self.build_panel()
+        self.render_pill()
+
+    def clear_flash(self) -> None:
+        self.flash = ""
+        self.flash_after = None
+        self.render_pill()
+
+    def clear_problem(self, msg: str) -> None:
+        self.problems = [p for p in self.problems if p["msg"] != msg]
+        self.render_pill()
+        if self.panel:
+            self.build_panel()
+
+    def set_alarm(self, msg) -> None:
+        """The guard itself has failed. This one opens the panel, once."""
+        self.problems = [p for p in self.problems if not p.get("alarm")]
+        if msg:
+            self.problems.insert(0, {"msg": msg, "level": "error", "alarm": True,
+                                     "at": time.strftime("%H:%M")})
+            if not self.visible:
+                self.show_somewhere()
+            if not self.blocked:
+                self.blocked = True
+                self.open_panel()
+        else:
+            self.blocked = False
+        self.render_pill()
+        if self.panel:
+            self.build_panel()
+
+    # ---- the panel
+    def toggle_panel(self) -> None:
+        self.close_panel() if self.panel else self.open_panel()
+
+    def open_panel(self) -> None:
+        if self.panel:
+            return
+        self.hide_pill_tip()
+        self.panel = self._floating(self.LINE)
+        self.build_panel()
+        self.place_panel()
+        self.panel.deiconify()
+        self.chev.configure(text="⌃")
+
+    def close_panel(self) -> None:
+        if self.panel:
+            self.panel.destroy()
+            self.panel = None
+            self.chev.configure(text="⌄")
+
+    def place_panel(self) -> None:
+        if not self.panel:
+            return
+        self.panel.update_idletasks()
+        h = self.panel.winfo_reqheight()
+        x = self.win.winfo_x() + self.pill_w - self.PANEL_W
+        y = self.win.winfo_y() - h - self.TIGHT
+        if y < 0:
+            y = self.win.winfo_y() + self.PILL_H + self.TIGHT
+        self.panel.geometry(f"{self.PANEL_W}x{h}+{max(0, x)}+{y}")
+
+    def build_panel(self) -> None:
+        if not self.panel:
+            return
+        for child in self.panel.winfo_children():
+            child.destroy()
+        body = tk.Frame(self.panel, bg=self.BG)
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+
+        head = tk.Frame(body, bg=self.BG)
+        head.pack(fill="x", padx=self.PAD, pady=(self.GAP, 0))
+        tk.Label(head, text="SafePII", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI Semibold", 10)).pack(side="left")
+        for text, cmd in (("✕", self.close_panel), ("⚙", self.open_settings)):
+            tk.Label(head, text=text, bg=self.BG, fg=self.DIM, font=("Segoe UI", 10),
+                     cursor="hand2", padx=6).pack(side="right")
+            head.winfo_children()[-1].bind("<Button-1>", lambda e, c=cmd: c())
+        tk.Label(body, text=self.summary(), bg=self.BG, fg=self.DIM, font=("Segoe UI", 8),
+                 anchor="w").pack(fill="x", padx=self.PAD)
+
+        for p in self.problems:
+            self.problem_row(body, p)
+
+        tk.Frame(body, bg=self.LINE, height=1).pack(fill="x", pady=(self.GAP, 0))
+        for label, key, cmd in (("Guard", "guard", "toggle_guard"),
+                                ("Unmask replies", "unmask", "toggle_unmask"),
+                                ("Overlay", "overlay", "toggle_overlay"),
+                                ("Files", "fileGuard", "toggle_file_guard")):
+            self.toggle_row(body, label, bool(self.cfg.get(key, True)), cmd)
+
+        if self.recent:
+            tk.Frame(body, bg=self.LINE, height=1).pack(fill="x", pady=(self.GAP, 0))
+            tk.Label(body, text="Recent", bg=self.BG, fg=self.DIM, font=("Segoe UI", 8),
+                     anchor="w").pack(fill="x", padx=self.PAD, pady=(self.TIGHT, 2))
+            for when, level, msg in self.recent[:5]:
+                row = tk.Frame(body, bg=self.BG)
+                row.pack(fill="x", padx=self.PAD)
+                tk.Label(row, text=when, bg=self.BG, fg=self.DIM, font=("Segoe UI", 8),
+                         width=5, anchor="w").pack(side="left")
+                tk.Label(row, text=msg, bg=self.BG,
+                         fg={"error": self.ERR, "warn": self.WARN}.get(level, self.DIM),
+                         font=("Segoe UI", 8), anchor="w", wraplength=self.PANEL_W - 80,
+                         justify="left").pack(side="left", fill="x", expand=True)
+
+        foot = tk.Frame(body, bg=self.BG)
+        foot.pack(fill="x", padx=self.PAD, pady=self.GAP)
+        mask = tk.Label(foot, text="Mask now", bg=self.ACCENT, fg="#0e1420", padx=14, pady=4,
+                        font=("Segoe UI", 9, "bold"), cursor="hand2")
+        mask.pack(side="left")
+        mask.bind("<Button-1>", lambda e: self.commands.put(("mask",)))
+        newsess = tk.Label(foot, text="New session", bg=self.BG, fg=self.DIM,
+                           font=("Segoe UI", 9), cursor="hand2", padx=10)
+        newsess.pack(side="left")
+        newsess.bind("<Button-1>", lambda e: self.commands.put(("new_session",)))
+        self.place_panel()
+
+    def summary(self) -> str:
+        n = len(self.problems)
+        if n:
+            return f"{n} thing{'' if n == 1 else 's'} to look at"
+        if not self.cfg.get("guard", True):
+            return "Guard is off — messages are not checked before they send"
+        return "Guard on. Enter is checked before it sends."
+
+    def problem_row(self, parent, p) -> None:
+        colour = self.ERR if p["level"] == "error" else self.WARN
+        wrap = tk.Frame(parent, bg=self.BG)
+        wrap.pack(fill="x", padx=self.PAD, pady=(self.GAP, 0))
+        tk.Frame(wrap, bg=colour, width=3).pack(side="left", fill="y")
+        inner = tk.Frame(wrap, bg=self.BG)
+        inner.pack(side="left", fill="x", expand=True, padx=(self.TIGHT, 0))
+        tk.Label(inner, text=p["msg"], bg=self.BG, fg=self.FG, font=("Segoe UI", 9),
+                 wraplength=self.PANEL_W - 2 * self.PAD - 30, justify="left",
+                 anchor="w").pack(fill="x")
+        if not p.get("alarm"):
+            # A blocking alert has no dismiss: it goes when the cause goes.
+            got = tk.Label(inner, text="Got it", bg=self.BG, fg=self.DIM,
+                           font=("Segoe UI", 8, "underline"), cursor="hand2", anchor="w")
+            got.pack(anchor="w", pady=(2, 0))
+            got.bind("<Button-1>", lambda e, m=p["msg"]: self.clear_problem(m))
+
+    def toggle_row(self, parent, label: str, on: bool, cmd: str) -> None:
+        row = tk.Frame(parent, bg=self.BG, height=self.ROW_H, cursor="hand2")
+        row.pack(fill="x", padx=self.PAD, pady=1)
+        row.pack_propagate(False)
+        tk.Label(row, text=label, bg=self.BG, fg=self.FG, font=("Segoe UI", 9),
+                 anchor="w").pack(side="left")
+        # The word, not only the colour, says which way it is set.
+        tk.Label(row, text="on" if on else "off", bg=self.BG,
+                 fg=self.OK if on else self.DIM, font=("Segoe UI", 9, "bold"),
+                 anchor="e").pack(side="right")
+        for w in (row,) + tuple(row.winfo_children()):
+            w.bind("<Button-1>", lambda e, c=cmd: self.commands.put((c,)))
 
     def ask_restore(self, name: str, path: str) -> None:
-        """Consent before a file leaves the machine. The helper cannot see
-        inside a zipped Office file, so it cannot know whether this one came
-        from Claude or from the user's email."""
+        """Consent before a file leaves the machine. SafePII cannot see inside a
+        zipped Office file, so it cannot know whether this one came from Claude
+        or from the user's email."""
         w = tk.Toplevel(self.root)
         w.title("SafePII")
         w.resizable(False, False)
         w.attributes("-topmost", True)
-        tk.Label(w, text=f"{name} may hold masked values.", font=("Segoe UI", 10, "bold"),
-                 anchor="w").pack(fill="x", padx=14, pady=(14, 2))
+        w.configure(bg=self.BG)
+        tk.Label(w, text=f"{name} may hold masked values.", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI Semibold", 10), anchor="w").pack(
+            fill="x", padx=self.PAD, pady=(self.PAD, 2))
         tk.Label(w, text="SafePII cannot see inside this file without sending it to your\n"
                          "SafePII server. Send it, so any tokens in it can be restored?",
-                 justify="left", anchor="w").pack(fill="x", padx=14, pady=(0, 10))
-        row = tk.Frame(w)
-        row.pack(fill="x", padx=14, pady=(0, 12))
+                 bg=self.BG, fg=self.DIM, font=("Segoe UI", 9),
+                 justify="left", anchor="w").pack(fill="x", padx=self.PAD, pady=(0, self.GAP))
+        row = tk.Frame(w, bg=self.BG)
+        row.pack(fill="x", padx=self.PAD, pady=(0, self.PAD))
 
         def answer(value):
             w.destroy()
             self.commands.put(("restore_answer", path, value))
 
-        for text, value in (("Send", "yes"), ("Not this one", "no"),
-                            ("Always", "always"), ("Never ask", "never")):
-            tk.Button(row, text=text, command=lambda v=value: answer(v), width=11).pack(
-                side="left", padx=3)
+        for text, value, primary in (("Send", "yes", True), ("Not this one", "no", False),
+                                     ("Always", "always", False), ("Never ask", "never", False)):
+            b = tk.Label(row, text=text, bg=self.ACCENT if primary else "#2a3346",
+                         fg="#0e1420" if primary else self.FG, padx=12, pady=4,
+                         font=("Segoe UI", 9, "bold" if primary else "normal"), cursor="hand2")
+            b.pack(side="left", padx=(0, self.TIGHT))
+            b.bind("<Button-1>", lambda e, v=value: answer(v))
         w.protocol("WM_DELETE_WINDOW", lambda: answer("no"))
+        round_corners(w)
 
-    def set_alarm(self, msg) -> None:
-        """A banner that stays until the cause is gone. A six-second toast is
-        the wrong shape for "you are no longer protected"."""
-        if not msg:
-            if self.alarm_shown:
-                self.alarm_shown = False
-                self.alarm.pack_forget()
-                self.win.configure(bg=self.BG)
-            return
-        self.alarm.configure(text="⚠ " + msg)
-        if not self.alarm_shown:
-            self.alarm_shown = True
-            self.alarm.pack(side="bottom", fill="x")
-            self.win.configure(bg=self.ERR)
-        if not self.visible:                    # make sure it can be seen at all
-            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-            self.win.geometry(f"{self.W}x{self.H * 2}+{sw - self.W - 24}+{sh - self.H * 2 - 80}")
-            self.win.deiconify()
-            self.visible = True
-
-    def set_fileguard_label(self, on: bool) -> None:
-        self.fileguard_btn.configure(text=f"files: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
-
-    def set_overlay_label(self, on: bool) -> None:
-        self.overlay_btn.configure(text=f"overlay: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
-
-    def set_unmask_label(self, on: bool) -> None:
-        self.unmask_btn.configure(text=f"unmask: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
-
+    # ---- the hover tooltip over Claude's own text
     def show_tip(self, text, x: int, y: int) -> None:
         if not text:
             self.tip.withdraw()
@@ -3077,39 +3372,8 @@ class Bar:
         self.tip.geometry(f"+{x}+{y}")
         self.tip.deiconify()
 
-    # ---- placement
-    def place(self, rect) -> None:
-        left, top, right, bottom = rect
-        w = self.W
-        x = right - w
-        y = top - self.H - 6
-        if y < 0:
-            y = bottom + 6
-        if rect != self.rect:
-            self.win.geometry(f"{w}x{self.H}+{x}+{y}")
-            self.rect = rect
-        if not self.visible:
-            self.win.deiconify()
-            self.visible = True
-
-    def hide(self) -> None:
-        if self.visible:
-            self.win.withdraw()
-            self.visible = False
-            self.rect = None
-
-    # ---- messages
     def toast(self, msg: str, error: bool = False) -> None:
-        self.status.configure(text=msg, fg=self.ERR if error else self.FG)
-        if self.toast_after:
-            self.root.after_cancel(self.toast_after)
-        self.toast_after = self.root.after(6000, lambda: self.status.configure(text=""))
-        if not self.visible:
-            # Nothing to anchor to: show briefly at the bottom-right of the screen.
-            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-            self.win.geometry(f"{self.W}x{self.H}+{sw - self.W - 24}+{sh - self.H - 80}")
-            self.win.deiconify()
-            self.root.after(4000, lambda: None if self.visible else self.win.withdraw())
+        self.alert(msg, "error" if error else "info")
 
     def pump(self) -> None:
         try:
@@ -3118,29 +3382,29 @@ class Bar:
                 t = ev["type"]
                 if t == "composer":
                     self.place(ev["rect"]) if ev["visible"] else self.hide()
+                elif t == "alert":
+                    self.alert(ev["msg"], ev.get("level", "info"))
                 elif t == "toast":
                     self.toast(ev["msg"], ev.get("error", False))
                 elif t == "busy":
-                    self.mask_btn.configure(text="Masking…" if ev["busy"] else "Mask",
-                                            state="disabled" if ev["busy"] else "normal")
+                    self.busy = ev["busy"]
+                    self.render_pill()
                 elif t == "check" and self.settings_win and self.settings_win.winfo_exists():
                     self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
                 elif t == "auth":
-                    self.toast(ev["msg"], not ev["ok"])
+                    self.alert(ev["msg"], "info" if ev["ok"] else "error")
                     if self.settings_win and self.settings_win.winfo_exists():
                         self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
                 elif t == "session":
-                    self.toast(f"Session {ev['id'][:8]}… for {ev.get('title') or 'this chat'}")
-                elif t == "guard":
-                    self.set_guard_label(ev["on"])
-                elif t == "unmask":
-                    self.set_unmask_label(ev["on"])
+                    self.alert(f"New session for {ev.get('title') or 'this chat'}", "info")
+                elif t in ("guard", "unmask", "overlay_state", "file_guard"):
+                    # The toggles live in the panel and the hover tooltip now,
+                    # both of which read cfg, so one redraw covers all four.
+                    self.render_pill()
+                    if self.panel:
+                        self.build_panel()
                 elif t == "overlay":
                     self.overlay.render(ev["items"], ev.get("win"))
-                elif t == "overlay_state":
-                    self.set_overlay_label(ev["on"])
-                elif t == "file_guard":
-                    self.set_fileguard_label(ev["on"])
                 elif t == "ask_restore":
                     self.ask_restore(ev["name"], ev["path"])
                 elif t == "alarm":
@@ -3167,7 +3431,7 @@ class Bar:
         pad = {"padx": 10, "pady": 4}
         tk.Label(w, text="Server URL").grid(row=0, column=0, sticky="w", **pad)
         url = tk.Entry(w, width=48)
-        url.insert(0, self.cfg["serverUrl"])
+        url.insert(0, self.cfg.get("serverUrl") or DEFAULTS["serverUrl"])
         url.grid(row=0, column=1, **pad)
         tk.Label(w, text="Service key (optional; mr_…\nor the legacy shared key)").grid(row=1, column=0, sticky="w", **pad)
         key = tk.Entry(w, width=48, show="•")

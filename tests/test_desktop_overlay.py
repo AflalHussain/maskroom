@@ -827,3 +827,140 @@ def test_the_hook_never_swallows_a_key_outside_claude(automation, monkeypatch):
     health = body.index("not self.worker_alive()")
     assert front < health, "which app is in front must gate the health check"
     assert "front and plain" in body, "the hold must be scoped to Claude"
+
+
+# ------------------------------------------------------------------- the bar
+@pytest.fixture
+def bar(monkeypatch):
+    """A real Bar on a virtual display. The old one was never built in a test,
+    so a layout mistake only ever showed up on the user's machine."""
+    pytest.importorskip("tkinter")
+    if not os.environ.get("DISPLAY"):
+        pytest.skip("needs a display; run under xvfb-run")
+    sys.modules.setdefault("uiautomation", _fake_uia())
+    root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(root / "desktop"))
+    helper = pytest.importorskip("helper")
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    monkeypatch.setattr(helper, "make_no_activate", lambda w: None)
+    monkeypatch.setattr(helper, "round_corners", lambda w, small=False: None)
+    monkeypatch.setattr(helper, "exclude_from_capture", lambda h, what: None)
+    monkeypatch.setattr(helper, "_IS_WIN", False)
+    # Overlay and DropBlocker reach for Win32 directly when they are built
+    monkeypatch.setattr(helper, "_user32", types.SimpleNamespace(
+        GetParent=lambda h: 0, GetWindowLongPtrW=lambda h, i: 0,
+        SetWindowLongPtrW=lambda h, i, v: 0, SetWindowDisplayAffinity=lambda h, v: 1))
+    cfg = dict(helper.DEFAULTS)      # the real shape, not a hand-written subset
+    cfg["token"] = "t"
+    b = helper.Bar(cfg, queue.Queue(), queue.Queue())
+    yield types.SimpleNamespace(b=b, helper=helper, cfg=cfg)
+    b.root.destroy()
+
+
+def test_the_pill_is_a_fraction_of_the_width_of_the_strip_it_replaces(bar):
+    """The old bar was 620 px of label, five buttons, four toggles and a status
+    line. Everything but the action and the state moved into the panel."""
+    assert bar.b.pill_w < 260, bar.b.pill_w
+    assert bar.b.PILL_H == 32
+    assert bar.b.status.cget("text") == "Protected"
+
+
+def test_a_warning_is_kept_and_counted_rather_than_fading(bar):
+    """A line that fades after six seconds is the wrong shape for "that file was
+    not masked", and it is what the old bar did with every message."""
+    bar.b.alert("3 values masked", "success")
+    assert bar.b.problems == [], "a success is not a problem"
+    assert bar.b.badge.cget("text") == ""
+
+    bar.b.alert("photo.png attached unmasked", "warn")
+    assert [p["level"] for p in bar.b.problems] == ["warn"]
+    assert bar.b.badge.cget("text") == "1"
+    assert bar.b.glyph.cget("text") == bar.b.GLYPH["warn"]
+
+    bar.b.clear_problem("photo.png attached unmasked")
+    assert bar.b.problems == [] and bar.b.badge.cget("text") == ""
+
+
+def test_an_error_outranks_a_warning_on_the_pill(bar):
+    bar.b.alert("photo.png attached unmasked", "warn")
+    bar.b.alert("could not reach the server", "error")
+    assert bar.b.glyph.cget("text") == bar.b.GLYPH["error"]
+    assert bar.b.badge.cget("text") == "2"
+    assert bar.b.worst_problem()["level"] == "error"
+
+
+def test_the_same_problem_is_not_stacked_twice(bar):
+    for _ in range(4):
+        bar.b.alert("could not reach the server", "error")
+    assert len(bar.b.problems) == 1
+
+
+def test_guard_off_shows_on_the_pill_without_an_alert(bar):
+    """It is the one toggle whose off state changes whether the product is
+    doing its job, so it is the one that surfaces when collapsed."""
+    bar.cfg["guard"] = False
+    bar.b.render_pill()
+    assert bar.b.status.cget("text") == "Guard off"
+    assert bar.b.glyph.cget("text") == bar.b.GLYPH["off"]
+
+
+def test_every_state_has_its_own_shape_not_only_its_own_colour(bar):
+    """About eight per cent of men cannot separate red from green."""
+    glyphs = list(bar.b.GLYPH.values())
+    assert len(set(glyphs)) == len(glyphs)
+
+
+def test_the_panel_opens_with_the_toggles_and_the_problems(bar):
+    bar.b.alert("could not reach the server", "error")
+    bar.b.open_panel()
+    assert bar.b.panel is not None
+    text = " ".join(w.cget("text") for w in _all_labels(bar.b.panel))
+    for expected in ("SafePII", "Guard", "Unmask replies", "Overlay", "Files",
+                     "Mask now", "New session", "could not reach the server"):
+        assert expected in text, expected
+    bar.b.close_panel()
+    assert bar.b.panel is None
+
+
+def test_a_blocking_alarm_opens_the_panel_once_and_cannot_be_dismissed(bar):
+    """And never re-opens on its own afterwards: a floating panel that
+    un-collapses itself on a background event is the most complained-about
+    behaviour in this category."""
+    bar.b.set_alarm("SafePII has stopped protecting this app.")
+    assert bar.b.panel is not None
+    assert bar.b.problems[0]["alarm"] is True
+    bar.b.close_panel()
+    bar.b.set_alarm("SafePII has stopped protecting this app.")
+    assert bar.b.panel is None, "it must not keep re-opening"
+    bar.b.set_alarm(None)
+    assert bar.b.problems == []
+
+
+def test_the_toggles_are_reported_on_hover_rather_than_shown(bar):
+    """Four controls came off the collapsed form; their state did not."""
+    bar.cfg["overlay"] = False
+    assert bar.b.pill_tip_text() == "Guard on   Unmask on   Overlay off   Files on"
+
+
+def _all_labels(widget):
+    out = []
+    for child in widget.winfo_children():
+        if isinstance(child, tk_label_types()):
+            out.append(child)
+        out.extend(_all_labels(child))
+    return out
+
+
+def tk_label_types():
+    import tkinter
+    return (tkinter.Label,)
+
+
+def test_the_settings_window_still_opens_from_the_panel(bar):
+    """It was written against the old bar; the gear moved into the panel."""
+    bar.b.open_panel()
+    bar.b.open_settings()
+    assert bar.b.settings_win is not None and bar.b.settings_win.winfo_exists()
+    text = " ".join(w.cget("text") for w in _all_labels(bar.b.settings_win))
+    assert "Server URL" in text
+    bar.b.settings_win.destroy()
