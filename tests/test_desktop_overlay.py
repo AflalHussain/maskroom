@@ -862,7 +862,8 @@ def test_the_pill_is_a_fraction_of_the_width_of_the_strip_it_replaces(bar):
     line. Everything but the action and the state moved into the panel."""
     assert bar.b.pill_w < 260, bar.b.pill_w
     assert bar.b.PILL_H == 32
-    assert bar.b.status.cget("text") == "Protected"
+    assert bar.b.status.cget("text") == "SafePII", "the name shows when there is nothing to report"
+    assert bar.b.logo is not None, "the mark identifies it as ours"
 
 
 def test_a_warning_is_kept_and_counted_rather_than_fading(bar):
@@ -875,7 +876,7 @@ def test_a_warning_is_kept_and_counted_rather_than_fading(bar):
     bar.b.alert("photo.png attached unmasked", "warn")
     assert [p["level"] for p in bar.b.problems] == ["warn"]
     assert bar.b.badge.cget("text") == "1"
-    assert bar.b.glyph.cget("text") == bar.b.GLYPH["warn"]
+    assert bar.b.status.cget("text") == "Check this"
 
     bar.b.clear_problem("photo.png attached unmasked")
     assert bar.b.problems == [] and bar.b.badge.cget("text") == ""
@@ -884,7 +885,7 @@ def test_a_warning_is_kept_and_counted_rather_than_fading(bar):
 def test_an_error_outranks_a_warning_on_the_pill(bar):
     bar.b.alert("photo.png attached unmasked", "warn")
     bar.b.alert("could not reach the server", "error")
-    assert bar.b.glyph.cget("text") == bar.b.GLYPH["error"]
+    assert bar.b.status.cget("text") == "Problem"
     assert bar.b.badge.cget("text") == "2"
     assert bar.b.worst_problem()["level"] == "error"
 
@@ -901,11 +902,25 @@ def test_guard_off_shows_on_the_pill_without_an_alert(bar):
     bar.cfg["guard"] = False
     bar.b.render_pill()
     assert bar.b.status.cget("text") == "Guard off"
-    assert bar.b.glyph.cget("text") == bar.b.GLYPH["off"]
 
 
-def test_every_state_has_its_own_shape_not_only_its_own_colour(bar):
-    """About eight per cent of men cannot separate red from green."""
+def test_every_state_says_its_own_word_not_only_its_own_colour(bar):
+    """About eight per cent of men cannot separate red from green, so the state
+    has to be readable without it. The mark stays constant, so the word carries
+    the state; the fallback glyphs, used when the mark will not load, differ by
+    shape for the same reason."""
+    words = []
+    for setup in (lambda: None,
+                  lambda: bar.b.alert("a warning", "warn"),
+                  lambda: bar.b.alert("an error", "error")):
+        setup()
+        bar.b.render_pill()
+        words.append(bar.b.status.cget("text"))
+    bar.b.problems.clear()
+    bar.cfg["guard"] = False
+    bar.b.render_pill()
+    words.append(bar.b.status.cget("text"))
+    assert len(set(words)) == len(words), words
     glyphs = list(bar.b.GLYPH.values())
     assert len(set(glyphs)) == len(glyphs)
 
@@ -939,7 +954,7 @@ def test_a_blocking_alarm_opens_the_panel_once_and_cannot_be_dismissed(bar):
 def test_the_toggles_are_reported_on_hover_rather_than_shown(bar):
     """Four controls came off the collapsed form; their state did not."""
     bar.cfg["overlay"] = False
-    assert bar.b.pill_tip_text() == "Guard on   Unmask on   Overlay off   Files on"
+    assert bar.b.pill_tip_text() == "SafePII\nGuard on   Unmask on   Overlay off   Files on"
 
 
 def _all_labels(widget):
@@ -964,3 +979,14 @@ def test_the_settings_window_still_opens_from_the_panel(bar):
     text = " ".join(w.cget("text") for w in _all_labels(bar.b.settings_win))
     assert "Server URL" in text
     bar.b.settings_win.destroy()
+
+
+def test_the_mark_survives_a_missing_image(monkeypatch):
+    """A logo that will not load must not take the bar with it, and the state
+    then falls back to distinct shapes."""
+    helper = sys.modules["helper"]
+    said = []
+    monkeypatch.setattr(helper, "log", said.append)
+    monkeypatch.setattr(helper, "LOGO_PNG_48", "not a png")
+    assert helper.app_logo(None) is None
+    assert any("could not load the logo" in m for m in said), said

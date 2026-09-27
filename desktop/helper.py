@@ -2943,6 +2943,56 @@ class Overlay:
 
 
 # ----------------------------------------------------------------------------- UI
+# The shield mark, the same one the extension and the web pages use
+# (extension/icon48.png), carried inline so the helper stays a single file.
+LOGO_PNG_48 = (
+    "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"
+)
+def app_logo(root):
+    """The mark at a size that suits the display. Tk scales by whole numbers
+    only, so 48 gives a clean 24 or 16.
+
+    Not cached across calls: a PhotoImage belongs to the interpreter that made
+    it, and the caller has to hold the reference anyway or Tk collects it and
+    the label goes blank."""
+    scale = 1.0
+    try:
+        scale = root.winfo_fpixels("1i") / 96.0
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return tk.PhotoImage(master=root, data=LOGO_PNG_48).subsample(
+            2 if scale >= 1.4 else 3)
+    except Exception as e:  # noqa: BLE001 - a missing mark must not stop the bar
+        log(f"could not load the logo: {e}")
+        return None
+
+
 class Bar:
     """A small pill above the composer that opens into a panel.
 
@@ -3012,8 +3062,14 @@ class Bar:
 
         face = tk.Frame(shell, bg=self.BG, cursor="hand2")
         face.pack(side="left", fill="both", expand=True)
-        self.glyph = tk.Label(face, text=self.GLYPH["protected"], bg=self.BG, fg=self.OK,
-                              font=("Segoe UI", 11), padx=8)
+        self.logo = app_logo(self.root)
+        # The mark says what this is; the word says how it is doing. Without a
+        # mark the pill is an unlabelled thing hovering over someone's chat.
+        self.glyph = tk.Label(face, bg=self.BG, fg=self.OK, font=("Segoe UI", 11), padx=8)
+        if self.logo is not None:
+            self.glyph.configure(image=self.logo)
+        else:
+            self.glyph.configure(text=self.GLYPH["protected"])
         self.glyph.pack(side="left")
         self.status = tk.Label(face, text="Protected", bg=self.BG, fg=self.FG,
                                font=("Segoe UI", 9), anchor="w")
@@ -3074,11 +3130,15 @@ class Bar:
             state, text, colour = "warn", "Check this", self.WARN
         elif not self.cfg.get("guard", True):
             state, text, colour = "off", "Guard off", self.WARN
+        elif self.flash:
+            state, text, colour = "protected", self.flash, self.OK
         else:
-            state, text, colour = "protected", self.flash or "Protected", self.OK
+            # Nothing to report, so the slot carries the name instead.
+            state, text, colour = "protected", "SafePII", self.DIM
         self.state = state
-        self.glyph.configure(text=self.GLYPH[state], fg=colour)
-        self.status.configure(text=text, fg=self.FG if state != "protected" or self.flash else self.DIM)
+        if self.logo is None:                 # no mark: the shape carries the state
+            self.glyph.configure(text=self.GLYPH[state], fg=colour)
+        self.status.configure(text=text, fg=colour if state != "protected" else self.DIM)
         n = len(self.problems)
         if n:
             self.badge.configure(text=str(n))
@@ -3099,7 +3159,7 @@ class Bar:
         """The four toggles, reported on hover instead of shown as controls."""
         parts = [("Guard", self.cfg.get("guard", True)), ("Unmask", self.cfg.get("unmask", True)),
                  ("Overlay", self.cfg.get("overlay", True)), ("Files", self.cfg.get("fileGuard", True))]
-        return "   ".join(f"{name} {'on' if on else 'off'}" for name, on in parts)
+        return "SafePII\n" + "   ".join(f"{name} {'on' if on else 'off'}" for name, on in parts)
 
     def show_pill_tip(self) -> None:
         if self.panel or not self.visible:
