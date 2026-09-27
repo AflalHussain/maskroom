@@ -33,8 +33,8 @@ a fleet rollout. P3 is needed for contract signature and for scale.
 | 4 | OPS-1 | 94 commits exist only on one laptop | Operations | minutes |
 | 5 | SEC-3 | Hard-coded token salt fallback | Security | hours |
 | 6 | SEC-4 | Auth defaults to off and fails open on misconfiguration | Security | hours |
-| 7 | GUARD-1 | File dialog fails open when its parts are not found | Fail-open | hours |
-| 8 | REL-1 | Worker thread can die, leaving Enter swallowed forever | Reliability | hours |
+| 7 | ~~GUARD-1~~ | ~~File dialog fails open when its parts are not found~~ **done** | Fail-open | hours |
+| 8 | ~~REL-1~~ | ~~Worker thread can die, leaving Enter swallowed forever~~ **done** | Reliability | hours |
 | 9 | DATA-2 | Downloads watcher uploads every Office file, whatever its origin | Data | 1 day |
 | 10 | DATA-3 | Helper log records conversation text, with no rotation | Data | 1 day |
 | 11 | MASK-1 | PDF redaction reports success when it did not redact | Masking | 1 day |
@@ -128,13 +128,17 @@ denial of service on SafePII blocks the whole company from using Claude.
 
 The product's promise is that unmasked content cannot leave. These are the paths where it does.
 
-### GUARD-1 — The file dialog fails open when its parts are not found — P1, verified
+### GUARD-1 — The file dialog fails open when its parts are not found — **DONE 2026-09-27**
 `desktop/helper.py:1494` and `:1499` set `SHARED["dialog_open"] = False` when the File name
 box or the Open button cannot be found, which stops the hook intercepting, so the original
 file is attached. `desktop/helper.py:1546` does the same at the second entry point, logging
 "letting the dialog through". **Observed twice in a real user log.** The correct behaviour is
 the one already used for an unlocatable pick at `desktop/helper.py:1553`: hold, and say so.
-**This is the single most important item in this document.**
+**This was the single most important item in this document.**
+**Fixed:** a missing part no longer disarms the guard. A dialog with no Open button is a
+Save dialog and is left alone; an open-type dialog whose File name box cannot be read stays
+armed and *holds* the confirm with a message pointing at copy-paste. Covered by four tests
+in `tests/test_desktop_overlay.py`.
 
 ### GUARD-2 — The remaining fail-open paths — P1/P2, reported
 1. `desktop/helper.py:1707` — `read_text` returns `""` when both reads throw, and the guard
@@ -223,12 +227,18 @@ caller is not evidential.
 
 ## Reliability (REL)
 
-### REL-1 — The worker thread can die, leaving Enter swallowed — P1, verified
+### REL-1 — The worker thread can die, leaving Enter swallowed — **DONE 2026-09-27**
 `desktop/helper.py:654` calls `poll_focus()` outside the try block that guards every other
 poll. One accessibility error ends the thread silently. The keyboard hook runs on a different
 thread and keeps swallowing Enter, queueing commands nobody consumes, so the Enter key stops
 working in Claude with no message and no recovery short of Task Manager. Decide deliberately
 whether a dead worker should fail open and loud, or closed with a visible banner.
+**Fixed:** the loop body is wrapped so nothing can end it, a supervisor restarts the thread
+if it ever stops, and the worker publishes a heartbeat. The hook checks that heartbeat before
+trusting the guard: a stale one raises a banner on the bar that stays until the worker
+answers again, and `onGuardFailure` (default `hold`) decides whether keys are held or passed
+through meanwhile. That choice is the customer's, because holding every Enter makes Claude
+unusable and the user then kills the helper, which protects nobody.
 
 ### REL-2 — One global lock serialises all analysis — P2, reported
 `maskroom/store/sessions.py:152` holds a process-wide lock around the whole request. With one

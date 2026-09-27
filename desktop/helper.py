@@ -126,6 +126,7 @@ DEFAULTS = {
     "overlayHideOnScroll": False,   # hide while scrolling instead of tracking the scroll
     "overlayDebug": False,  # log every walked line (to find out why a token was missed)
     "fileGuard": True,     # intercept the file dialog / paste / drop
+    "onGuardFailure": "hold",  # "hold" (nothing sends) or "warn" (sends, loudly)
     "blockDrops": True,    # refuse Explorer drops on Claude (they cannot be masked in flight)
     "filesDir": "",        # where masked copies are written (default: <config>/files)
     "watchDownloads": True,   # restore tokens in files Claude produces
@@ -139,7 +140,9 @@ OVERLAY_WALK_MAX_S = 1.50   # but do walk at least this often while tokens are o
 OVERLAY_MAX_LINES = 250     # safety cap on the line walk
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
           "blocking_since": 0.0, "index": None, "composer_rect": None,
-          "dialog_confirm_rect": None, "dialog_list_rect": None}
+          "dialog_confirm_rect": None, "dialog_list_rect": None,
+          "worker_beat": 0.0, "alarm": ""}
+WORKER_DEAD_S = 15.0       # no heartbeat for this long: the guard is not working
 OVERLAY_MAX_TOKENS = 80
 MAX_KNOWN_SESSIONS = 25    # vaults kept locally for restore
 MASK_EXTS = (".xlsx", ".xlsm", ".pdf", ".docx", ".pptx", ".csv", ".tsv", ".txt", ".json")
@@ -646,34 +649,53 @@ class Automation(threading.Thread):
         self.emit(type="toast", msg=msg, error=error)
 
     def run(self) -> None:
+        """Never exits. The hook on another thread keeps swallowing Enter while
+        this loop is alive, so a thread that dies takes the user's Enter key
+        with it: one unguarded accessibility error used to be enough."""
         with auto.UIAutomationInitializerInThread():
             while True:
                 try:
-                    cmd = self.commands.get(timeout=POLL_S)
-                except queue.Empty:
-                    self.poll_focus()
-                    if self.cfg.get("unmask", True):
-                        try:
-                            self.poll_hover()
-                            self.poll_clipboard()
-                        except Exception as e:  # noqa: BLE001
-                            log(f"unmask poll error {type(e).__name__}: {e}")
-                    if self.cfg.get("fileGuard", True):
-                        try:
-                            self.poll_drag()
-                            self.poll_dialog()
-                        except Exception as e:  # noqa: BLE001
-                            log(f"dialog poll error {type(e).__name__}: {e}")
-                    if self.cfg.get("watchDownloads", True):
-                        try:
-                            self.poll_downloads()
-                        except Exception as e:  # noqa: BLE001
-                            log(f"downloads poll error {type(e).__name__}: {e}")
-                    continue
+                    self.cycle()
+                except Exception as e:  # noqa: BLE001 - nothing may end this loop
+                    log(f"worker cycle error {type(e).__name__}: {e}")
+                    time.sleep(POLL_S)
+
+    def cycle(self) -> None:
+        SHARED["worker_beat"] = time.time()
+        if SHARED["alarm"] == "worker":
+            SHARED["alarm"] = ""
+            self.emit(type="alarm_clear")
+        try:
+            cmd = self.commands.get(timeout=POLL_S)
+        except queue.Empty:
+            try:
+                self.poll_focus()
+            except Exception as e:  # noqa: BLE001
+                log(f"focus poll error {type(e).__name__}: {e}")
+            if self.cfg.get("unmask", True):
                 try:
-                    getattr(self, "cmd_" + cmd[0])(*cmd[1:])
-                except Exception as e:  # noqa: BLE001 - keep the worker alive
-                    self.toast(f"{type(e).__name__}: {e}", error=True)
+                    self.poll_hover()
+                    self.poll_clipboard()
+                except Exception as e:  # noqa: BLE001
+                    log(f"unmask poll error {type(e).__name__}: {e}")
+            if self.cfg.get("fileGuard", True):
+                try:
+                    self.poll_drag()
+                    self.poll_dialog()
+                except Exception as e:  # noqa: BLE001
+                    log(f"dialog poll error {type(e).__name__}: {e}")
+            if self.cfg.get("watchDownloads", True):
+                try:
+                    self.poll_downloads()
+                except Exception as e:  # noqa: BLE001
+                    log(f"downloads poll error {type(e).__name__}: {e}")
+            return
+        SHARED["worker_beat"] = time.time()    # a long command must not look dead
+        try:
+            getattr(self, "cmd_" + cmd[0])(*cmd[1:])
+        except Exception as e:  # noqa: BLE001 - keep the worker alive
+            log(f"command {cmd[0]} failed: {type(e).__name__}: {e}")
+            self.toast(f"{type(e).__name__}: {e}", error=True)
 
     # ---- focus tracking
     def looks_like_composer(self, ctrl) -> bool:
@@ -1487,20 +1509,28 @@ class Automation(threading.Thread):
             return
         self.dialog = dlg
         if self.dialog_edit is None:
-            # Retried on every poll: a dialog that has just appeared is not
-            # fully built, and one failed look used to disarm the guard for good.
+            # Retried on every poll: a dialog that has just appeared is not yet
+            # built. A missing part must never *disarm* the guard - doing that
+            # let the user's original file through, twice, on a real machine.
             edit, confirm, listing = self.dialog_parts(dlg)
-            if edit is None:
-                SHARED["dialog_open"] = False
-                self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} but no "
-                                 f"File name box yet")
-                return
             if confirm is None:
-                SHARED["dialog_open"] = False     # a Save dialog, or one we do not understand
+                # No Open button: a Save dialog, or one we do not understand.
+                # Nothing is being attached, so there is nothing to guard.
+                SHARED["dialog_open"] = False
                 self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} with no "
                                  f"Open button; left alone")
                 return
-            self.dialog_edit, self.dialog_confirm, self.dialog_list = edit, confirm, listing
+            self.dialog_confirm, self.dialog_list = confirm, listing
+            if edit is None:
+                # An open-type dialog we cannot read yet. Stay armed: the confirm
+                # is held rather than let through, and the box is looked for again
+                # on the next poll.
+                self.warn_dialog(f"file dialog open: name={(dlg.Name or '')[:40]!r} but no "
+                                 f"File name box yet; holding the dialog")
+                self.publish_dialog_rects()
+                SHARED["dialog_open"] = True
+                return
+            self.dialog_edit = edit
             log(f"file dialog ready: name={(dlg.Name or '')[:40]!r} "
                 f"box={(edit.Name or edit.AutomationId or 'edit')!r} "
                 f"button={(confirm.Name or '')!r} "
@@ -1543,8 +1573,14 @@ class Automation(threading.Thread):
         if edit is None:
             edit, confirm, _listing = self.dialog_parts(dlg)
         if edit is None:
-            log("file guard: no File name box found; letting the dialog through")
-            self.dialog_replay(dlg, confirm)
+            # Cannot read what was picked, so cannot mask it. Holding is the only
+            # honest answer: replaying here attached the original unmasked, which
+            # is the disclosure this whole feature exists to prevent.
+            log("file guard: no File name box found; holding the dialog")
+            self.dump_dialog(dlg)
+            self.toast("Cannot read this file dialog, so the file cannot be masked. Copy the "
+                       "file in Explorer and paste it into Claude instead, or switch the file "
+                       "guard off to attach it as it is.", error=True)
             return
         paths, missing = self.dialog_paths(dlg, edit)
         if not paths and not missing:
@@ -1895,6 +1931,29 @@ class Hotkeys(threading.Thread):
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     @staticmethod
+    def worker_alive() -> bool:
+        beat = SHARED["worker_beat"]
+        return beat > 0 and (time.time() - beat) < WORKER_DEAD_S
+
+    def guard_failed(self, n_code, w_param, l_param):
+        """The worker has stopped answering, so nothing can be masked.
+
+        Holding every Enter would make Claude unusable and the user would just
+        kill the helper, which protects nobody. Which way this goes is the
+        customer's decision, not ours: `onGuardFailure` defaults to "hold",
+        and either way the bar says so rather than failing quietly.
+        """
+        if SHARED["alarm"] != "worker":
+            SHARED["alarm"] = "worker"
+            log("hook: the worker thread has stopped answering; guard cannot mask")
+            self.events.put({"type": "alarm", "what": "worker",
+                             "msg": "SafePII has stopped protecting this app. Restart it."})
+        if self.cfg.get("onGuardFailure", "hold") == "hold":
+            self.swallow_up = True
+            return 1
+        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+    @staticmethod
     def inside(rect, x: int, y: int) -> bool:
         return rect is not None and rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
 
@@ -1935,6 +1994,8 @@ class Hotkeys(threading.Thread):
                 if kb.vkCode == self.VK_RETURN and w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
                     plain = not (kb.flags & self.LLKHF_ALTDOWN) \
                         and not (_user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000) and not ctrl_down
+                    if plain and not injected and not self.worker_alive():
+                        return self.guard_failed(n_code, w_param, l_param)
                     front = self.claude_in_front()
                     if (SHARED["dialog_open"] and plain and not injected
                             and self.cfg.get("fileGuard", True) and front):
@@ -2696,6 +2757,9 @@ class Bar:
                   activebackground=self.BG, relief="flat", font=("Segoe UI", 9)).pack(side="right")
         self.status = tk.Label(f, text="", bg=self.BG, fg=self.FG, font=("Segoe UI", 8), anchor="w")
         self.status.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        self.alarm = tk.Label(self.win, text="", bg=self.ERR, fg="#ffffff", anchor="w",
+                              font=("Segoe UI", 8, "bold"), padx=8, pady=3, wraplength=self.W - 16)
+        self.alarm_shown = False
         make_no_activate(self.win)
 
         self.tip = tk.Toplevel(self.root)
@@ -2721,6 +2785,26 @@ class Bar:
 
     def set_guard_label(self, on: bool) -> None:
         self.guard_btn.configure(text=f"guard: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
+
+    def set_alarm(self, msg) -> None:
+        """A banner that stays until the cause is gone. A six-second toast is
+        the wrong shape for "you are no longer protected"."""
+        if not msg:
+            if self.alarm_shown:
+                self.alarm_shown = False
+                self.alarm.pack_forget()
+                self.win.configure(bg=self.BG)
+            return
+        self.alarm.configure(text="⚠ " + msg)
+        if not self.alarm_shown:
+            self.alarm_shown = True
+            self.alarm.pack(side="bottom", fill="x")
+            self.win.configure(bg=self.ERR)
+        if not self.visible:                    # make sure it can be seen at all
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            self.win.geometry(f"{self.W}x{self.H * 2}+{sw - self.W - 24}+{sh - self.H * 2 - 80}")
+            self.win.deiconify()
+            self.visible = True
 
     def set_fileguard_label(self, on: bool) -> None:
         self.fileguard_btn.configure(text=f"files: {'on' if on else 'off'}", fg=self.ACCENT if on else self.ERR)
@@ -2809,6 +2893,10 @@ class Bar:
                     self.set_overlay_label(ev["on"])
                 elif t == "file_guard":
                     self.set_fileguard_label(ev["on"])
+                elif t == "alarm":
+                    self.set_alarm(ev["msg"])
+                elif t == "alarm_clear":
+                    self.set_alarm(None)
                 elif t == "block_drop":
                     self.blocker.show(ev["rect"]) if ev["rect"] else self.blocker.hide()
                 elif t == "tip":
@@ -2911,7 +2999,23 @@ def main() -> int:
         + (f" mask={len(args)} file(s)" if args else ""))
     commands: "queue.Queue[tuple]" = queue.Queue()
     events: "queue.Queue[dict]" = queue.Queue()
-    Automation(cfg, commands, events).start()
+    def supervise():
+        """Restart the worker if it ever stops. It is written not to, but the
+        guard depends on it and a silent death takes the Enter key with it."""
+        worker = Automation(cfg, commands, events)
+        worker.start()
+        while True:
+            time.sleep(2.0)
+            if worker.is_alive():
+                continue
+            log("supervisor: the worker thread died; restarting it")
+            events.put({"type": "alarm", "msg": "SafePII restarted its guard. "
+                                                "Check the last message you sent was masked."})
+            worker = Automation(cfg, commands, events)
+            worker.start()
+            commands.put(("load_vault",))
+
+    threading.Thread(target=supervise, name="supervisor", daemon=True).start()
     Hotkeys(cfg, commands, events).start()
     OverlayWorker(cfg, events).start()
     commands.put(("load_vault",))

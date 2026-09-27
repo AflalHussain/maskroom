@@ -559,3 +559,115 @@ def test_a_file_still_being_written_waits_for_the_next_look(watcher, monkeypatch
     watcher.a.downloads_at = 0.0
     watcher.a.poll_downloads()                     # stable now
     assert sent == ["big.csv"]
+
+
+# --------------------------------------------------------------- the file guard
+class FakeDialogPart:
+    def __init__(self, name="", rect=(0, 0, 100, 20)):
+        self.Name = name
+        self.AutomationId = ""
+        self.BoundingRectangle = Rect(*rect)
+
+
+@pytest.fixture
+def guard(automation, monkeypatch):
+    """An Automation with a stubbed file dialog, for the arm/hold decisions."""
+    helper = sys.modules["helper"]
+    said, toasts = [], []
+    monkeypatch.setattr(helper, "log", said.append)
+    helper.SHARED["dialog_open"] = False
+    automation.cfg = {"fileGuard": True}
+    automation.dialog = automation.dialog_edit = automation.dialog_confirm = None
+    automation.dialog_list = None
+    automation.dialog_seen = 0.0
+    automation.dialog_said = ""
+    automation.dialog_dumped = True          # skip the contents dump in tests
+    automation.toast = lambda msg, error=False: toasts.append((msg, error))
+    automation.emit = lambda **kw: None
+    return types.SimpleNamespace(a=automation, helper=helper, said=said, toasts=toasts,
+                                 part=FakeDialogPart)
+
+
+def test_a_dialog_it_cannot_read_stays_armed_and_holds(guard, monkeypatch):
+    """The fail-open that shipped: a missing File name box disarmed the guard,
+    so the user's original file was attached. Observed twice in a real log."""
+    dlg = FakeDialogPart("Open")
+    monkeypatch.setattr(guard.a, "find_dialog", lambda: dlg)
+    monkeypatch.setattr(guard.a, "dialog_parts",
+                        lambda d: (None, FakeDialogPart("Open"), None))   # button, no box
+    guard.a.poll_dialog()
+    assert guard.helper.SHARED["dialog_open"] is True, "the guard must stay armed"
+
+    replayed = []
+    monkeypatch.setattr(guard.a, "dialog_replay", lambda d, c: replayed.append(True))
+    guard.a.cmd_dialog_confirm(time.time())
+    assert replayed == [], "a dialog it cannot read must not be let through"
+    assert any("cannot be masked" in m.lower() for m, _err in guard.toasts), guard.toasts
+
+
+def test_a_save_dialog_is_left_alone(guard, monkeypatch):
+    """No Open button means nothing is being attached, so there is nothing to
+    guard and holding would break the user's downloads."""
+    monkeypatch.setattr(guard.a, "find_dialog", lambda: FakeDialogPart("blob:https://claude.ai/x"))
+    monkeypatch.setattr(guard.a, "dialog_parts", lambda d: (None, None, None))
+    guard.a.poll_dialog()
+    assert guard.helper.SHARED["dialog_open"] is False
+
+
+def test_a_readable_dialog_arms_normally(guard, monkeypatch):
+    monkeypatch.setattr(guard.a, "find_dialog", lambda: FakeDialogPart("Open"))
+    monkeypatch.setattr(guard.a, "dialog_parts",
+                        lambda d: (FakeDialogPart("File name:"), FakeDialogPart("Open"), None))
+    guard.a.poll_dialog()
+    assert guard.helper.SHARED["dialog_open"] is True
+    assert guard.a.dialog_edit is not None
+    assert any("will be masked" in m for m, _err in guard.toasts)
+
+
+def test_a_closed_dialog_disarms_and_forgets_its_parts(guard, monkeypatch):
+    monkeypatch.setattr(guard.a, "find_dialog", lambda: FakeDialogPart("Open"))
+    monkeypatch.setattr(guard.a, "dialog_parts",
+                        lambda d: (FakeDialogPart("File name:"), FakeDialogPart("Open"), None))
+    guard.a.poll_dialog()
+    monkeypatch.setattr(guard.a, "find_dialog", lambda: None)
+    guard.a.dialog_seen = 0.0
+    guard.a.poll_dialog()
+    assert guard.helper.SHARED["dialog_open"] is False
+    assert guard.a.dialog_edit is None and guard.a.dialog_confirm is None
+
+
+# ------------------------------------------------------------ worker liveness
+def test_the_hook_holds_when_the_worker_has_stopped_answering(automation, monkeypatch):
+    """A dead worker used to leave the hook swallowing Enter forever, with no
+    message: the Enter key simply stopped working in Claude."""
+    helper = sys.modules["helper"]
+    said, events = [], queue.Queue()
+    monkeypatch.setattr(helper, "log", said.append)
+    hooks = helper.Hotkeys.__new__(helper.Hotkeys)
+    hooks.cfg, hooks.events, hooks.swallow_up = {}, events, False
+
+    helper.SHARED["worker_beat"] = time.time()
+    assert hooks.worker_alive() is True
+
+    helper.SHARED["worker_beat"] = time.time() - helper.WORKER_DEAD_S - 1
+    helper.SHARED["alarm"] = ""
+    assert hooks.worker_alive() is False
+    assert hooks.guard_failed(0, 0, 0) == 1, "default is to hold, not to let it through"
+    assert hooks.swallow_up is True
+    assert events.get_nowait()["what"] == "worker"
+    assert any("stopped answering" in m for m in said), said
+
+
+def test_the_hold_or_warn_choice_is_the_customers(automation, monkeypatch):
+    """Holding every Enter makes Claude unusable and the user kills the helper,
+    which protects nobody, so which way this goes is a policy setting."""
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    # _user32 is None off Windows; warn mode chains to the next hook through it
+    monkeypatch.setattr(helper, "_user32", types.SimpleNamespace(CallNextHookEx=lambda *a: 0))
+    hooks = helper.Hotkeys.__new__(helper.Hotkeys)
+    hooks.cfg, hooks.events, hooks.swallow_up = {"onGuardFailure": "warn"}, queue.Queue(), False
+    helper.SHARED["alarm"] = ""
+    assert hooks.guard_failed(0, 0, 0) == 0, "warn mode passes the key through"
+    assert hooks.swallow_up is False
+    assert hooks.events.get_nowait()["what"] == "worker"
