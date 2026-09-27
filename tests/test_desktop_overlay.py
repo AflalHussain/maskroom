@@ -490,7 +490,8 @@ def watcher(automation, tmp_path, monkeypatch):
     automation.downloads_done = set()
     automation.downloads_size = {}
     automation.emit = lambda **kw: None
-    automation.toast = lambda msg, error=False: calls.setdefault("toasts", []).append(msg)
+    automation.toast = lambda msg, error=False, level="": calls.setdefault(
+        "toasts", []).append((msg, level or ("error" if error else "info")))
     monkeypatch.setattr(helper, "log", lambda m: None)    # restored, or later tests see no log
     return types.SimpleNamespace(a=automation, dir=tmp_path, calls=calls, helper=helper)
 
@@ -614,7 +615,8 @@ def guard(automation, monkeypatch):
     automation.dialog_seen = 0.0
     automation.dialog_said = ""
     automation.dialog_dumped = True          # skip the contents dump in tests
-    automation.toast = lambda msg, error=False: toasts.append((msg, error))
+    automation.toast = lambda msg, error=False, level="": toasts.append(
+        (msg, level or ("error" if error else "info")))
     automation.emit = lambda **kw: None
     return types.SimpleNamespace(a=automation, helper=helper, said=said, toasts=toasts,
                                  part=FakeDialogPart)
@@ -634,7 +636,7 @@ def test_a_dialog_it_cannot_read_stays_armed_and_holds(guard, monkeypatch):
     monkeypatch.setattr(guard.a, "dialog_replay", lambda d, c: replayed.append(True))
     guard.a.cmd_dialog_confirm(time.time())
     assert replayed == [], "a dialog it cannot read must not be let through"
-    assert any("cannot be masked" in m.lower() for m, _err in guard.toasts), guard.toasts
+    assert any("cannot be masked" in m.lower() for m, _lvl in guard.toasts), guard.toasts
 
 
 def test_a_save_dialog_is_left_alone(guard, monkeypatch):
@@ -653,7 +655,7 @@ def test_a_readable_dialog_arms_normally(guard, monkeypatch):
     guard.a.poll_dialog()
     assert guard.helper.SHARED["dialog_open"] is True
     assert guard.a.dialog_edit is not None
-    assert any("will be masked" in m for m, _err in guard.toasts)
+    assert any("will be masked" in m for m, _lvl in guard.toasts)
 
 
 def test_a_closed_dialog_disarms_and_forgets_its_parts(guard, monkeypatch):
@@ -759,3 +761,49 @@ def test_signing_out_forgets_every_real_value(automation, monkeypatch):
     assert a.vaults == {} and a.index.vault == {}
     assert helper.SHARED["index"].vault == {}
     assert a.cfg["token"] == ""
+
+
+def test_settings_are_carried_over_from_the_old_product_name(automation, tmp_path, monkeypatch):
+    """Renaming the config folder must not sign everyone out and lose every
+    chat-to-session binding on upgrade."""
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    monkeypatch.setattr(helper, "_IS_WIN", True)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    old = tmp_path / helper.OLD_APP_NAME / "helper.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({"serverUrl": "https://safepii.example", "token": "keep-me"}))
+    monkeypatch.setattr(helper, "CONFIG_DIR", tmp_path / helper.APP_NAME)
+    monkeypatch.setattr(helper, "CONFIG_FILE", tmp_path / helper.APP_NAME / "helper.json")
+    monkeypatch.setattr(helper, "MACHINE_CONFIG", tmp_path / "none" / "helper.json")
+    cfg = helper.load_config()
+    assert cfg["token"] == "keep-me" and cfg["serverUrl"] == "https://safepii.example"
+
+
+def test_an_existing_installation_is_left_alone(automation, tmp_path, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    monkeypatch.setattr(helper, "_IS_WIN", True)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    (tmp_path / helper.OLD_APP_NAME).mkdir(parents=True)
+    (tmp_path / helper.OLD_APP_NAME / "helper.json").write_text('{"token": "stale"}')
+    new = tmp_path / helper.APP_NAME
+    new.mkdir(parents=True)
+    (new / "helper.json").write_text('{"token": "current"}')
+    monkeypatch.setattr(helper, "CONFIG_DIR", new)
+    monkeypatch.setattr(helper, "CONFIG_FILE", new / "helper.json")
+    monkeypatch.setattr(helper, "MACHINE_CONFIG", tmp_path / "none" / "helper.json")
+    assert helper.load_config()["token"] == "current"
+
+
+def test_messages_carry_a_grade_so_the_bar_can_treat_them_differently(automation):
+    """A six-second line that fades is the wrong shape for "that file went out
+    unmasked", and the same shape as "3 values masked" is wrong too."""
+    sent = []
+    automation.emit = lambda **kw: sent.append(kw)
+    automation.toast("3 values masked", level="success")
+    automation.toast("attached unmasked: photo.png", level="warn")
+    automation.toast("could not reach the server", error=True)
+    automation.toast("session abcd1234")
+    assert [e["level"] for e in sent] == ["success", "warn", "error", "info"]
+    assert all(e["type"] == "alert" for e in sent)

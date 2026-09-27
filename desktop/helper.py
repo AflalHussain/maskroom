@@ -759,8 +759,14 @@ class Automation(threading.Thread):
     def emit(self, **ev) -> None:
         self.events.put(ev)
 
-    def toast(self, msg: str, error: bool = False) -> None:
-        self.emit(type="toast", msg=msg, error=error)
+    def toast(self, msg: str, error: bool = False, level: str = "") -> None:
+        """A message for the user.
+
+        `error` stays for the 42 existing call sites; `level` is the finer
+        grade. Anything above "info" is kept until it has been read, because a
+        six-second line that fades is the wrong shape for "that file was not
+        masked"."""
+        self.emit(type="alert", msg=msg, level=level or ("error" if error else "info"))
 
     def run(self) -> None:
         """Never exits. The hook on another thread keeps swallowing Enter while
@@ -1234,9 +1240,10 @@ class Automation(threading.Thread):
                 self.last_masked = text
             n = len(d["findings"])
             if n:
-                self.toast(f"{n} value{'' if n == 1 else 's'} masked ({how}). Review, then press send.")
+                self.toast(f"{n} value{'' if n == 1 else 's'} masked ({how}). Review, then press send.",
+                           level="success")
             else:
-                self.toast("No PII detected — safe to send.")
+                self.toast("No PII detected — safe to send.", level="success")
             self.emit(type="vault", entries=d.get("vault_entries", 0))
             if d["changed"]:
                 self.load_vault(sid)
@@ -1418,7 +1425,7 @@ class Automation(threading.Thread):
         self.toast(f"{out.name}: {restored} value{'' if restored == 1 else 's'} restored"
                    + (f", {unresolved} token{'' if unresolved == 1 else 's'} unresolved "
                       f"(masked in another chat?)" if unresolved else "") + ".",
-                   error=bool(unresolved))
+                   level="warn" if unresolved else "success")
 
     @staticmethod
     def holds_tokens(path: Path) -> bool | None:
@@ -1800,7 +1807,7 @@ class Automation(threading.Thread):
         msg, warn = self.attach_summary(attach, unmasked)
         if len(attach) - len(unmasked) == 0:
             # Nothing was masked (all images or the like): confirm the user's own pick.
-            self.toast(msg + ".", error=True)
+            self.toast(msg + ".", level="warn")
             self.dialog_replay(dlg, confirm)
             return
         value = " ".join(f'"{p}"' for p in attach) if len(attach) > 1 else attach[0]
@@ -1811,7 +1818,7 @@ class Automation(threading.Thread):
                        f"Pick it from {self.files_dir()}", error=True)
             log(f"file guard: SetValue failed: {e}")
             return
-        self.toast(msg + ".", error=warn)
+        self.toast(msg + ".", level="warn" if warn else "success")
         self.dialog_replay(dlg, confirm)
 
     def dialog_replay(self, dlg, confirm) -> None:
@@ -1850,7 +1857,7 @@ class Automation(threading.Thread):
                            f"Attach them from {self.files_dir()}", error=True)
                 return
             self.clip_ignore_until = time.time() + 2.0
-        self.toast(msg + ".", error=warn)
+        self.toast(msg + ".", level="warn" if warn else "success")
         self.replay_paste()
 
     @staticmethod
@@ -1880,7 +1887,8 @@ class Automation(threading.Thread):
                 # A quick click-release that merely passed over Claude is not a drop.
                 if time.time() - SHARED["blocking_since"] > 0.3:
                     self.toast("A dropped file cannot be masked on its way in — use the paperclip "
-                               "(it is guarded), or switch drop blocking off in settings.", error=True)
+                               "(it is guarded), or switch drop blocking off in settings.",
+                               level="warn")
             SHARED["drag_at"] = 0.0
             return
         if foreground_exe() != CLAUDE_EXE and self.claude_win is None:
