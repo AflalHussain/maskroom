@@ -990,3 +990,59 @@ def test_the_mark_survives_a_missing_image(monkeypatch):
     monkeypatch.setattr(helper, "LOGO_PNG_48", "not a png")
     assert helper.app_logo(None) is None
     assert any("could not load the logo" in m for m in said), said
+
+
+# ------------------------------------------------------- the file dialog hook
+@pytest.fixture
+def clicks(automation, monkeypatch):
+    helper = sys.modules["helper"]
+    monkeypatch.setattr(helper, "log", lambda m: None)
+    hooks = helper.Hotkeys.__new__(helper.Hotkeys)
+    hooks.cfg, hooks.swallow_click = {"fileGuard": True}, False
+    hooks.last_down_at, hooks.last_down = 0.0, (0, 0)
+    hooks.double_click_s = 0.5
+    helper.SHARED["dialog_confirm_rect"] = (400, 400, 500, 430)
+    helper.SHARED["dialog_list_rect"] = None
+    helper.SHARED["dialog_rect"] = (100, 100, 700, 500)
+    return types.SimpleNamespace(h=hooks, helper=helper)
+
+
+def test_a_single_click_on_a_file_passes_through(clicks):
+    assert clicks.h.dialog_click(200, 200) is False
+
+
+def test_a_double_click_on_a_file_is_held(clicks):
+    """Double-clicking is how most people pick a file, and it has to be held so
+    the pick can be masked before the dialog closes."""
+    assert clicks.h.dialog_click(200, 200) is False
+    assert clicks.h.dialog_click(200, 200) is True
+
+
+def test_a_double_click_works_when_the_file_list_was_not_found(clicks):
+    """Requiring the list meant Enter worked while double click did nothing."""
+    clicks.helper.SHARED["dialog_list_rect"] = None
+    clicks.h.dialog_click(250, 250)
+    assert clicks.h.dialog_click(250, 250) is True
+
+
+def test_a_double_click_uses_the_list_when_it_was_found(clicks):
+    clicks.helper.SHARED["dialog_list_rect"] = (120, 140, 680, 380)
+    clicks.h.dialog_click(200, 200)
+    assert clicks.h.dialog_click(200, 200) is True
+    # outside the list, inside the dialog: not a pick
+    clicks.h.dialog_click(150, 460)
+    assert clicks.h.dialog_click(150, 460) is False
+
+
+def test_a_click_on_the_confirm_button_is_held_at_once(clicks):
+    assert clicks.h.dialog_click(450, 415) is True
+
+
+def test_a_double_click_outside_the_dialog_is_ignored(clicks):
+    clicks.h.dialog_click(900, 900)
+    assert clicks.h.dialog_click(900, 900) is False
+
+
+def test_two_clicks_far_apart_are_not_a_double_click(clicks):
+    clicks.h.dialog_click(200, 200)
+    assert clicks.h.dialog_click(260, 260) is False

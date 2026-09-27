@@ -147,7 +147,7 @@ OVERLAY_WALK_MAX_S = 1.50   # but do walk at least this often while tokens are o
 OVERLAY_MAX_LINES = 250     # safety cap on the line walk
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
           "blocking_since": 0.0, "index": None, "composer_rect": None,
-          "dialog_confirm_rect": None, "dialog_list_rect": None,
+          "dialog_confirm_rect": None, "dialog_list_rect": None, "dialog_rect": None,
           "worker_beat": 0.0, "worker_busy": "", "alarm": ""}
 WORKER_DEAD_S = 15.0       # no heartbeat for this long, and not busy: not working
 BLOCKER_MAX_S = 6.0        # the drop blocker comes down after this, drop or no drop
@@ -1515,7 +1515,7 @@ class Automation(threading.Thread):
         """
         edit, confirm, listing, edit_score = None, None, None, -1
         queue_, seen = collections.deque([(dlg, 0)]), 0
-        while queue_ and seen < 600:
+        while queue_ and seen < 900:
             c, depth = queue_.popleft()
             seen += 1
             try:
@@ -1725,6 +1725,7 @@ class Automation(threading.Thread):
             self.dialog_dumped = False
             SHARED["dialog_open"] = False
             SHARED["dialog_confirm_rect"] = SHARED["dialog_list_rect"] = None
+            SHARED["dialog_rect"] = None
             return
         self.dialog = dlg
         if self.dialog_edit is None:
@@ -1763,7 +1764,8 @@ class Automation(threading.Thread):
         return fast, and a cross-process call inside one is asking for it to be
         dropped by Windows."""
         for key, ctrl in (("dialog_confirm_rect", self.dialog_confirm),
-                          ("dialog_list_rect", self.dialog_list)):
+                          ("dialog_list_rect", self.dialog_list),
+                          ("dialog_rect", self.dialog)):
             rect = None
             if ctrl is not None:
                 try:
@@ -2204,11 +2206,21 @@ class Hotkeys(threading.Thread):
         gap, moved = now - self.last_down_at, abs(x - self.last_down[0]) + abs(y - self.last_down[1])
         self.last_down_at, self.last_down = now, (x, y)
         on_confirm = self.inside(SHARED["dialog_confirm_rect"], x, y)
-        on_list = self.inside(SHARED["dialog_list_rect"], x, y)
+        listing = SHARED["dialog_list_rect"]
+        if listing is not None:
+            on_list, how = self.inside(listing, x, y), "list"
+        else:
+            # The file list could not be found in this dialog. A double click
+            # anywhere in it, other than on the confirm button, is still a pick,
+            # and requiring the list meant Enter worked while double click did
+            # nothing at all.
+            on_list = self.inside(SHARED["dialog_rect"], x, y) and not on_confirm
+            how = "dialog"
         double = gap <= self.double_click_s and moved <= 6
-        log(f"hook: dialog click at ({x},{y}) on_confirm={on_confirm} on_list={on_list} "
-            f"double={double} -> {'held' if on_confirm or (on_list and double) else 'through'}")
-        return on_confirm or (on_list and double)
+        held = on_confirm or (on_list and double)
+        log(f"hook: dialog click at ({x},{y}) on_confirm={on_confirm} "
+            f"in_{how}={on_list} double={double} -> {'held' if held else 'through'}")
+        return held
 
     def hook_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         try:
