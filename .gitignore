@@ -41,3 +41,7 @@ scripts/desktop/uia_reply_probe_report.txt
 desktop/*.log
 desktop/*.PNG
 desktop/*.png
+
+desktop/packaging/__pycache__/
+desktop/packaging/build/
+desktop/packaging/dist/
