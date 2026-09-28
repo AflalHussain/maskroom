@@ -1387,3 +1387,51 @@ def test_the_cache_cannot_grow_without_end(procs):
         procs.table[pid] = rf"C:\p{pid}\app.exe"
         helper.process_exe(pid)
     assert len(helper._exe_cache) <= helper.EXE_CACHE_MAX + 1
+
+
+def test_the_panel_prefers_the_side_with_room(bar):
+    """And prefers above, so it does not cover the composer."""
+    b = bar.b
+    b.place((400, 500, 1000, 560))            # pill sits well down the screen
+    b.root.update()
+    h, y = b.panel_placement(need=300, screen_h=1080)
+    assert h == 300 and y + h <= b.win.winfo_y(), "above the pill"
+
+    b.place((400, 20, 1000, 80))              # pill near the top: no room above
+    b.root.update()
+    h, y = b.panel_placement(need=300, screen_h=1080)
+    assert h == 300 and y >= b.win.winfo_y() + b.PILL_H, "below the pill"
+
+
+def test_a_panel_taller_than_the_screen_is_capped_not_cut(bar):
+    """It used to run off the screen edge and simply be cut off."""
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.root.update()
+    h, y = b.panel_placement(need=4000, screen_h=1080)
+    assert h < 4000, "capped"
+    assert y >= b.MARGIN, "not off the top"
+    assert y + h <= 1080 - b.MARGIN + b.TIGHT, "not off the bottom"
+
+
+def test_the_taller_side_wins_when_neither_fits(bar):
+    b = bar.b
+    b.place((400, 900, 1000, 960))            # lots of room above, little below
+    b.root.update()
+    _h, y = b.panel_placement(need=4000, screen_h=1080)
+    assert y < b.win.winfo_y(), "opened upwards, where the room is"
+
+
+def test_the_scrollbar_appears_only_when_it_is_needed(bar):
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.open_panel()
+    b.root.update()
+    assert b.panel_at is not None
+    scrolls = b.panel_at[4]
+    assert bool(b.vbar.winfo_ismapped()) == scrolls
+    for _ in range(40):                        # force it past any screen
+        b.alert(f"a problem worth several lines of wrapped text {_}", "warn")
+    b.root.update()
+    assert b.panel_at[4] is True, "a long panel has to scroll"
+    assert b.vbar.winfo_ismapped()

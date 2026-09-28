@@ -3194,6 +3194,8 @@ class Bar:
     # geometry (see the docstring for provenance)
     PILL_H, PANEL_W, ROW_H, PAD, GAP, TIGHT = 32, 300, 30, 16, 12, 8
     CLEAR = 10          # space left between the pill and the composer's border
+    MARGIN = 8          # space kept between the panel and the edge of the screen
+    MIN_PANEL_H = 140   # below this it is not worth showing at all
     RECENT_KEEP = 10
 
     # A shape for every state, so nothing depends on colour alone: about eight
@@ -3224,6 +3226,7 @@ class Bar:
         self.busy = False
         self.panel = None
         self.panel_at = None
+        self.body = self.canvas = self.vbar = None
         self.settings_win = None
         self.blocked = False               # a blocking alert opened the panel once
         self.update = None                 # (version, url) when the server has a newer build
@@ -3467,27 +3470,95 @@ class Bar:
             self.panel = None
             self.chev.configure(text="⌄")
 
+    def on_panel_wheel(self, event) -> None:
+        if not self.panel or not self.panel.winfo_exists():
+            return
+        step = -1 if getattr(event, "num", 0) == 4 else 1 if getattr(event, "num", 0) == 5 \
+            else (-1 if getattr(event, "delta", 0) > 0 else 1)
+        self.canvas.yview_scroll(step, "units")
+
+    def panel_placement(self, need: int, screen_h: int):
+        """Where the panel goes and how tall it may be.
+
+        Whichever side of the pill has room takes it, preferring above so the
+        panel does not cover the composer. When neither side fits the whole
+        thing, the larger side is used and the contents scroll, rather than the
+        panel running off the screen edge and being cut."""
+        top = self.win.winfo_y()
+        bottom = top + self.PILL_H
+        above = top - self.TIGHT - self.MARGIN
+        below = screen_h - bottom - self.TIGHT - self.MARGIN
+        if need <= above:
+            return need, top - need - self.TIGHT
+        if need <= below:
+            return need, bottom + self.TIGHT
+        if above >= below:
+            h = max(above, self.MIN_PANEL_H)
+            return h, max(self.MARGIN, top - h - self.TIGHT)
+        return max(below, self.MIN_PANEL_H), bottom + self.TIGHT
+
     def place_panel(self) -> None:
         if not self.panel or not self.panel.winfo_exists():
             return
         self.panel.update_idletasks()
-        h = max(self.panel.winfo_reqheight(), 80)
+        need = self.body.winfo_reqheight() + 2
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        h, y = self.panel_placement(need, screen_h)
         x = self.win.winfo_x() + self.pill_w - self.PANEL_W
-        y = self.win.winfo_y() - h - self.TIGHT
-        if y < 0:
-            y = self.win.winfo_y() + self.PILL_H + self.TIGHT
-        if (self.PANEL_W, h, x, y) == self.panel_at:
-            return                       # nothing moved: do not re-clip and flicker
-        self.panel_at = (self.PANEL_W, h, x, y)
-        self.panel.geometry(f"{self.PANEL_W}x{h}+{max(0, x)}+{y}")
+        x = min(max(self.MARGIN, x), screen_w - self.PANEL_W - self.MARGIN)
+        scrolls = need > h
+        if (self.PANEL_W, h, x, y, scrolls) == self.panel_at:
+            return                       # nothing moved: do not redraw and flicker
+        self.panel_at = (self.PANEL_W, h, x, y, scrolls)
+        self.panel.geometry(f"{self.PANEL_W}x{h}+{x}+{y}")
+        self.panel.update_idletasks()
+        self.canvas.configure(scrollregion=(0, 0, self.PANEL_W, need))
+        if scrolls:
+            self.vbar.grid()
+        else:
+            self.vbar.grid_remove()
+            self.canvas.yview_moveto(0)
 
     def build_panel(self) -> None:
         if not self.panel:
             return
         for child in self.panel.winfo_children():
             child.destroy()
-        body = tk.Frame(self.panel, bg=self.BG)
-        body.pack(fill="both", expand=True, padx=1, pady=1)
+        # The canvas and the scrollbar below are new objects, so the remembered
+        # geometry no longer describes them: without this the next placement
+        # takes its early return and the scrollbar is never packed.
+        self.panel_at = None
+        outer = tk.Frame(self.panel, bg=self.BG)
+        outer.pack(fill="both", expand=True, padx=1, pady=1)
+        # A canvas holding the contents, so a panel taller than the space on
+        # screen scrolls instead of being cut off by the screen edge.
+        self.canvas = tk.Canvas(outer, bg=self.BG, highlightthickness=0, bd=0,
+                                takefocus=0)
+        self.vbar = tk.Scrollbar(outer, orient="vertical", width=10,
+                                 command=self.canvas.yview, takefocus=0)
+        self.canvas.configure(yscrollcommand=self.vbar.set)
+        # Grid, not pack: the canvas expands to fill, and a scrollbar packed
+        # after it gets whatever is left, which is nothing, so it never appears.
+        # A grid column is reserved whether or not anything is in it.
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.vbar.grid(row=0, column=1, sticky="ns")
+        self.vbar.grid_remove()
+        body = tk.Frame(self.canvas, bg=self.BG)
+        self.body_id = self.canvas.create_window((0, 0), window=body, anchor="nw")
+        self.body = body
+        # The inner frame has to follow the canvas's width or the contents keep
+        # their natural width and the wrapping is wrong.
+        self.canvas.bind("<Configure>",
+                         lambda e: self.canvas.itemconfigure(self.body_id, width=e.width))
+        # Bound to the panel itself rather than the whole application, and
+        # rebound each time because the widgets are rebuilt: bind_all here would
+        # stack a handler per rebuild and scroll by a multiple.
+        for widget in (self.panel, self.canvas, body):
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                widget.bind(seq, self.on_panel_wheel)
 
         head = tk.Frame(body, bg=self.BG)
         head.pack(fill="x", padx=self.PAD, pady=(self.GAP, 0))
