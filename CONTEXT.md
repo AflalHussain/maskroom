@@ -123,3 +123,13 @@ A setting fixed by the organisation that the user cannot change — Group Policy
 extension. Distinct from a **managed default**, which is pre-set for the user but theirs to
 change, and from the **locale policy**, which is detection knowledge.
 _Avoid_: config, setting, lock
+
+**Workspace folder**:
+A folder the user attaches to a Claude Desktop session, which the agent may then read and
+write inside. Anthropic's term; the administrator decides which ones may be attached.
+_Avoid_: mounted folder, shared folder, project
+
+**File broker**:
+The SafePII MCP server that serves a folder's files to the model, masking each one as it is
+served, so that it is the only way files reach the agent.
+_Avoid_: proxy, connector, gateway (that word means the inference gateway here)

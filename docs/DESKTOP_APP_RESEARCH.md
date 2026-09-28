@@ -75,7 +75,12 @@ this document builds on them and covers only the desktop-app-specific delivery m
 6. **Files:** there is no hook into Claude Desktop's attach flow. The realistic paths are a
    Finder/Explorer context-menu "Mask with Maskroom" (macOS Services or Finder Sync,
    Windows static shell verbs) and a file-drop window in the helper, both writing a
-   `*_masked` file the user then attaches.
+   `*_masked` file the user then attaches. **A folder handed to Cowork is the same problem one
+   level up** and has the same shape of answer: its reads happen inside the sandbox VM, so
+   nothing of ours can mask them as they happen, and the only controls are the documented
+   `allowedWorkspaceFolders` key, which decides what may be attached, and a local MCP server,
+   which is a host-side process we own and can therefore mask at read time. Together they
+   make SafePII the only way files get in (§5.6).
 7. **Routing desktop users back to the managed browser is the only path that gives the full
    feature set today.** The Claude Desktop MDM keys can disable Cowork
    (`secureVmFeaturesEnabled`), Code (`isClaudeCodeForDesktopEnabled`), local sessions,
@@ -646,13 +651,132 @@ organisation can do:
 4. Claude Enterprise **Inference hooks** remain the only server-side gate that covers
    "the desktop or mobile apps" too (middleware doc §1.6) — as a detector, not a masker.
 
-### 5.6 Local MCP server / Cowork
+### 5.6 Folder access: Cowork workspace folders, and local MCP (researched 2026-09-28)
 
-Covered in `LLM_MIDDLEWARE_RESEARCH.md` §1.2 and §1.5: local MCP servers and `.mcpb`
-extensions are "only available in Claude Desktop and Claude Code" and are tools the model
-calls, useless for text the user has already typed. A Maskroom `.mcpb` (mask a file the
-model fetches, or a `mask_text` tool the user asks for) is complementary to everything here,
-not a substitute. Not re-researched.
+`LLM_MIDDLEWARE_RESEARCH.md` §1.2 and §1.5 cover local MCP servers and `.mcpb` extensions as
+"only available in Claude Desktop and Claude Code", tools the model calls, useless for text
+the user has already typed. This section answers the question that sits beside them: **when a
+user hands Claude Desktop a folder, how can what Claude reads from it be masked?**
+
+#### 5.6.1 What folder access is
+
+Cowork attaches **workspace folders** to a session. Anthropic's own description, on the page
+that documents how to constrain it: users "attach one or more **workspace folders** to a
+session; the agent can then read, create, and modify files anywhere inside those folders, and
+run code against them inside the sandbox VM"
+([Desktop and filesystem access](https://claude.com/docs/third-party/claude-desktop/local-access)).
+The same page states that the feature is the same one standard Claude Desktop has: "Like
+Cowork in standard Claude Desktop, Claude Desktop on third-party (3P) works directly with
+files on the user's computer." The agent doing the reading is the embedded Claude Code engine
+(§1.2), and on Windows the sandbox "runs on the operating system's built-in virtualization".
+
+#### 5.6.2 Nothing of ours can be in the read path
+
+Three findings, each of which independently rules out masking a built-in file read at the
+moment it happens.
+
+- **The read happens inside the sandbox VM, against a mount the app makes.** There is no
+  documented interposition point between the agent's file tools and the mounted folder.
+- **Claude Code hooks are not a dependable mechanism here.** Cowork is built on Claude Code,
+  but hook delivery into a Cowork session is unresolved: the request to support
+  `~/.claude/settings.json` hooks in Cowork is open, and its central difficulty is stated in
+  the thread — "Cowork sessions run in a Linux sandbox while the hooks config and scripts
+  live on the host", so whether they fire host-side or sandbox-side is undecided
+  ([claude-code#63360](https://github.com/anthropics/claude-code/issues/63360)). A separate
+  report has plugin `PreToolUse` hooks firing in Cowork when the plugin is disabled in
+  settings ([claude-code#68020](https://github.com/anthropics/claude-code/issues/68020)),
+  which is the same instability seen from the other side. Nothing to build a control on.
+- **A mirror of symlinks cannot work.** "The check is enforced against the **resolved** path,
+  so symlinks and `..` traversal can't be used to escape an allowed root." A folder of links
+  pointing at the real files resolves to the real paths. A masked mirror therefore has to be
+  real bytes.
+
+A filesystem filter driver, or a Windows Projected File System provider presenting masked
+content on demand, would put us in the read path without duplication. Whether a projected
+filesystem survives being mounted into the sandbox VM is unknown and unverified; it is a
+large piece of work resting on an untested assumption, and it is not recommended before the
+two mechanisms below are exhausted.
+
+#### 5.6.3 The two places where we *can* stand
+
+**(a) The workspace-folder allowlist decides what can be attached.**
+`allowedWorkspaceFolders` in the managed configuration (macOS `com.anthropic.claudefordesktop`,
+Windows `HKLM:\SOFTWARE\Policies\Claude`; §1.2):
+
+| Value | Behaviour (quoted) |
+|---|---|
+| unset | "Unrestricted. Users can attach any folder they have OS-level access to" |
+| `["~/Documents/SafePII"]` | "Users may attach only folders **inside** one of the listed roots" |
+| `[]` | "No folders may be attached. The agent can still create files in its own sandbox scratch space, but cannot read or write the user's filesystem." |
+
+An entry is a path string or an object: `path`, `mode` (`rw` default, or `ro` — "The agent can
+view and search a read-only folder but cannot modify it in Cowork"), and `isDefaultSelected`
+("the folder appears already selected on the new-task page and skips the trust prompt"). A
+leading `~` expands per user, and a fixed set of tokens such as `%OneDrive%` and `%USERNAME%`
+is accepted.
+
+**(b) A local MCP server is a host-side process we own.** Its tool results are produced by our
+code, so a read can be masked *as it is served*, with nothing pre-computed and nothing masked
+written to disk. It is a documented product surface, deployable and lockable through
+`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled` and the org extension allowlist (§1.3) —
+which is a different conversation with a bank's security review than the accessibility helper.
+
+Neither is a masking mechanism on its own: (a) can only remove the raw path, and (b) can only
+serve a path the agent is willing to use. Used together they are one: **make the raw folder
+unattachable, and be the only way files get in.**
+
+#### 5.6.4 Two deployment profiles
+
+| | Strict | Working |
+|---|---|---|
+| Policy | `allowedWorkspaceFolders: []` | one root, the SafePII workspace, `mode: ro`, `isDefaultSelected: true` |
+| How files arrive | only through the SafePII MCP server, masked as it serves them | pre-masked copies in that root |
+| Agent may run code against the files | no | yes, against masked data |
+| Masked bytes on disk | none | a second, masked copy |
+| Freshness | always current | as current as the last mirror pass |
+| Cost | the model loses shell access to real files | duplication, a watcher, and write-back to design |
+
+The strict profile is the one to offer a regulated customer: the enforcement is Anthropic's
+own key, there is no mirror to fall stale, and nothing sensitive is duplicated. The working
+profile is for customers who need Cowork to actually execute against their files.
+
+#### 5.6.5 What is hard, and must be designed rather than discovered
+
+- **Filenames disclose before a byte is read** (`Nimal_Perera_KYC_2026.xlsx`). Names need
+  masking too, with a stable map; in a mirror the file must *be* the masked name.
+- **Search stops finding things.** The agent greps a real name against masked content and gets
+  nothing. Masking the *query* with the same session vault makes an exact value match its own
+  token, because tokens are deterministic. Partial and fuzzy searches still fail, and that
+  limit belongs in the documentation rather than in a surprise.
+- **Code must not be masked.** Masking a source file corrupts it, and identifiers, keys and
+  hostnames are false-positive bait. A type policy is required: mask data formats, pass code
+  through, refuse binaries — and the pass-through is a disclosure to state plainly.
+- **Offsets drift.** `TOK_…` is longer than most values, so any tool addressing bytes, or
+  patching by offset, breaks. Serve whole files, or slice by line *after* masking.
+- **Round-tripping edits is the hard half.** A file Claude writes is full of tokens.
+  `mode: ro` removes the problem; an `rw` design restores into a staging area for review and
+  never silently over the original. Same contract as the Downloads watcher.
+- **Cost.** A mount invites dozens of reads. Cache by `(path, mtime, size, policy revision)`.
+- **The vault fits the design we have.** One session per attached folder or workspace, held by
+  the helper; because restore already searches every known vault (ADR 0007), hover, copy and
+  the screen overlay work in the chat with no new machinery.
+- **Audit is the upside.** A folder mount is otherwise a blind spot; served reads make every
+  file the agent touched a record.
+- **`ro` does not bind a shell.** "In Code sessions, read-only applies to Claude's file tools
+  only; shell commands and SSH remote sessions do not enforce it", and where the sandbox does
+  not apply (Windows devices, hosts without the sandbox dependencies) the allowlist does not
+  confine shell commands either — `blockReadsOutsideWorkingDirectories` is the relevant key
+  and can only turn such reads into prompts.
+
+#### 5.6.6 To verify on a real machine before building
+
+1. Whether **standard mode** honours the object form `{path, mode, isDefaultSelected}`. The
+   key is listed for standard mode in the enterprise support article (§1.2); the object syntax
+   is documented on the 3P filesystem page. Assume nothing.
+2. Whether an MCP server's results reach a **Cowork** session the way they reach a Chat
+   session, and whether a Cowork session with `allowedWorkspaceFolders: []` can still call it.
+3. What the agent does when a tool result is visibly tokenised — whether it reasons about the
+   tokens as opaque identifiers or tries to "correct" them.
 
 ### 5.7 Files
 
@@ -759,6 +883,7 @@ Grammarly's terms are irrelevant here beyond the mechanism and were not research
 | F. Block Desktop, force managed browser + extension (§5.5) | N/A (removes the app) | Yes (extension) | Yes (extension) | Yes (extension) | Endpoint-management job; no Anthropic key for it; extension itself remains unsupported | Small if MDM exists |
 | G. Inference hooks (middleware §1.6) | Yes (all apps) | Deny only | No | Text of attachments | Officially supported, Enterprise beta | Small server; needs Enterprise |
 | H. Local MCP `.mcpb` (middleware §1.5) | Yes | Only when the model calls it | No | Yes, for files the tool fetches | Supported product surface; opt-in | Small |
+| J. SafePII as the only file path: `allowedWorkspaceFolders` + a local MCP file broker (§5.6) | Yes, for **folder** access (Cowork) | N/A — this is about what Claude *reads*, not what the user types | No | **Yes: every read masked as it is served, nothing pre-computed** | Both halves are documented, admin-enforced surfaces; the model loses shell access to real files | Small–medium: a stdio shim over endpoints the server already has |
 | I. Input method / TSF (§5.2) | Yes | Per keystroke, wrong granularity | No | No | Supported APIs, wrong layer | Large; not recommended |
 
 ### 8.2 Recommended order of work
@@ -787,14 +912,20 @@ Grammarly's terms are irrelevant here beyond the mechanism and were not research
    `AXSelectedText`, try both writes, watch what ProseMirror keeps. If the macOS write does
    not stick, C's write path there is select-all + paste. Either way, add the key-hook
    guard only after the overlay works.
-4. **If the organisation moves to Claude Desktop on 3P (or already runs Claude apps gateway),
+4. **Close the folder hole with J (§5.6).** A folder attached to Cowork bypasses everything
+   B and C protect, because the agent reads it directly. Set `allowedWorkspaceFolders` — `[]`
+   for the strict profile — and ship a SafePII MCP file broker as the only way files reach the
+   agent. It is the smallest real piece of work in this table (a stdio shim over `/api/process`
+   and the session routes), the only one where masking happens at read time, and the only one
+   built on a surface Anthropic documents for the purpose.
+5. **If the organisation moves to Claude Desktop on 3P (or already runs Claude apps gateway),
    put Maskroom on the gateway path (E).** This is the §1.4/§3.1 gateway from the middleware
    doc; nothing desktop-specific beyond MDM keys (`inferenceProvider`, `inferenceGatewayBaseUrl`
    or `bootstrapUrl`, `chatTabEnabled=true`) and streaming un-tokenization that never touches
    fields other than text content. It is the only option in this table with unmask on
    display and enforcement, so it should be the target architecture for managed fleets that
    can accept API billing.
-5. **Keep G (Inference hooks) as the server-side detector** for Enterprise customers,
+6. **Keep G (Inference hooks) as the server-side detector** for Enterprise customers,
    covering the desktop app whatever client-side option is deployed.
 
 Do not build D or I.
@@ -819,6 +950,11 @@ Do not build D or I.
   renderer; overlays are demo-grade only.
 - **Intercepting Claude Desktop's file attach/drop.** Files must be masked before the user
   attaches them (helper, Services/shell verb, web UI).
+- **Masking a folder's contents at the moment Claude reads them, through the built-in file
+  tools.** Those reads happen inside the sandbox VM; Cowork's hook delivery is unresolved, and
+  the allowlist resolves symlinks so a link farm cannot stand in front of the real files. What
+  is attachable can be constrained, and a local MCP server can serve masked reads, but the
+  built-in read itself cannot be intercepted (§5.6).
 - **Silent, permission-free operation on macOS** for anything that simulates keys or, soon,
   reads the pasteboard outside a paste-like action; Accessibility trust (and possibly the
   pasteboard alert) is unavoidable, exactly as for Grammarly.
@@ -842,6 +978,7 @@ Anthropic / Claude — support and product documentation (verified 2026-09-23)
 - Claude Desktop Linux package: https://downloads.claude.ai/claude-desktop/apt/stable (Packages index and `claude-desktop_1.17377.1_amd64.deb`, inspected locally)
 
 Anthropic — Claude Desktop on 3P documentation (claude.com/docs)
+- https://claude.com/docs/third-party/claude-desktop/local-access (fetched 2026-09-28; workspace folders, `allowedWorkspaceFolders` values and the `path`/`mode`/`isDefaultSelected` fields, resolved-path enforcement, network and removable drives, WSL)
 - https://claude.com/docs/third-party/claude-desktop/configuration
 - https://claude.com/docs/third-party/claude-desktop/network-proxy
 - https://claude.com/docs/third-party/claude-desktop/mdm
@@ -936,6 +1073,8 @@ Stack libraries (project documentation)
 Secondary (community; used only where marked)
 - https://github.com/anthropics/claude-code/issues/43158 (Chat/Cowork work behind a Zscaler TLS proxy, Code tab did not)
 - https://github.com/aaddrick/claude-desktop-debian/discussions/529 (app.asar / Electron packaging on other platforms)
+- https://github.com/anthropics/claude-code/issues/63360 (Cowork hook support open; hooks config host-side, session sandbox-side) — secondary, 2026-09-28
+- https://github.com/anthropics/claude-code/issues/68020 (plugin `PreToolUse` hooks firing in Cowork despite being disabled) — secondary, 2026-09-28
 
 Repository
 - [`extension/README.md`](../extension/README.md), [`extension/content.js`](../extension/content.js) (`SEL`, guard, `lastMasked`), [`extension/background.js`](../extension/background.js) (`api`, `upload`, download intercept, `launchWebAuthFlow`), [`extension/tokens.js`](../extension/tokens.js) (UMD restore logic)
@@ -966,6 +1105,13 @@ Repository
   desktop apps; the mechanism statements come from the integration and deployment articles.
 - **npmjs.com** (node-mac-permissions) and **pypi.org** (pyobjc-framework-ApplicationServices)
   refused or failed automated fetch; the GitHub README and the PyObjC docs were used instead.
+- **§5.6 (folder access)** was researched 2026-09-28, later than the rest of this document.
+  The quoted behaviour of `allowedWorkspaceFolders` comes from the 3P filesystem page; the
+  enterprise support article lists the same key for standard mode but does not document the
+  object form, so §5.6.6 records that as the first thing to verify. The Cowork hook findings
+  are GitHub issues, i.e. secondary sources describing work in progress, and are used only to
+  show that hooks are not a mechanism to build on. Whether a projected filesystem survives the
+  sandbox mount was **not** tested.
 - No Anthropic page was found that states Claude Desktop is Electron, that documents
   certificate pinning for the Chat tab, or that lets an admin disable the desktop app; those
   are reported as verified absences after searching support.claude.com, code.claude.com and
