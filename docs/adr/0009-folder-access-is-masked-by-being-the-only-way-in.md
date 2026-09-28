@@ -21,7 +21,12 @@ ours**. Two documented, administrator-enforced surfaces do that together:
   modifying, and `isDefaultSelected` makes the right folder the obvious one.
 - **A local MCP server**, which is a host-side process we own. Its results are produced by our
   code, so a file is masked *as it is served*: nothing pre-computed, nothing masked written to
-  disk, and every read recorded in the audit trail.
+  disk, and every read recorded in the audit trail. It is an **MCP endpoint over HTTP on
+  `127.0.0.1`, served by the helper**, and it is deployed to a fleet through the
+  `managedMcpServers` policy key, because that key accepts only `http` and `sse` transports and
+  loopback is the one plain-HTTP endpoint the app's URL check tolerates. A stdio `.mcpb`
+  extension is the prototype shape, not the deployable one: stdio servers are user-added, under
+  `isLocalDevMcpEnabled`.
 
 Two profiles follow, and a customer picks one. **Strict**: folders off entirely, the SafePII
 MCP file broker the only way files reach the agent. **Working**: one allowed root holding
@@ -30,6 +35,13 @@ masked copies, read-only, so the agent can still run code — against masked dat
 The strict profile is what we lead with. It keeps the enforcement in Anthropic's own key
 rather than in something of ours that can be switched off, has no mirror to fall stale, and
 duplicates nothing sensitive.
+
+Both profiles were checked against the app's own configuration schema before this was written
+(§5.6.6): `allowedWorkspaceFolders` carries `scopes: ["3p", "1p"]` and accepts the per-folder
+object in standard mode as well as third-party, so the working profile is deployable on a
+claude.ai-sign-in fleet; managed MCP servers are connected by "Cowork, Chat and Code sessions",
+so the broker is not a Chat-only device; and the policy fails closed (`failClosedValue: []`),
+so a policy the app cannot parse leaves no folder attachable rather than every folder.
 
 ## Considered options
 
@@ -67,9 +79,16 @@ duplicates nothing sensitive.
   of tokens.
 - A folder session is one more vault. Because restore already searches every known vault
   (ADR 0007), the chat surfaces — hover, copy, the screen overlay — need no changes.
-- `mode: "ro"` does not bind a shell: in Code sessions it applies to Claude's file tools only,
-  and where the sandbox does not apply it does not confine shell commands at all. The strict
-  profile does not depend on it; the working profile does, and must say so.
-- Three things stay unverified until someone runs them on a real machine, listed in §5.6.6.
-  The first — whether standard mode honours the object form of the key — decides whether the
-  working profile is deployable outside 3P at all.
+- `mode: "ro"` is stronger than the public documentation suggests, and only in Cowork. The
+  schema states that Bash there runs with the folder "mounted read-only at the OS level" and
+  file-tool writes blocked in-process; the caveat about shells not enforcing it applies to Code
+  sessions and SSH. The working profile depends on Cowork's guarantee and must say that it is a
+  Cowork guarantee.
+- The mirror root does not have to exist before the policy names it: the app creates an
+  admin-configured workspace folder it cannot find.
+- What is left to establish on a real machine is small and named in §5.6.6: that a Cowork task
+  with no folder attached lists and calls a loopback managed server's tools, and how the agent
+  behaves when a tool result is visibly tokenised. The second is a design question — the tool
+  description and each result say what the tokens are, which is more than the chat preamble can
+  do — and the failure worth watching for is not confusion but helpfulness: an agent that
+  decides a token is a typo and corrects it.

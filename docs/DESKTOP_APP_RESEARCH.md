@@ -670,6 +670,11 @@ Cowork in standard Claude Desktop, Claude Desktop on third-party (3P) works dire
 files on the user's computer." The agent doing the reading is the embedded Claude Code engine
 (§1.2), and on Windows the sandbox "runs on the operating system's built-in virtualization".
 
+The Linux package confirms the shape of it: `claude-desktop_2.7032.0_amd64.deb` ships
+`virtiofsd`, `cowork-linux-helper` and a 28 MB `smol-bin.x64.img`, and *Recommends*
+`qemu-system-x86, ovmf, virtiofsd`. The attached folder is shared into a virtual machine by
+virtiofs. That is the boundary the agent's file tools sit behind.
+
 #### 5.6.2 Nothing of ours can be in the read path
 
 Three findings, each of which independently rules out masking a built-in file read at the
@@ -692,10 +697,13 @@ moment it happens.
   real bytes.
 
 A filesystem filter driver, or a Windows Projected File System provider presenting masked
-content on demand, would put us in the read path without duplication. Whether a projected
-filesystem survives being mounted into the sandbox VM is unknown and unverified; it is a
-large piece of work resting on an untested assumption, and it is not recommended before the
-two mechanisms below are exhausted.
+content on demand, would put us in the read path without duplication. Since the share is
+virtiofs (§5.6.1), and virtiofsd can export a host path that is itself a userspace
+filesystem, the idea is not absurd — but the Windows sandbox was not inspected, no such
+export was tested, and a control that depends on a VM's file-sharing daemon tolerating a
+synthetic filesystem is not one to promise a bank. It is a large piece of work resting on an
+untested assumption, and it is not recommended before the two mechanisms below are
+exhausted.
 
 #### 5.6.3 The two places where we *can* stand
 
@@ -715,11 +723,66 @@ view and search a read-only folder but cannot modify it in Cowork"), and `isDefa
 leading `~` expands per user, and a fixed set of tokens such as `%OneDrive%` and `%USERNAME%`
 is accepted.
 
+**Verified in the app's own configuration schema** (`app.asar` of
+`claude-desktop_2.7032.0_amd64.deb`, read 2026-09-28; the same method that established
+`chatTabEnabled`'s 3P-only scope in §1.2). The internal entry is `allowedFolders` with
+`flatKey: "allowedWorkspaceFolders"`, and it settles what the support article leaves open:
+
+- `support: {enabled: {scopes: ["3p", "1p"], availableInVersion: "1.2581.0"}}` — **both
+  third-party and first-party (standard, claude.ai sign-in) deployments.** Contrast
+  `chatTabEnabled` and `sshClientPath`, which carry `scopes: ["3p"]`.
+- The value is a union of a non-empty string and an object, with
+  `.transform(e => typeof e === "string" ? {path: e} : e)`: **the object form is accepted in
+  both modes**, and a plain string is normalised into `{path}`. `maxItems: 200`.
+- The object's fields are `path` (since `1.14271.0`), `isDefaultSelected` (since `1.14271.0`)
+  and `mode: "rw" | "ro"` (since **`1.26832.0`**). The published version at the time of
+  writing is `2.7032.0`, so a current fleet has all three; a fleet pinned to an older build
+  may not.
+- `failClosedValue: []` and `emptyListIsAuthored: true`. A policy the app cannot read or
+  validate therefore collapses to **no attachable folders**, not to "unrestricted", and an
+  explicitly empty list is honoured as authored rather than treated as unset.
+- `category: "sandbox"`; the description reads "Folders where Claude may work. Applies to both
+  Cowork and Code sessions."
+- A root named in the policy that does not exist is **created** by the app (`mkdir` recursive,
+  mode `0755`, logged as "Created admin-configured workspace folder"), and roots marked
+  `isDefaultSelected` are resolved on the new-task page. A UNC root is not auto-created.
+
+Useful in deployment: the workspace root can be named in policy before it exists, and the app
+will make it.
+
 **(b) A local MCP server is a host-side process we own.** Its tool results are produced by our
 code, so a read can be masked *as it is served*, with nothing pre-computed and nothing masked
-written to disk. It is a documented product surface, deployable and lockable through
-`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled` and the org extension allowlist (§1.3) —
-which is a different conversation with a bank's security review than the accessibility helper.
+written to disk. It is a documented product surface — a different conversation with a bank's
+security review than the accessibility helper.
+
+The schema settles how it should be deployed, and the answer is not the obvious one:
+
+- **MCP servers reach Cowork.** The `allowedPluginMcpServers` entry states that when it is set,
+  "**Cowork, Chat and Code sessions** connect the managed list above and the servers the
+  desktop serves from the administrator's org-plugins directory". Tools are not a Chat-only
+  surface.
+- **`managedMcpServers` is the admin route, and it is available in standard mode**
+  (`scopes: ["3p"]` since `1.2581.0`, `scopes: ["1p"]` since `1.24012.11`). It is pushed by
+  MDM, so the user cannot remove it.
+- **A managed server must speak HTTP or SSE, not stdio.** Its transport field is
+  `enum(["http", "sse"])`; "Local command (stdio)" exists only as a label for the user-added
+  kind. So the broker is **not** an `.mcpb` stdio extension if it is to be deployed by policy.
+- **Loopback HTTP is explicitly tolerated.** The URL validator warns "Endpoint is plain HTTP;
+  auth credentials travel in cleartext" for every host *except* `localhost` and `127.0.0.1`.
+  A masking broker at `http://127.0.0.1:<port>/mcp`, run by the SafePII helper, is therefore
+  the intended shape of a local managed server. The helper already runs a loopback HTTP server
+  for sign-in (ADR 0003), so this is the same machinery.
+- **stdio remains available for a user-added server**, governed by `isLocalDevMcpEnabled`
+  ("Allow user-added MCP servers", "Local stdio servers added via the Developer settings",
+  default on, `failClosedValue: false`, `scopes: ["3p", "1p"]`). Good enough for a prototype;
+  not a fleet control, because the user adds it.
+- **Claude Code's own configuration files are ignored.** "Claude Code configuration-file
+  servers (`~/.claude.json`, a project's `.mcp.json`, `claude mcp add`) are never connected."
+  Nothing should be designed around them.
+- `allowedPluginMcpServers` is `scopes: ["3p"]` (since `2.2553.0`) and, where it is set, "No
+  entry admits a plugin's local (stdio) server". It restricts *plugin* servers and does not
+  govern the managed list or user-added servers, but it is worth knowing before promising a
+  3P customer a stdio component.
 
 Neither is a masking mechanism on its own: (a) can only remove the raw path, and (b) can only
 serve a path the agent is willing to use. Used together they are one: **make the raw folder
@@ -762,21 +825,57 @@ profile is for customers who need Cowork to actually execute against their files
   the screen overlay work in the chat with no new machinery.
 - **Audit is the upside.** A folder mount is otherwise a blind spot; served reads make every
   file the agent touched a record.
-- **`ro` does not bind a shell.** "In Code sessions, read-only applies to Claude's file tools
-  only; shell commands and SSH remote sessions do not enforce it", and where the sandbox does
-  not apply (Windows devices, hosts without the sandbox dependencies) the allowlist does not
-  confine shell commands either — `blockReadsOutsideWorkingDirectories` is the relevant key
-  and can only turn such reads into prompts.
+- **`ro` binds a shell in Cowork, but not in Code.** The public page's caveat — "In Code
+  sessions, read-only applies to Claude's file tools only; shell commands and SSH remote
+  sessions do not enforce it" — is easy to read as applying everywhere. The schema's own
+  longer text is more precise, and more favourable: "Bash runs in Cowork's isolated workspace
+  where the folder is **mounted read-only at the OS level**; file-tool writes (Edit, Write) are
+  blocked in-process by Claude Desktop. In Code, read-only applies to Claude file tools only;
+  Bash in Code sessions and SSH sessions do **not** yet enforce read-only mode." So in Cowork
+  `ro` is an OS-level guarantee on the virtiofs mount, which is what the working profile needs;
+  in Code it is not, and `blockReadsOutsideWorkingDirectories` is the relevant key there, able
+  only to turn such reads into prompts. A read-only folder that contains Claude's own data
+  directory is "enforced in Cowork only".
 
-#### 5.6.6 To verify on a real machine before building
+#### 5.6.6 The three unknowns, checked 2026-09-28
 
-1. Whether **standard mode** honours the object form `{path, mode, isDefaultSelected}`. The
-   key is listed for standard mode in the enterprise support article (§1.2); the object syntax
-   is documented on the 3P filesystem page. Assume nothing.
-2. Whether an MCP server's results reach a **Cowork** session the way they reach a Chat
-   session, and whether a Cowork session with `allowedWorkspaceFolders: []` can still call it.
-3. What the agent does when a tool result is visibly tokenised — whether it reasons about the
-   tokens as opaque identifiers or tries to "correct" them.
+Two are settled from primary sources; the third is a design question, not a lookup.
+
+**1. Does standard mode honour the object form of `allowedWorkspaceFolders`? — Yes.**
+`scopes: ["3p", "1p"]`, and the value is a string-or-object union in both. The enterprise
+support article's `string[]` is an under-description of the schema, not a different schema:
+plain strings are simply normalised to `{path}`. `mode` needs a build at or after `1.26832.0`.
+The working profile is therefore deployable on standard, claude.ai-sign-in fleets, which was
+the question that decided whether it was worth designing at all. Evidence in §5.6.3(a).
+
+**2. Do MCP tools reach Cowork, and can they be used with no folders attached? — Yes to the
+first, and the second follows from documentation rather than from a test.** The app's own
+schema says managed servers are connected by "Cowork, Chat and Code sessions", and the
+published filesystem page says that with `allowedWorkspaceFolders: []` "The agent can still
+create files in its own sandbox scratch space, but cannot read or write the user's
+filesystem" — a session that still runs, with no filesystem. Folder policy is
+`category: "sandbox"` and MCP is `category: "connectors"`; nothing in the schema couples them.
+The check also **changed the design**: a managed server must speak `http` or `sse`, not stdio,
+and loopback HTTP is the one plain-HTTP endpoint the validator accepts, so the broker is an
+MCP-over-HTTP endpoint on `127.0.0.1` served by the helper, not an `.mcpb` stdio extension
+(§5.6.3(b)). What remains for a real machine is a five-minute confirmation that a Cowork task
+with no folder attached lists and calls a loopback managed server's tools.
+
+**3. What does the agent do with a visibly tokenised tool result?** Not a fact to look up, and
+the answer is already in this repository: masked text needs to be *announced*, which is why
+the extension and the helper prefix a session's first masked message with the token preamble.
+An MCP server can do this better than a preamble can — the tool description says what the
+tokens are, and every result can carry the same note — so this is an argument for the broker
+shape rather than a risk to it. It still needs an end-to-end trial, because the failure mode
+worth watching is not confusion but helpfulness: an agent that decides a token is a typo and
+"corrects" it, or that writes a file with the real-looking name it inferred.
+
+**Method.** The published Linux package `claude-desktop_2.7032.0_amd64.deb` was downloaded
+from Anthropic's apt repository, its SHA-256 checked against the repository's `Packages` index
+(`1e7f4504bca5b2f6b2d3c4123d145d727647e77f2ee2d046850711e61e7d7b11`), and `resources/app.asar`
+read as text. Nothing was executed, and no macOS or Windows build was inspected. Note the
+version: the earlier sections of this document were verified against `1.17377.1`, and the app
+is now on a 2.x line.
 
 ### 5.7 Files
 
