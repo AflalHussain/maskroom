@@ -1474,3 +1474,57 @@ def test_the_work_area_falls_back_to_the_screen_off_windows(bar):
     assert area[0] == 0 and area[1] == 0
     assert area[2] == bar.b.root.winfo_screenwidth()
     assert area[3] == bar.b.root.winfo_screenheight()
+
+
+# ------------------------------------------------------------ display scaling
+@pytest.fixture
+def helper_mod(monkeypatch):
+    """The helper module alone, for the arithmetic that needs no window."""
+    sys.modules.setdefault("uiautomation", _fake_uia())
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent.parent / "desktop"))
+    return pytest.importorskip("helper")
+
+
+def test_the_same_text_is_drawn_larger_on_a_scaled_display(helper_mod):
+    """Reported on a two-screen desk: the painted values were too small on one
+    of them. Chromium reports a font size in points off a 96-dpi page, while
+    every rectangle we are given is in physical pixels, so the conversion needs
+    the DPI of the monitor the text is on. At 150% it is a third larger."""
+    style = {"size": 12.0}
+    assert helper_mod.patch_font_px(style, 24, 96) == 16     # 12pt at 100%
+    assert helper_mod.patch_font_px(style, 36, 144) == 24    # the same run at 150%
+    assert helper_mod.patch_font_px(style, 48, 192) == 32    # and at 200%
+
+
+def test_a_run_with_no_reported_size_is_measured_from_its_box(helper_mod):
+    assert helper_mod.patch_font_px({}, 24, 96) == int(24 * 0.68)
+    assert helper_mod.patch_font_px({"size": None}, 30, 96) == int(30 * 0.68)
+
+
+def test_a_size_that_cannot_belong_to_that_box_is_refused(helper_mod):
+    """Only nonsense is refused. What the box measures differs between runs, so
+    a narrow band would discard sizes that are right."""
+    assert helper_mod.patch_font_px({"size": 40.0}, 24, 96) == int(24 * 0.68)   # 53px in a 24px box
+    assert helper_mod.patch_font_px({"size": 2.0}, 40, 96) == int(40 * 0.68)    # 3px in a 40px box
+    assert helper_mod.patch_font_px({"size": "not a number"}, 24, 96) == int(24 * 0.68)
+
+
+def test_a_believable_size_is_kept_whatever_its_box(helper_mod):
+    """Tight line spacing and generous line spacing both have to survive."""
+    assert helper_mod.patch_font_px({"size": 12.0}, 18, 96) == 16   # a heading, tight
+    assert helper_mod.patch_font_px({"size": 12.0}, 34, 96) == 16   # prose, airy
+
+
+def test_the_smallest_font_scales_with_the_display(helper_mod):
+    """Nine pixels is legible at 96 dpi and a smudge at 192."""
+    assert helper_mod.min_font_px(96) == 9
+    assert helper_mod.min_font_px(144) == 14
+    assert helper_mod.min_font_px(192) == 18
+    assert helper_mod.patch_font_px({"size": 1.0}, 4, 192) == 18
+
+
+def test_the_dpi_falls_back_when_the_monitor_cannot_be_asked(helper_mod):
+    """Off Windows, and on a Windows too old for shcore, the caller's own
+    number is used, so the arithmetic is exercised everywhere."""
+    assert helper_mod.monitor_dpi((0, 0, 1920, 1080), 120.0) == 120.0
+    assert helper_mod.monitor_dpi(None, 96.0) == 96.0

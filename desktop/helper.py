@@ -529,6 +529,11 @@ class TokenIndex:
 _IS_WIN = sys.platform.startswith("win")
 _kernel32 = ctypes.windll.kernel32 if _IS_WIN else None
 _user32 = ctypes.windll.user32 if _IS_WIN else None
+# shcore is Windows 8.1 and later. Missing it is not fatal: the DPI falls back.
+try:
+    _shcore = ctypes.windll.shcore if _IS_WIN else None
+except Exception:  # noqa: BLE001
+    _shcore = None
 if _IS_WIN:
     _kernel32.OpenProcess.restype = wt.HANDLE
     _kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
@@ -552,7 +557,12 @@ if _IS_WIN:
     _user32.SetWindowDisplayAffinity.argtypes = [wt.HWND, wt.DWORD]
     _user32.MonitorFromWindow.restype = wt.HANDLE
     _user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
+    _user32.MonitorFromPoint.restype = wt.HANDLE
+    _user32.MonitorFromPoint.argtypes = [wt.POINT, wt.DWORD]
     _user32.GetMonitorInfoW.argtypes = [wt.HANDLE, ctypes.c_void_p]
+    if _shcore is not None:
+        _shcore.GetDpiForMonitor.argtypes = [wt.HANDLE, ctypes.c_int,
+                                             ctypes.POINTER(wt.UINT), ctypes.POINTER(wt.UINT)]
     _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
     _user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
     _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
@@ -761,6 +771,72 @@ def work_area(window):
         except Exception as e:  # noqa: BLE001
             log(f"could not read the monitor this window is on: {e}")
     return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
+
+
+def monitor_dpi(rect, fallback: float = 96.0) -> float:
+    """The DPI of the monitor a rectangle is on.
+
+    Everything the overlay measures arrives in physical pixels: the helper
+    declares itself per-monitor DPI aware at startup so that UI Automation hands
+    back real screen coordinates rather than scaled ones. The font size
+    Chromium reports does not follow that convention. It is in points off a
+    96-DPI page, and knows nothing about the scaling of the monitor it is being
+    displayed on, so converting it needs that monitor's DPI and no other.
+
+    One process-wide number cannot serve, which is what a second screen at a
+    different scaling exposes: a 150% laptop panel beside a 100% desktop one
+    makes every painted value a third too small on one of them. tkinter is no
+    help either, because its screen DPI is read once, from the primary monitor,
+    the same assumption that put the panel on the wrong screen.
+    """
+    if _IS_WIN and _shcore is not None and rect:
+        try:
+            left, top, right, bottom = rect
+            point = wt.POINT((left + right) // 2, (top + bottom) // 2)
+            monitor = _user32.MonitorFromPoint(point, 2)      # NEAREST
+            across, down = wt.UINT(), wt.UINT()
+            if monitor and _shcore.GetDpiForMonitor(          # 0 = MDT_EFFECTIVE_DPI
+                    monitor, 0, ctypes.byref(across), ctypes.byref(down)) == 0 and across.value:
+                return float(across.value)
+        except Exception as e:  # noqa: BLE001
+            log(f"could not read the dpi of the monitor at {rect}: {e}")
+    return fallback
+
+
+def min_font_px(dpi: float) -> int:
+    """The smallest a painted value may be drawn. Nine pixels is legible on a
+    96-DPI screen and a smudge on a 192-DPI one, so the floor scales too."""
+    return max(9, int(round(9 * dpi / 96.0)))
+
+
+def patch_font_px(style: dict, height: int, dpi: float) -> int:
+    """How tall, in pixels, to draw the value painted over a token.
+
+    Two sources, and they are not equally trustworthy. Chromium reports the
+    run's font size in points, which is exact about the text but silent about
+    the display, so it is converted with the DPI of the monitor the text is
+    actually on rather than with one number for the whole process. The token's
+    own bounding rectangle is measured in the pixels we draw in, so it cannot be
+    wrong about scale, but it describes a box around the text rather than the
+    letters in it, which is what the 0.68 is for.
+
+    The reported size wins when there is one. The rectangle only overrules a
+    number that cannot be a font size for a box that shape, because what the box
+    means exactly — the line box, or the tight bounds of the glyphs — differs
+    between runs, and a narrow band would throw away sizes that are right.
+    """
+    floor = min_font_px(dpi)
+    from_rect = max(floor, int(height * 0.68))
+    size = style.get("size")
+    if not size:
+        return from_rect
+    try:
+        px = int(round(float(size) * dpi / 72.0))
+    except (TypeError, ValueError):
+        return from_rect
+    if not 0.3 * height <= px <= 1.6 * height:
+        return from_rect
+    return max(floor, px)
 
 
 def exclude_from_capture(hwnd, what: str) -> None:
@@ -3073,7 +3149,10 @@ class Overlay:
         exclude_from_capture(hwnd, "overlay")
         self.fonts: dict[tuple, tkfont.Font] = {}
         self.families = {f.lower() for f in tkfont.families(root)}
-        self.dpi = root.winfo_fpixels("1i")
+        # tkinter's own screen DPI, which describes the primary monitor. Only
+        # the fallback: each frame asks the monitor Claude is actually on.
+        self.tk_dpi = root.winfo_fpixels("1i")
+        self.dpi = self.tk_dpi
         self.geom = None
         self.visible = False
 
@@ -3109,6 +3188,12 @@ class Overlay:
         if geom != self.geom:
             self.win.geometry(geom)
             self.geom = geom
+        dpi = monitor_dpi(win_rect, self.tk_dpi)
+        if dpi != self.dpi:
+            log(f"overlay: painting at {dpi:g} dpi ({dpi / 96:.2f}x) "
+                f"on the monitor at {win_rect}")
+            self.dpi = dpi
+        floor = min_font_px(dpi)
         c = self.canvas
         c.delete("all")
         for (l, t, r, b), value, bg, style in items:
@@ -3118,13 +3203,10 @@ class Overlay:
             family = self.resolve_family(style.get("family"))
             bold = float(style.get("weight") or 400) >= 600
             italic = bool(style.get("italic"))
-            if style.get("size"):
-                px = max(9, int(round(float(style["size"]) * self.dpi / 72)))
-            else:
-                px = max(9, int(h * 0.68))
+            px = patch_font_px(style, h, dpi)
             f = self.font(family, px, bold, italic)
             text = value
-            while f.measure(text) > w and px > 9:
+            while f.measure(text) > w and px > floor:
                 px -= 1
                 f = self.font(family, px, bold, italic)
             if f.measure(text) > w:
