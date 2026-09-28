@@ -133,6 +133,8 @@ URL to `https://safepii.hsenidmobile.com`, click Sign in, mask on claude.ai.
 | Logs | `docker compose logs -f app` / `keycloak` / `db` |
 | Users, roles, keys | `docker compose exec app maskroom-admin user list` … `key create NAME` |
 | Rules import/export | `docker compose exec app maskroom-admin policy export` |
+| Publish a desktop helper build | copy `SafePIIHelper-<version>.msi` into `data/ext/` on the server; `curl -s https://safepii.hsenidmobile.com/desktop/latest.json` to confirm |
+| Publish an extension build | copy the `.crx` into the same `data/ext/` folder |
 | Database backup | `docker compose exec -T db pg_dump -U maskroom maskroom \| gzip > data/backup-$(date +%F).sql.gz` |
 | Disk | `docker system df`; `du -sh data/`; run scratch dirs under `data/runs` are not swept |
 | Keycloak console | `https://safepii.hsenidmobile.com/sso/admin/` with `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` |
@@ -150,3 +152,12 @@ in well under a second; scanned-PDF OCR takes several seconds a page. Memory lim
   save about 0.8 GB of RAM.
 - The platform's `MASKING_SERVICE_URL` still points at the ai-guardrails service; wiring it
   to Maskroom is a separate decision.
+- `data/ext/` is the client distribution folder (`EXT_DIST_DIR`, which defaults to
+  `$MASKROOM_DATA_DIR/ext`). It is served without signing in, because a machine fetches an
+  update before anyone has signed in on it. The newest helper is chosen by **version
+  number**, so re-copying an old MSI cannot look like a new release; the newest extension
+  `.crx` is chosen by file date. Nothing is published until a file is put there: both
+  `/desktop/` routes answer 404 until an MSI is copied in, which is what this server does
+  today.
+- Helper builds must be code-signed before they are published to real users (PKG-2 in the
+  readiness doc). The routes will serve an unsigned MSI perfectly happily.

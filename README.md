@@ -29,7 +29,9 @@ Further reading: [`docs/TECHNICAL_DESIGN.md`](docs/TECHNICAL_DESIGN.md) (archite
 security, performance), [`docs/TECHNOLOGIES.md`](docs/TECHNOLOGIES.md) (techniques explained),
 [`ROADMAP.md`](ROADMAP.md) (evaluated next steps with pros/cons), and
 [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) (what stands between this and
-a regulated-customer sale, in priority order).
+a regulated-customer sale, in priority order). The decisions behind the shape of the system,
+and the options rejected at each one, are in [`docs/adr/`](docs/adr/);
+[`CONTEXT.md`](CONTEXT.md) fixes the vocabulary.
 
 ## Project layout
 
@@ -45,6 +47,9 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
   cli.py             the `maskroom` command
 extension/           Chrome extension for claude.ai (mask the composer, unmask replies on screen)
 desktop/             Windows helper for Claude Desktop (UI Automation; masks the composer in place)
+  packaging/         builds helper.py into a signed MSI (PyInstaller + WiX)
+enterprise/          fleet deployment: Chrome/Edge/Firefox policies, the helper's ADMX
+                     template, and RUNBOOK.md for the people who roll it out
 samples/             demo/test prompt sets with generated workbooks and a PDF (samples/README.md)
 webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
                      static/staging.html = LLM staging page; per-run scratch files
@@ -54,7 +59,8 @@ webui/               Flask UI + JSON API (app.py); static/index.html = file stud
   admin.py           (in maskroom/) the `maskroom-admin` command: db init, rules import/export
 tests/               pytest suite; tests/data/ holds the test corpus and the stress answer key
 scripts/             gen_stress.py (regenerate the stress workbook), time_excel.py (timing)
-docs/                technical design and technologies documents
+docs/                technical design, technologies, deployment and readiness documents
+  adr/               the decisions, each with the options rejected
 setup.sh             one-shot environment setup
 Dockerfile           container image for the web UI (gunicorn); docker-compose.yml runs it
                      beside Postgres; render.yaml / fly.toml deploy configs
@@ -230,6 +236,14 @@ pii_env/bin/maskroom tests/data/PII_Test_Sample_LK_SCANNED.pdf /tmp/check.pdf
 # expected: "[OCR] Page 1 has no text layer — running OCR" then "[Success] PDF saved …"
 pii_env/bin/pytest -q
 # expected: all tests pass (~3–5 min on the default model; adds the stress, round-trip and PDF gates)
+```
+
+The desktop helper's tests run on Linux against a fake accessibility layer, but the ones
+that build the real bar need a display and **skip silently without one** (23 of 88). On a
+headless machine or in CI, run them under a virtual display:
+
+```bash
+xvfb-run -a pii_env/bin/pytest -q tests/test_desktop_overlay.py
 ```
 
 If the second command prints a Tesseract warning instead of `[OCR]`, install `tesseract-ocr`
@@ -501,6 +515,33 @@ place — you still press send yourself — *Mask file* attaches the masked vers
 workbook or PDF instead of the original (guard also catches files dropped on claude.ai),
 and replies are restored on screen only. It is unsupported by Anthropic; see the extension
 README for the install steps and the terms-of-service caveat.
+
+### Desktop helper for Claude Desktop (Windows)
+
+Claude Desktop is a hardened Electron app that cannot load the extension, so
+[`desktop/`](desktop/README.md) holds a separate Windows program that does the same job
+from outside the application, through UI Automation — the mechanism Grammarly uses
+(ADR [0004](docs/adr/0004-desktop-protection-from-outside-the-app.md)). It shows the same
+bar above the composer, masks on *Mask* or `Ctrl+Shift+M`, guards the Enter key and the
+file dialog, restores the values in replies on screen without changing anything in Claude
+(ADR [0005](docs/adr/0005-replies-are-unmasked-on-the-screen.md)), and restores the files
+Claude produces as they land in Downloads. It keeps one vault per chat, identifying the
+chat from what is on screen (ADR
+[0007](docs/adr/0007-one-vault-per-chat-identified-from-the-screen.md)).
+
+The guard **fails closed**: when it cannot check a message, nothing is sent and the bar
+says why, which `onGuardFailure` makes a customer's choice (ADR
+[0006](docs/adr/0006-the-guard-intercepts-enter-and-fails-closed.md)). What it does *not*
+cover is stated in the same place as what it does: the Send button clicked with the mouse,
+images, macOS, and files that reach Claude through a mounted folder.
+
+For a fleet it builds into an MSI that installs per machine and takes its settings from
+Group Policy, which the user cannot override
+([`desktop/packaging/`](desktop/packaging/README.md),
+[`enterprise/policies/windows/admx/`](enterprise/policies/windows/admx/README.md), ADR
+[0008](docs/adr/0008-the-helper-ships-as-a-policy-locked-msi.md)). It must be code-signed
+before release, which is a purchase with a lead time and is tracked as PKG-2. Unsigned, it
+is testable but not shippable.
 
 ### Authentication
 
