@@ -1394,12 +1394,12 @@ def test_the_panel_prefers_the_side_with_room(bar):
     b = bar.b
     b.place((400, 500, 1000, 560))            # pill sits well down the screen
     b.root.update()
-    h, y = b.panel_placement(need=300, screen_h=1080)
+    h, y = b.panel_placement(300, (0, 0, 1920, 1080))
     assert h == 300 and y + h <= b.win.winfo_y(), "above the pill"
 
     b.place((400, 20, 1000, 80))              # pill near the top: no room above
     b.root.update()
-    h, y = b.panel_placement(need=300, screen_h=1080)
+    h, y = b.panel_placement(300, (0, 0, 1920, 1080))
     assert h == 300 and y >= b.win.winfo_y() + b.PILL_H, "below the pill"
 
 
@@ -1408,7 +1408,7 @@ def test_a_panel_taller_than_the_screen_is_capped_not_cut(bar):
     b = bar.b
     b.place((400, 500, 1000, 560))
     b.root.update()
-    h, y = b.panel_placement(need=4000, screen_h=1080)
+    h, y = b.panel_placement(4000, (0, 0, 1920, 1080))
     assert h < 4000, "capped"
     assert y >= b.MARGIN, "not off the top"
     assert y + h <= 1080 - b.MARGIN + b.TIGHT, "not off the bottom"
@@ -1418,7 +1418,7 @@ def test_the_taller_side_wins_when_neither_fits(bar):
     b = bar.b
     b.place((400, 900, 1000, 960))            # lots of room above, little below
     b.root.update()
-    _h, y = b.panel_placement(need=4000, screen_h=1080)
+    _h, y = b.panel_placement(4000, (0, 0, 1920, 1080))
     assert y < b.win.winfo_y(), "opened upwards, where the room is"
 
 
@@ -1435,3 +1435,42 @@ def test_the_scrollbar_appears_only_when_it_is_needed(bar):
     b.root.update()
     assert b.panel_at[4] is True, "a long panel has to scroll"
     assert b.vbar.winfo_ismapped()
+
+
+# ------------------------------------------------------------ several screens
+def test_the_panel_stays_on_the_screen_the_bar_is_on(bar):
+    """Reported with a second monitor: the bar on one screen, its panel on the
+    other. Placement was clamped to tkinter's screen size, which describes the
+    primary monitor and nothing else."""
+    b = bar.b
+    # A second monitor to the right of a 1920-wide primary.
+    second = (1920, 0, 3840, 1080)
+    b.place((2400, 600, 3000, 660))
+    b.root.update()
+    h, y = b.panel_placement(300, second)
+    x = min(max(second[0] + b.MARGIN, b.win.winfo_x() + b.pill_w - b.PANEL_W),
+            second[2] - b.PANEL_W - b.MARGIN)
+    assert x >= second[0], "the panel must not be dragged onto the primary screen"
+    assert x + b.PANEL_W <= second[2]
+    assert y >= second[1] and y + h <= second[3]
+
+
+def test_a_screen_that_does_not_start_at_zero_is_handled(bar):
+    """A monitor above or left of the primary has negative coordinates, which is
+    normal on Windows and breaks anything that assumes the origin."""
+    b = bar.b
+    above = (0, -1080, 1920, 0)
+    b.place((400, -500, 1000, -440))
+    b.root.update()
+    h, y = b.panel_placement(300, above)
+    assert y >= above[1], y
+    assert y + h <= above[3] + b.TIGHT
+
+
+def test_the_work_area_falls_back_to_the_screen_off_windows(bar):
+    """So the placement logic is exercised on any machine, not only Windows."""
+    helper = sys.modules["helper"]
+    area = helper.work_area(bar.b.win)
+    assert area[0] == 0 and area[1] == 0
+    assert area[2] == bar.b.root.winfo_screenwidth()
+    assert area[3] == bar.b.root.winfo_screenheight()

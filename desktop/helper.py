@@ -550,6 +550,9 @@ if _IS_WIN:
     _user32.OpenInputDesktop.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
     _user32.CloseDesktop.argtypes = [wt.HANDLE]
     _user32.SetWindowDisplayAffinity.argtypes = [wt.HWND, wt.DWORD]
+    _user32.MonitorFromWindow.restype = wt.HANDLE
+    _user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
+    _user32.GetMonitorInfoW.argtypes = [wt.HANDLE, ctypes.c_void_p]
     _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
     _user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
     _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
@@ -724,6 +727,40 @@ def workstation_locked() -> bool:
         return True
     _user32.CloseDesktop(desk)
     return False
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [("left", wt.LONG), ("top", wt.LONG),
+                ("right", wt.LONG), ("bottom", wt.LONG)]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", RECT),
+                ("rcWork", RECT), ("dwFlags", wt.DWORD)]
+
+
+def work_area(window):
+    """The usable area of the screen *this window is on*, excluding the taskbar.
+
+    tkinter's winfo_screenwidth and winfo_screenheight describe the primary
+    monitor and nothing else. Clamping to them dragged the panel back onto the
+    primary screen whenever Claude was on a second one, which is exactly what it
+    looked like: the bar on one screen, its panel on another.
+    """
+    if _IS_WIN:
+        try:
+            window.update_idletasks()
+            hwnd = _user32.GetParent(window.winfo_id()) or window.winfo_id()
+            monitor = _user32.MonitorFromWindow(hwnd, 2)   # NEAREST
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+            if monitor and _user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                r = info.rcWork
+                if r.right > r.left and r.bottom > r.top:
+                    return r.left, r.top, r.right, r.bottom
+        except Exception as e:  # noqa: BLE001
+            log(f"could not read the monitor this window is on: {e}")
+    return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
 
 
 def exclude_from_capture(hwnd, what: str) -> None:
@@ -3383,9 +3420,10 @@ class Bar:
 
     def show_somewhere(self) -> None:
         """When the composer is not on screen there is nothing to anchor to, so
-        a problem still gets shown, bottom right."""
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.win.geometry(f"{self.pill_w}x{self.PILL_H}+{sw - self.pill_w - 24}+{sh - 120}")
+        a problem still gets shown, bottom right of wherever the bar last was."""
+        _l, _t, right, bottom = work_area(self.win)
+        self.win.geometry(f"{self.pill_w}x{self.PILL_H}"
+                          f"+{right - self.pill_w - 24}+{bottom - 120}")
         self.win.deiconify()
 
     # ---- alerts
@@ -3477,24 +3515,26 @@ class Bar:
             else (-1 if getattr(event, "delta", 0) > 0 else 1)
         self.canvas.yview_scroll(step, "units")
 
-    def panel_placement(self, need: int, screen_h: int):
-        """Where the panel goes and how tall it may be.
+    def panel_placement(self, need: int, area):
+        """Where the panel goes and how tall it may be, on the screen the pill
+        is actually on.
 
         Whichever side of the pill has room takes it, preferring above so the
         panel does not cover the composer. When neither side fits the whole
         thing, the larger side is used and the contents scroll, rather than the
         panel running off the screen edge and being cut."""
+        _left, area_top, _right, area_bottom = area
         top = self.win.winfo_y()
         bottom = top + self.PILL_H
-        above = top - self.TIGHT - self.MARGIN
-        below = screen_h - bottom - self.TIGHT - self.MARGIN
+        above = top - area_top - self.TIGHT - self.MARGIN
+        below = area_bottom - bottom - self.TIGHT - self.MARGIN
         if need <= above:
             return need, top - need - self.TIGHT
         if need <= below:
             return need, bottom + self.TIGHT
         if above >= below:
             h = max(above, self.MIN_PANEL_H)
-            return h, max(self.MARGIN, top - h - self.TIGHT)
+            return h, max(area_top + self.MARGIN, top - h - self.TIGHT)
         return max(below, self.MIN_PANEL_H), bottom + self.TIGHT
 
     def place_panel(self) -> None:
@@ -3502,11 +3542,10 @@ class Bar:
             return
         self.panel.update_idletasks()
         need = self.body.winfo_reqheight() + 2
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        h, y = self.panel_placement(need, screen_h)
+        area = work_area(self.win)           # the screen the pill is on, not the primary one
+        h, y = self.panel_placement(need, area)
         x = self.win.winfo_x() + self.pill_w - self.PANEL_W
-        x = min(max(self.MARGIN, x), screen_w - self.PANEL_W - self.MARGIN)
+        x = min(max(area[0] + self.MARGIN, x), area[2] - self.PANEL_W - self.MARGIN)
         scrolls = need > h
         if (self.PANEL_W, h, x, y, scrolls) == self.panel_at:
             return                       # nothing moved: do not redraw and flicker
@@ -3706,10 +3745,12 @@ class Bar:
         self.tip_label.configure(text=text)
         self.tip.update_idletasks()
         w, h = self.tip.winfo_reqwidth(), self.tip.winfo_reqheight()
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        x = max(0, min(x, sw - w))
-        if y + h > sh:
-            y = max(0, y - h - 30)
+        # Clamped to the screen this is appearing on, not the primary one, or a
+        # tooltip over Claude on a second monitor jumps back to the first.
+        left, top, right, bottom = work_area(self.tip)
+        x = max(left, min(x, right - w))
+        if y + h > bottom:
+            y = max(top, y - h - 30)
         self.tip.geometry(f"+{x}+{y}")
         self.tip.deiconify()
 
