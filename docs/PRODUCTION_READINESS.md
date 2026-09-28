@@ -145,8 +145,11 @@ in `tests/test_desktop_overlay.py`.
    cannot tell an empty composer from a failed read, so it replays Enter.
 2. `desktop/helper.py:1702` — `current_composer()` returning `None` after any accessibility
    hiccup replays Enter unmasked.
-3. `desktop/helper.py:441` — `_exe_cache` never expires and Windows recycles process ids, so
-   a stale entry can make the guard never engage for the life of the process, silently.
+3. ~~`_exe_cache` never expires and Windows recycles process ids~~ **DONE 2026-09-28.**
+   Reported in the field as the bar appearing over a browser: a process id the helper had
+   cached as Claude had changed hands. The cache now expires after two seconds and is
+   bounded, and `claude_in_front()`, which decides whether a key is swallowed, never uses a
+   cached answer at all. Five tests cover it, including an id changing hands.
 4. `desktop/helper.py:1927` — Ctrl+V is intercepted only if the clipboard read succeeds
    inside the hook; a clipboard lock returns nothing and the files paste through.
 5. `desktop/helper.py:1936` — Ctrl+Enter is excluded from the guard. Worth five minutes of

@@ -87,6 +87,7 @@ import ctypes.wintypes as wt
 import collections
 import glob as globlib
 import json
+import ntpath
 import os
 import queue
 import re
@@ -589,13 +590,25 @@ def screen_pixel(x: int, y: int) -> str | None:
     if c == 0xFFFFFFFF:   # CLR_INVALID
         return None
     return f"#{c & 0xFF:02x}{(c >> 8) & 0xFF:02x}{(c >> 16) & 0xFF:02x}"
-_exe_cache: dict[int, str] = {}
+_exe_cache: dict[int, tuple[str, float]] = {}
+EXE_CACHE_TTL = 2.0      # seconds an answer about a process id may be reused
+EXE_CACHE_MAX = 512
 
 
-def process_exe(pid: int) -> str:
-    """Lower-cased executable name for a pid ('' when unreadable)."""
-    if pid in _exe_cache:
-        return _exe_cache[pid]
+def process_exe(pid: int, fresh: bool = False) -> str:
+    """Lower-cased executable name for a process id ('' when unreadable).
+
+    Cached, because the hooks ask on every wheel notch and every Enter, but only
+    briefly. Windows reuses process ids, and this cache used to keep an answer
+    for the life of the helper: a browser that inherited an id last seen as
+    Claude was then treated as Claude, so the bar appeared over it. In the other
+    direction Claude itself stopped being recognised and the guard silently
+    never engaged.
+    """
+    now = time.monotonic()
+    hit = _exe_cache.get(pid)
+    if not fresh and hit is not None and now - hit[1] < EXE_CACHE_TTL:
+        return hit[0]
     name = ""
     h = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if h:
@@ -603,10 +616,14 @@ def process_exe(pid: int) -> str:
             size = wt.DWORD(1024)
             buf = ctypes.create_unicode_buffer(size.value)
             if _kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-                name = os.path.basename(buf.value).lower()
+                # ntpath, not os.path: this is always a Windows path, and saying
+                # so lets the identity checks be tested off Windows.
+                name = ntpath.basename(buf.value).lower()
         finally:
             _kernel32.CloseHandle(h)
-    _exe_cache[pid] = name
+    if len(_exe_cache) > EXE_CACHE_MAX:
+        _exe_cache.clear()               # a long session must not accumulate ids
+    _exe_cache[pid] = (name, now)
     return name
 
 
@@ -2250,12 +2267,15 @@ class Hotkeys(threading.Thread):
         self._proc = None            # keep the callback alive for the hook's lifetime
 
     def claude_in_front(self) -> bool:
+        """Asked before the hook swallows a key, so it never uses a cached
+        answer: even a couple of seconds of staleness would mean holding
+        someone's Enter in a browser or a mail client."""
         hwnd = _user32.GetForegroundWindow()
         if not hwnd:
             return False
         pid = wt.DWORD(0)
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        exe = process_exe(pid.value)
+        exe = process_exe(pid.value, fresh=True)
         if exe != CLAUDE_EXE:
             log(f"hook: foreground is {exe or '?'} (pid {pid.value}), not {CLAUDE_EXE}")
         return exe == CLAUDE_EXE

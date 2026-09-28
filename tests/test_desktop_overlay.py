@@ -1319,3 +1319,71 @@ def test_the_outline_is_the_shape(bar):
         return 0.299 * r + 0.587 * g + 0.114 * bl
 
     assert brightness(b.EDGE) > brightness(b.LINE) > brightness(b.BG)
+
+
+# ------------------------------------------------- which application is this
+@pytest.fixture
+def procs(automation, monkeypatch):
+    """A fake Win32 where a process id can be made to change hands, which is
+    what Windows does when it reuses one."""
+    helper = sys.modules["helper"]
+    table, calls = {}, []
+
+    class FakeKernel:
+        def OpenProcess(self, access, inherit, pid):
+            return pid if pid in table else 0
+        def QueryFullProcessImageNameW(self, h, flags, buf, size):
+            calls.append(h)
+            buf.value = table[h]
+            return 1
+        def CloseHandle(self, h):
+            return 1
+
+    monkeypatch.setattr(helper, "_kernel32", FakeKernel())
+    helper._exe_cache.clear()
+    return types.SimpleNamespace(helper=helper, table=table, calls=calls)
+
+
+def test_the_answer_is_cached_so_the_hooks_are_not_asking_constantly(procs):
+    procs.table[900] = r"C:\Program Files\Claude\claude.exe"
+    assert procs.helper.process_exe(900) == "claude.exe"
+    assert procs.helper.process_exe(900) == "claude.exe"
+    assert len(procs.calls) == 1, "the second answer came from the cache"
+
+
+def test_a_reused_process_id_stops_being_mistaken_for_claude(procs, monkeypatch):
+    """The reported fault: the bar appeared over a browser. Windows had reused
+    a process id the helper had cached as Claude, and the cache never expired."""
+    helper = procs.helper
+    now = [1000.0]
+    monkeypatch.setattr(helper.time, "monotonic", lambda: now[0])
+    procs.table[900] = r"C:\Program Files\Claude\claude.exe"
+    assert helper.process_exe(900) == "claude.exe"
+
+    procs.table[900] = r"C:\Program Files\Google\Chrome\chrome.exe"   # id changes hands
+    assert helper.process_exe(900) == "claude.exe", "still cached, briefly"
+    now[0] += helper.EXE_CACHE_TTL + 0.1
+    assert helper.process_exe(900) == "chrome.exe", "and then corrected"
+
+
+def test_the_guard_never_trusts_a_cached_answer(procs):
+    """It swallows keys, so a couple of seconds of staleness would mean holding
+    someone's Enter in a browser or a mail client."""
+    helper = procs.helper
+    procs.table[900] = r"C:\Program Files\Claude\claude.exe"
+    helper.process_exe(900)
+    procs.table[900] = r"C:\Program Files\Google\Chrome\chrome.exe"
+    assert helper.process_exe(900, fresh=True) == "chrome.exe"
+    assert len(procs.calls) == 2
+
+
+def test_an_unreadable_process_is_not_claude(procs):
+    assert procs.helper.process_exe(4321) == ""
+
+
+def test_the_cache_cannot_grow_without_end(procs):
+    helper = procs.helper
+    for pid in range(helper.EXE_CACHE_MAX + 50):
+        procs.table[pid] = rf"C:\p{pid}\app.exe"
+        helper.process_exe(pid)
+    assert len(helper._exe_cache) <= helper.EXE_CACHE_MAX + 1
