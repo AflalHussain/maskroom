@@ -68,7 +68,17 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
 
 - SafePII becomes a *file server* to the model, not only a masking API. That is a new client
   shape: tools for listing, reading, searching and writing back, each one masking or restoring
-  as it goes.
+  as it goes. `desktop/broker.py` is the prototype.
+- **The broker must route by file shape, not treat everything as text.** A table sent through
+  `/api/mask` comes back with its identifiers masked and its people not, because a name in a
+  comma-separated row has no context around it. Tabular files go through `/api/process`, which
+  masks by column. Verified against a live server, and the reason a broker can look like it
+  works while leaking.
+- **File names are replaced with handles by default, not masked.** Masking a name is
+  best-effort in a way masking content is not — a path separator or an underscore defeats the
+  detector, and a probe that gets around them read a file extension as a surname. A handle
+  cannot leak what the detector misses; masking names stays available for a folder whose names
+  matter to the work, and is documented as best-effort.
 - The strict profile costs the model shell access to the real files. For an analyst with
   spreadsheets that is acceptable; for a developer it is not, which is why the working profile
   exists.

@@ -805,8 +805,22 @@ profile is for customers who need Cowork to actually execute against their files
 
 #### 5.6.5 What is hard, and must be designed rather than discovered
 
-- **Filenames disclose before a byte is read** (`Nimal_Perera_KYC_2026.xlsx`). Names need
-  masking too, with a stable map; in a mirror the file must *be* the masked name.
+- **Filenames disclose before a byte is read** (`Nimal_Perera_KYC_2026.xlsx`), and masking one
+  is harder than masking its contents. Measured against a live server while building the
+  prototype: `Nimal Perera - loan.csv` masks, `kyc/Nimal Perera - loan.csv` does **not** —
+  the path separator glues the folder to the name and the detector is reading prose — and
+  `Nimal_Perera_loan.csv` does not either. Probing a separator-normalised spelling and putting
+  the findings back recovers both, but the same probe turned `notes.md` into
+  `notes.TOK_PERSON_…`: `md` read as a surname, and the extension the model needs was
+  destroyed. So masking a name is best-effort in a way masking content is not, and the safe
+  default is not to mask names at all but to **replace them with opaque handles**
+  (`d01/f003.csv`) and keep the map. A handle cannot leak what the detector misses.
+- **A table is not prose, and masking it as prose leaks the people in it.** Also measured:
+  a `.csv` sent to `/api/mask` came back with every NIC and phone number masked and every
+  **name left in place**, because a name in `Nimal Perera,912345678V,0771234567,…` has no
+  context around it for a name recognizer to use. Tabular files have to go through the
+  server's tabular pipeline (`/api/process`), which masks by column. This is the single
+  easiest way to build a broker that looks like it works and does not.
 - **Search stops finding things.** The agent greps a real name against masked content and gets
   nothing. Masking the *query* with the same session vault makes an exact value match its own
   token, because tokens are deterministic. Partial and fuzzy searches still fail, and that
@@ -860,6 +874,12 @@ and loopback HTTP is the one plain-HTTP endpoint the validator accepts, so the b
 MCP-over-HTTP endpoint on `127.0.0.1` served by the helper, not an `.mcpb` stdio extension
 (§5.6.3(b)). What remains for a real machine is a five-minute confirmation that a Cowork task
 with no folder attached lists and calls a loopback managed server's tools.
+
+**Since answered by building it.** `desktop/broker.py` is the prototype, exercised against a
+real SafePII server rather than a stub, and both findings above came out of that: names and
+tables each need their own treatment, and neither was visible against a fake. The MCP surface
+itself — `initialize`, `tools/list`, `tools/call` over one loopback HTTP endpoint — was the
+easy part.
 
 **3. What does the agent do with a visibly tokenised tool result?** Not a fact to look up, and
 the answer is already in this repository: masked text needs to be *announced*, which is why

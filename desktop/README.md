@@ -137,6 +137,59 @@ One file, [`helper.py`](helper.py), standard library plus `uiautomation`.
   `X-API-Key` for the legacy key, and the `/api/session`, `/api/mask`, `/api/unmask`,
   `/api/me`, `/auth/logout` routes.
 
+## The file broker (prototype)
+
+A folder attached to Cowork goes around every guard above: the agent reads it inside a sandbox
+VM, and nothing here is in that path. [`broker.py`](broker.py) is the other half of the answer
+— an MCP server that serves a folder to Claude with the personal data already replaced, so
+that it is the only way files get in. The reasoning, and why the reads cannot be intercepted
+instead, are in [`docs/DESKTOP_APP_RESEARCH.md`](../docs/DESKTOP_APP_RESEARCH.md) §5.6 and
+ADR [0009](../docs/adr/0009-folder-access-is-masked-by-being-the-only-way-in.md).
+
+```bash
+python desktop/broker.py --root ~/work --server https://safepii.example.com
+```
+
+It prints the managed configuration to deploy:
+
+```json
+{"managedMcpServers": [{"name": "safepii-files",
+                        "url": "http://127.0.0.1:47821/mcp", "transport": "http"}]}
+```
+
+HTTP on the loopback interface rather than a stdio extension, because a server an
+administrator pushes may speak only `http` or `sse`, and loopback is the one plain-HTTP
+endpoint Claude Desktop's URL check accepts without complaint. Pair it with
+`allowedWorkspaceFolders: []`, which makes the raw folder unattachable, and the broker is the
+only path left.
+
+| Tool | What it does |
+|---|---|
+| `list_files` | Everything in the folder, with what SafePII cannot check listed but marked **NOT SERVED** rather than quietly missing. |
+| `read_file` | One file, masked. Lines are numbered **after** masking, because a token is longer than the value it replaced and an offset taken from the real bytes points somewhere else. |
+| `search_files` | Masks the search term first, so looking for a real name finds that name's token. Only whole values match, and the reply says so. |
+| `write_file` | Restores the tokens and writes to an output folder *beside* the served one, never over the original. Tokens from another session are reported, not guessed. |
+
+**File names.** By default a name becomes a handle — `d01/f003.csv` — because a name discloses
+as much as the file does and masking one is only best-effort: measured against a live server,
+`kyc/Nimal Perera - loan.csv` is not recognised at all, and a probe that gets around the
+separator read the `md` in `notes.md` as a surname. A handle cannot leak what the detector
+misses. `--names mask` is available for a folder whose names carry meaning the work needs, and
+`--names real` for one whose names are known to be safe.
+
+**What it will not serve.** Source code (masking it would corrupt it), spreadsheets and PDFs
+(they need the server's document pipeline, which this prototype does not call yet), and
+anything it cannot read as text. A file SafePII cannot check is a file that must not reach the
+model, which is the same choice the guard makes about a message it cannot check. Tables *are*
+served, through `/api/process` rather than `/api/mask`: sent as prose, a `.csv` comes back with
+its identifiers masked and its people still in place.
+
+**Not yet wired into the helper.** It runs as its own process, takes the server address and
+credentials on the command line, and starts its own SafePII session per folder. Running it
+inside the helper — sharing the sign-in, the config and the vault the bar already holds, so
+hover and copy restore what a file put on the screen — is the next step.
+`tests/test_broker.py` covers it with both ends over real HTTP.
+
 ## Diagnosing the overlay
 
 Every walk reports its whole outcome, so any fragment of `%APPDATA%\SafePII\helper.log`
