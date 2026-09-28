@@ -843,7 +843,6 @@ def bar(monkeypatch):
     helper = pytest.importorskip("helper")
     monkeypatch.setattr(helper, "log", lambda m: None)
     monkeypatch.setattr(helper, "make_no_activate", lambda w: None)
-    monkeypatch.setattr(helper, "round_corners", lambda w, small=False: None)
     monkeypatch.setattr(helper, "exclude_from_capture", lambda h, what: None)
     monkeypatch.setattr(helper, "_IS_WIN", False)
     # Overlay and DropBlocker reach for Win32 directly when they are built
@@ -1303,3 +1302,20 @@ def test_a_redraw_that_changes_nothing_does_not_move_the_panel(bar):
     at = bar.b.panel_at
     bar.b.place_panel()
     assert bar.b.panel_at == at
+
+
+def test_the_outline_is_the_shape(bar):
+    """Square corners, so the border carries the whole form and is brighter than
+    the dividers inside. An approximated curve could not antialias and showed
+    every step, so this is the honest version of the same intent."""
+    helper = sys.modules["helper"]
+    assert not hasattr(helper, "round_corners"), "the rounding apparatus is gone"
+    b = bar.b
+    assert b.win.cget("bg") == b.EDGE
+    assert b.EDGE != b.LINE, "the outline has to read as an edge, not a divider"
+
+    def brightness(hex_colour):
+        r, g, bl = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+        return 0.299 * r + 0.587 * g + 0.114 * bl
+
+    assert brightness(b.EDGE) > brightness(b.LINE) > brightness(b.BG)
