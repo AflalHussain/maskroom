@@ -89,6 +89,12 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
   of tokens.
 - A folder session is one more vault. Because restore already searches every known vault
   (ADR 0007), the chat surfaces — hover, copy, the screen overlay — need no changes.
+- **Dropping the values and stopping the folder are separate things**, learned on the first
+  Windows run. The helper forgets the real values when the desk is unattended, and that was
+  wired to stop serving too; locking the screen then killed a folder mid-task. But the folder
+  is masked by the server, so nothing about it depends on what this process holds: the values
+  go, the serving continues, and the values are fetched again when the person returns. Signing
+  out is different and does stop it, because the broker serves with that sign-in.
 - `mode: "ro"` is stronger than the public documentation suggests, and only in Cowork. The
   schema states that Bash there runs with the folder "mounted read-only at the OS level" and
   file-tool writes blocked in-process; the caveat about shells not enforcing it applies to Code

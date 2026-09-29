@@ -200,10 +200,11 @@ makes SafePII the only way in.
 
 One folder at a time: sharing a second replaces the first. Two would mean two vaults to explain
 and two sets of handles that look alike, for a case nobody has asked for. Sharing survives the
-restart that every update causes, and says so rather than resuming silently; it stops by itself
-when the vaults are dropped, at sign-out or after the idle timeout, because a folder still
-answering with tokens this process can no longer turn back into values is worse than one that
-is not being served. An administrator can switch sharing off entirely, fix the name policy, or
+restart that every update causes, and says so rather than resuming silently. Locking the screen
+or leaving the desk drops the real values held here, as it always has, but **does not stop the
+folder**: what the folder serves is masked by the server, not by anything held in this process,
+and the values are fetched again when you come back. Signing out does stop it, because the
+broker serves with that sign-in and there is nothing left to mask with. An administrator can switch sharing off entirely, fix the name policy, or
 move the port ([`enterprise/policies/windows/admx/`](../enterprise/policies/windows/admx/README.md)).
 
 `tests/test_broker.py` covers the broker with both ends over real HTTP; `tests/test_desktop_sharing.py`

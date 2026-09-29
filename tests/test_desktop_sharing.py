@@ -8,6 +8,7 @@ joins the ones restore searches, that the count they were shown is the count
 that gets served, and that the serving stops when the real values do.
 """
 import json
+import socket
 import sys
 import threading
 import types
@@ -44,6 +45,32 @@ def folder(tmp_path):
     return root
 
 
+_started = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_serving():
+    """Every broker a test starts is stopped afterwards. One left running holds
+    the port, and the next test's share fails for a reason that has nothing to do
+    with what it is testing."""
+    yield
+    while _started:
+        try:
+            _started.pop().stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def free_port() -> int:
+    """A port nothing is on. Not 0: the helper reads `sharePort or DEFAULT_PORT`,
+    so a zero means the default, and every test would fight over one port."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 def a_worker(helper, cfg, folder=None):
     """A worker with only what sharing needs, as the bar would have set it up."""
     a = helper.Automation.__new__(helper.Automation)
@@ -58,6 +85,7 @@ def a_worker(helper, cfg, folder=None):
             if path == "/api/session" else
             {"ok": True, "status": 200, "data": {"mappings": {"TOK_PERSON_1": "Nimal Perera"}}}))
     a.sharing = helper.Sharing(cfg, a.server)
+    _started.append(a.sharing)
     a.emitted = []
     a.emit = lambda **kw: a.emitted.append(kw)
     a.toasts = []
@@ -69,7 +97,7 @@ def a_worker(helper, cfg, folder=None):
 def config(tmp_path, **kw):
     cfg = {"serverUrl": "http://127.0.0.1:1", "token": "tok", "apiKey": "",
            "sessions": {}, "chats": {}, "sharing": True, "shareRoot": "",
-           "shareNames": "handles", "shareAllowCode": False, "sharePort": 0}
+           "shareNames": "handles", "shareAllowCode": False, "sharePort": free_port()}
     cfg.update(kw)
     return cfg
 
@@ -186,15 +214,43 @@ def test_stopping_serves_nothing_and_forgets_the_folder(helper, folder, tmp_path
         urllib.request.urlopen(f"http://127.0.0.1:{port}/mcp", timeout=3)
 
 
-def test_dropping_the_real_values_stops_serving_the_folder(helper, folder, tmp_path):
-    """Sign-out and the idle timer both drop the vaults. A folder still being
-    served would keep answering with tokens this process can no longer turn back
-    into values, which is worse than not serving it."""
+def test_an_unattended_desk_drops_the_values_and_keeps_serving(helper, folder, tmp_path):
+    """Reported on the first Windows run: locking the screen stopped the folder
+    mid-task. Dropping the values is right -- held indefinitely they are a
+    standing disclosure on an empty desk -- but it says nothing about the folder,
+    which is masked by the server and not by anything held in this process."""
+    a = a_worker(helper, config(tmp_path))
+    a.cmd_share_folder(str(folder))
+    assert a.index.vault, "the folder's values were fetched"
+    a.forget_vaults("the workstation was locked")
+    assert not a.index.vault, "the values are gone"
+    assert a.sharing.active, "and the folder is still being served"
+
+
+def test_the_values_come_back_when_the_person_does(helper, folder, tmp_path, monkeypatch):
+    """Otherwise the tokens on screen stay unreadable until something else
+    happens to refresh them."""
+    a = a_worker(helper, config(tmp_path))
+    a.cmd_share_folder(str(folder))
+    a.forget_vaults("the workstation was locked")
+    a.forgot = True
+    monkeypatch.setattr(helper, "workstation_locked", lambda: False)
+    monkeypatch.setattr(helper, "idle_seconds", lambda: 2)
+    a.poll_idle()
+    assert a.index.vault.get("TOK_PERSON_1") == "Nimal Perera"
+    assert a.forgot is False, "and it does not keep re-fetching"
+
+
+def test_signing_out_does_stop_the_folder(helper, folder, tmp_path, monkeypatch):
+    """The broker serves with this sign-in. Once it is gone there is nothing to
+    mask with, so the folder has to stop with it."""
+    monkeypatch.setattr(helper, "webbrowser", types.SimpleNamespace(open=lambda u: None))
     a = a_worker(helper, config(tmp_path))
     a.cmd_share_folder(str(folder))
     assert a.sharing.active
-    a.forget_vaults("signed out")
+    a.cmd_sign_out()
     assert not a.sharing.active
+    assert a.cfg["token"] == ""
 
 
 # --------------------------------------------------------------- refusals

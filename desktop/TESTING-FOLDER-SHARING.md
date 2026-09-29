@@ -361,7 +361,8 @@ Remove-Item -Path HKCU:\SOFTWARE\Policies\Claude -Recurse -Force
 | A real name in the output of step 13 | The table went through the prose path | Send me the output — this is the important one |
 | Claude sees no tools, but Part 4 worked | The registry policy did not take | Check step 23 first, then compare with the `managed configuration:` log line |
 | Tooltip shows nothing on a token (step 25) | The folder's vault is not in the helper | Send the log; check the `vault index:` line |
-| Sharing stopped by itself | Sign-out, or the idle timeout dropped the vaults | Expected. Share again; `forgetAfterIdleMinutes` controls the timeout |
+| Sharing stopped by itself | You signed out | Expected: the broker serves with that sign-in. Share again after signing back in |
+| Step 11 worked, then "Unable to connect" later | The helper was closed or restarted, or you pressed Stop | Check the panel: if it offers **Share a folder** again, nothing is being served. Locking the screen is **not** a cause — that drops the values on screen but leaves the folder served |
 | Helper will not start after an update | A stale `.pyc`, or the two files disagree | Delete `__pycache__`, redo steps 3 and 4 together |
 
 ## What has not been tested anywhere yet

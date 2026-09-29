@@ -1097,6 +1097,7 @@ class Automation(threading.Thread):
         self.claude_win = None        # top-level Claude window (overlay covers it)
         self.files = FileApi(self.server)
         self.sharing = Sharing(cfg, self.server)
+        self.forgot = False           # values dropped for an unattended desk, to be re-fetched
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_edit = None
         self.dialog_confirm = None
@@ -1325,15 +1326,26 @@ class Automation(threading.Thread):
         disclosure on an unattended desk."""
         minutes = float(self.cfg.get("forgetAfterIdleMinutes") or 0)
         if not self.index.vault:
+            # The values were dropped while nobody was here. Serving never
+            # stopped -- the folder is masked by the server, not by anything
+            # held in this process -- so when the person comes back, fetch them
+            # again and the tokens on screen can be read once more.
+            if self.forgot and not workstation_locked() and (idle_seconds() or 0) < 60:
+                self.forgot = False
+                if self.sharing.active or self.cfg.get("sessions"):
+                    log("back at the desk: fetching the vaults again")
+                    self.load_vault()
             return
         if workstation_locked():
             self.forget_vaults("the workstation was locked")
+            self.forgot = True
             return
         if minutes <= 0:
             return
         idle = idle_seconds()
         if idle is not None and idle > minutes * 60:
             self.forget_vaults(f"no input for {minutes:g} minutes")
+            self.forgot = True
 
     # ---- which chat is on screen
     def chat_identity(self) -> tuple[str | None, str | None]:
@@ -1629,17 +1641,16 @@ class Automation(threading.Thread):
         SHARED["index"] = self.index
         self.set_tip(None)
         self.emit(type="overlay", items=None)
-        # A folder still being served would keep answering with tokens this
-        # process can no longer turn back into values, which is a worse state
-        # than not serving it.
-        if self.sharing.active:
-            self.cmd_stop_sharing()
         log(f"vaults cleared ({n} tokens): {why}")
 
     def cmd_sign_out(self) -> None:
         r = self.server.api("/auth/logout", "POST", {})
         self.cfg["token"] = ""
         save_config(self.cfg)
+        # The broker serves with this sign-in. Once it is gone there is nothing
+        # left to mask with, so the folder stops with it.
+        if self.sharing.active:
+            self.cmd_stop_sharing()
         self.forget_vaults("signed out")
         redirect = (r["data"] or {}).get("redirect") if r["ok"] else None
         if redirect and redirect.startswith("http"):
