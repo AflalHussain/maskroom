@@ -210,7 +210,7 @@ move the port ([`enterprise/policies/windows/admx/`](../enterprise/policies/wind
 covers the flow above, including that nothing is served until the user says so.
 
 **To try it on Windows**, [`TESTING-FOLDER-SHARING.md`](TESTING-FOLDER-SHARING.md) is a
-thirty-step walkthrough with a folder of samples in [`sample-folder/`](sample-folder/README.md)
+thirty-step walkthrough with a folder of samples in [`sample-folder/`](SAMPLE-FOLDER.md)
 — eight files, one per path through the broker: prose, a table whose names sit in rows with no
 sentence around them, a name that is only in the file's name, a name inside a path, a file with
 no personal data at all, and the three kinds of thing that are refused. It proves the broker

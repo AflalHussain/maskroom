@@ -75,6 +75,11 @@ missing feature.
 scp -r aflal@192.168.101.80:/hms/apps/sovereign-ai/masking/desktop/sample-folder .
 ```
 
+Copy nothing else into it. Every file in that folder is a file Claude is given,
+and an extra one shifts every handle along by one, which is how the numbers below
+stop matching. What each sample is for is described in
+[`SAMPLE-FOLDER.md`](SAMPLE-FOLDER.md), which is deliberately kept outside it.
+
 **If any scp times out**, read it carefully: a *timeout* means the packets never
 arrive, a *refusal* means they arrived and nothing was listening. Diagnose with
 
@@ -165,9 +170,21 @@ f007.py   -- NOT SERVED: source code: masking it would corrupt it ...
 d01/f008.txt  (201 bytes)
 ```
 
-Handle numbers may differ; what matters is that no real name appears.
+**Handles are assigned in walk order, so match by byte size, not by number.** If
+your listing has an extra file, everything after it shifts along:
 
-**13.** Read the table — this is the one that matters most:
+| Size | Which sample it is |
+|---|---|
+| 128 | `Kamala_Silva_statement.csv` — the name is the only personal data |
+| 271 | `branch_targets.md` — nothing personal at all |
+| **258** | `loans_overdue.csv` — **the table, used in step 13** |
+| **518** | `notes.md` — **the prose, used in step 14** |
+| 201 | `kyc/Nimal Perera - KYC.txt`, under `d01/` |
+
+The three refusals are named by their extension, so those are unambiguous.
+
+**13.** Read the table — this is the one that matters most. Use **the 258-byte
+`.csv`** from your own listing; it is `f005.csv` in a clean copy:
 
 ```powershell
 (Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"f005.csv"}}}').result.content[0].text
@@ -177,7 +194,7 @@ Every name, NIC and mobile must be a `TOK_…`. Branch, amount and days stay as
 they are. **If a name comes back in the clear, stop and send me the output**:
 that is the leak the tabular route exists to prevent.
 
-**14.** Read the prose file:
+**14.** Read the prose file — **the 518-byte `.md`**, `f006.md` in a clean copy:
 
 ```powershell
 (Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"f006.md"}}}').result.content[0].text
@@ -190,7 +207,7 @@ detection quality in the engine (MASK-2), not the broker, which serves what the
 server returns. Everything else should be masked, and the salary and the two
 ordinary dates should not be.
 
-**15.** Check the refusal is a refusal:
+**15.** Check the refusal is a refusal, using the `.py` from your listing:
 
 ```powershell
 (Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"f007.py"}}}').result.content[0].text

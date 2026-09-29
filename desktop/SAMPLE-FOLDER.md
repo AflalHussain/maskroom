@@ -1,9 +1,14 @@
-# A folder to share with Claude, for testing
+# `sample-folder/` — a folder to share with Claude, for testing
 
 Eight files, each there to exercise one path through the file broker
-([`../broker.py`](../broker.py)). Share this folder from the bar and compare what
-comes back with the table below. The full walkthrough is
-[`../TESTING-FOLDER-SHARING.md`](../TESTING-FOLDER-SHARING.md).
+([`broker.py`](broker.py)). Share [`sample-folder/`](sample-folder/) from the bar
+and compare what comes back with the table below. The full walkthrough is
+[`TESTING-FOLDER-SHARING.md`](TESTING-FOLDER-SHARING.md).
+
+This description lives **outside** the folder on purpose. Anything inside it is a
+file Claude is given: it would be masked and served like the rest, it would take
+a handle of its own and shift every other handle along by one, and it would tell
+Claude what the test is about.
 
 Everything here is invented. The names, NICs, mobile numbers and accounts follow
 Sri Lankan formats so the locale recognizers have something real to work on, but
@@ -34,7 +39,7 @@ Measured against a live server on 2026-09-29, not assumed:
 - **A name can be missed in prose.** In `notes.md`, "Call Nimal Perera on …" came
   back with the name in the clear, while the same name in the table and in the
   next paragraph was masked. That is detection recall, tracked as MASK-2 in
-  [`../../docs/PRODUCTION_READINESS.md`](../../docs/PRODUCTION_READINESS.md), and
+  [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md), and
   not something the broker can fix — it serves what the server returns.
 - **A false positive costs nothing but looks odd.** "Monthly salary 185,000" came
   back as "`TOK_DATE_TIME_…` salary 185,000": the word *Monthly* was read as a
