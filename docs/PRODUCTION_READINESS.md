@@ -326,6 +326,13 @@ naming the administrator, the settings window greys the field, and it is never w
 into the user's file. Ships with an ADMX/ADML template and a deployment README at
 `enterprise/policies/windows/admx/`.
 
+**Corrected 2026-09-29:** it did not. `POLICY_KEY` was spelled with doubled backslashes
+inside a raw string, so the helper opened a key that does not exist and read no policy at
+all; the MSI and the templates had it right, and only the code reading it was wrong. Every
+administrator setting was silently ignored between the lock being added and this fix.
+`tests/test_enterprise_policy.py` now compares the Group Policy template against the helper,
+including the key itself.
+
 ### PKG-2 — No installer, signing, version or auto-update — **build kit DONE 2026-09-28; certificate outstanding**
 The install today is "install Python, pip install a package, run a script". There is no
 version string anywhere in `desktop/helper.py`. An unsigned program that installs a global

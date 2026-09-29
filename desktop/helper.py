@@ -196,7 +196,7 @@ def adopt_old_settings() -> None:
         log(f"could not adopt the previous settings: {e}")
 
 
-POLICY_KEY = r"SOFTWARE\\Policies\\SafePII\\Helper"
+POLICY_KEY = r"SOFTWARE\Policies\SafePII\Helper"
 # What an administrator may set, and how it is stored in the registry. Anything
 # outside this list is ignored, so a stray value cannot break the helper.
 POLICY_TYPES = {"serverUrl": str, "guard": bool, "unmask": bool, "overlay": bool,
