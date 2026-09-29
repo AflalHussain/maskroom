@@ -430,7 +430,11 @@ def automation(monkeypatch):
     root = Path(__file__).resolve().parent.parent
     monkeypatch.syspath_prepend(str(root / "desktop"))
     helper = pytest.importorskip("helper")
-    return helper.Automation.__new__(helper.Automation)
+    a = helper.Automation.__new__(helper.Automation)
+    # __init__ is bypassed here, so whatever a method under test legitimately
+    # expects to exist is provided: an idle Sharing, serving nothing.
+    a.sharing = helper.Sharing({"serverUrl": "http://127.0.0.1:1"}, None)
+    return a
 
 
 def test_a_picked_name_without_its_extension_is_resolved(automation, tmp_path):

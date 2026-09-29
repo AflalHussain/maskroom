@@ -79,6 +79,21 @@ Set 0 to keep them until the workstation is locked. The helper's own default is 
       <string id="OverlayDebug_Help">Enabled: the helper records every line it examines while placing the overlay, which is what a support engineer needs to diagnose a token that is not being painted.
 
 This is noisy and it records the shape of conversation content, so leave it Not Configured or Disabled except while investigating a fault.</string>
+      <string id="Sharing">Let users share a folder with Claude</string>
+      <string id="Sharing_Help">SafePII can serve a folder to Claude Desktop with the personal data in it replaced, so that the folder itself never has to be attached. Disable this and the option does not appear.
+
+Pair it with Claude Desktop's own allowedWorkspaceFolders policy: set that to an empty list and SafePII becomes the only way a file reaches the model. Leaving it unset lets users attach folders directly, which SafePII cannot see.</string>
+      <string id="ShareNames">What Claude sees a shared file called</string>
+      <string id="ShareNames_Help">A file name can disclose as much as the file does.
+
+Handles (recommended) replaces every name with d01/f003.csv and keeps the mapping, so nothing in a name can leak. Masked names are best-effort: a name is prose to the detector, and a path separator or an underscore can defeat it. Real names are for folders whose names are known to carry nothing personal.</string>
+      <string id="ShareNames_Handles">Opaque handles (recommended)</string>
+      <string id="ShareNames_Mask">Mask names where recognised</string>
+      <string id="ShareNames_Real">Use the real names</string>
+      <string id="ShareAllowCode">Serve source files as well</string>
+      <string id="ShareAllowCode_Help">Off by default. Masking a source file can corrupt it, and identifiers, keys and host names are easily mistaken for personal data, so SafePII refuses to serve code rather than mangle or leak it. Enable this only for a folder where that trade is understood.</string>
+      <string id="SharePort">Loopback port for the file broker</string>
+      <string id="SharePort_Help">The port on 127.0.0.1 that SafePII serves the folder on, and that Claude Desktop's managedMcpServers policy must point at. The default is 47821. Change it only if something else on the machine already uses that port, and change both sides together.</string>
     </stringTable>
 
     <presentationTable>
@@ -98,6 +113,13 @@ This is noisy and it records the shape of conversation content, so leave it Not 
       </presentation>
       <presentation id="ForgetAfterIdle">
         <decimalTextBox refId="ForgetAfterIdleValue" defaultValue="15">Minutes</decimalTextBox>
+      </presentation>
+      <presentation id="ShareNames">
+        <dropdownList refId="ShareNamesEnum" noSort="true"
+                      defaultItem="0">File names</dropdownList>
+      </presentation>
+      <presentation id="SharePort">
+        <decimalTextBox refId="SharePortValue" defaultValue="47821">Port</decimalTextBox>
       </presentation>
     </presentationTable>
   </resources>

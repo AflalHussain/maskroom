@@ -184,11 +184,30 @@ model, which is the same choice the guard makes about a message it cannot check.
 served, through `/api/process` rather than `/api/mask`: sent as prose, a `.csv` comes back with
 its identifiers masked and its people still in place.
 
-**Not yet wired into the helper.** It runs as its own process, takes the server address and
-credentials on the command line, and starts its own SafePII session per folder. Running it
-inside the helper — sharing the sign-in, the config and the vault the bar already holds, so
-hover and copy restore what a file put on the screen — is the next step.
-`tests/test_broker.py` covers it with both ends over real HTTP.
+**How a user shares a folder.** From the bar, not from Claude's folder picker — that picker
+has nothing to offer once an administrator has emptied `allowedWorkspaceFolders`, which is what
+makes SafePII the only way in.
+
+1. Chevron → **Share a folder with Claude…** → the Windows folder picker.
+2. A confirmation says what will happen before anything happens: *"Claude would see 9 files
+   (140 kB), masked. 2 would not be served: 1 source code, 1 needs the document pipeline. File
+   names are replaced with handles."* The count is arithmetic over extensions, so it appears
+   instantly and costs no server call.
+3. **Share it.** The panel then reads *Sharing loans* with a **Stop** beside it, and the hover
+   readout says so too, because a shared folder is a live path off the machine.
+4. In Claude, the user just asks. The folder's vault joins the ones restore searches, so a
+   value Claude read out of a file is a real value under the mouse in the chat.
+
+One folder at a time: sharing a second replaces the first. Two would mean two vaults to explain
+and two sets of handles that look alike, for a case nobody has asked for. Sharing survives the
+restart that every update causes, and says so rather than resuming silently; it stops by itself
+when the vaults are dropped, at sign-out or after the idle timeout, because a folder still
+answering with tokens this process can no longer turn back into values is worse than one that
+is not being served. An administrator can switch sharing off entirely, fix the name policy, or
+move the port ([`enterprise/policies/windows/admx/`](../enterprise/policies/windows/admx/README.md)).
+
+`tests/test_broker.py` covers the broker with both ends over real HTTP; `tests/test_desktop_sharing.py`
+covers the flow above, including that nothing is served until the user says so.
 
 ## Diagnosing the overlay
 

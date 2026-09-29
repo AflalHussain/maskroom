@@ -642,6 +642,64 @@ def wire_tools() -> list[dict]:
     return [{k: t[k] for k in ("name", "description", "inputSchema")} for t in TOOLS]
 
 
+# ----------------------------------------------------------------- before sharing
+def preview(root, allow_code: bool = False) -> dict:
+    """What would be served, counted without asking the server anything.
+
+    The person about to share a folder is entitled to know what leaves it before
+    it starts leaving, and the answer has to come back instantly: this walks the
+    tree and classifies by extension, with no network and no masking.
+    """
+    root = Path(root).expanduser()
+    out = {"root": str(root), "served": 0, "refused": 0, "bytes": 0,
+           "refusals": {}, "examples": []}
+    if not root.is_dir():
+        out["error"] = f"{root} is not a folder"
+        return out
+    ext_of = lambda p: p.suffix.lower()      # noqa: E731
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            path = Path(dirpath) / fn
+            ext = ext_of(path)
+            if ext in TEXT_TYPES or ext in TABULAR_TYPES or (allow_code and ext in CODE_TYPES):
+                out["served"] += 1
+                try:
+                    out["bytes"] += path.stat().st_size
+                except OSError:
+                    pass
+                if len(out["examples"]) < 3:
+                    out["examples"].append(path.relative_to(root).as_posix())
+            else:
+                out["refused"] += 1
+                if ext in CODE_TYPES:
+                    why = "source code"
+                elif ext in DOCUMENT_TYPES:
+                    why = "needs the document pipeline"
+                else:
+                    why = f"cannot be checked ({ext or 'no extension'})"
+                out["refusals"][why] = out["refusals"].get(why, 0) + 1
+    return out
+
+
+def describe(p: dict) -> str:
+    """The preview as one short paragraph for the panel."""
+    if p.get("error"):
+        return p["error"]
+    if not p["served"] and not p["refused"]:
+        return "That folder is empty."
+    kb = p["bytes"] // 1024
+    said = [f"Claude would see {p['served']} file(s)"
+            + (f" ({kb} kB)" if kb else "") + ", masked."]
+    if p["refused"]:
+        parts = ", ".join(f"{n} {why}" for why, n in sorted(p["refusals"].items()))
+        said.append(f"{p['refused']} would not be served: {parts}.")
+    said.append("File names are replaced with handles.")
+    return " ".join(said)
+
+
 # ----------------------------------------------------------------- MCP over HTTP
 def handle_rpc(ws: Workspace, msg: dict) -> dict | None:
     """One JSON-RPC message in, one response out (None for a notification)."""

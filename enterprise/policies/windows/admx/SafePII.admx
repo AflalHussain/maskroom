@@ -143,5 +143,49 @@
       <enabledValue><decimal value="1"/></enabledValue>
       <disabledValue><decimal value="0"/></disabledValue>
     </policy>
+    <policy name="Sharing" class="Machine" displayName="$(string.Sharing)"
+            explainText="$(string.Sharing_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="sharing">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="ShareNames" class="Machine" displayName="$(string.ShareNames)"
+            explainText="$(string.ShareNames_Help)"
+            presentation="$(presentation.ShareNames)"
+            key="SOFTWARE\Policies\SafePII\Helper">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <elements>
+        <enum id="ShareNamesEnum" valueName="shareNames" required="true">
+          <item displayName="$(string.ShareNames_Handles)"><value><string>handles</string></value></item>
+          <item displayName="$(string.ShareNames_Mask)"><value><string>mask</string></value></item>
+          <item displayName="$(string.ShareNames_Real)"><value><string>real</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="ShareAllowCode" class="Machine" displayName="$(string.ShareAllowCode)"
+            explainText="$(string.ShareAllowCode_Help)" key="SOFTWARE\Policies\SafePII\Helper"
+            valueName="shareAllowCode">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+
+    <policy name="SharePort" class="Machine" displayName="$(string.SharePort)"
+            explainText="$(string.SharePort_Help)"
+            presentation="$(presentation.SharePort)"
+            key="SOFTWARE\Policies\SafePII\Helper">
+      <parentCategory ref="Helper"/>
+      <supportedOn ref="SUPPORTED_SAFEPII_1"/>
+      <elements>
+        <decimal id="SharePortValue" valueName="sharePort"
+                 minValue="1024" maxValue="65535" required="true"/>
+      </elements>
+    </policy>
   </policies>
 </policyDefinitions>

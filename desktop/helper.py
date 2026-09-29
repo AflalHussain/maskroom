@@ -103,6 +103,16 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+# The file broker lives beside this file and is imported, not spawned, so it
+# shares the sign-in, the settings and the vault the bar already holds. Optional:
+# a helper without it keeps every other guard.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import broker as broker_mod
+except Exception as _broker_err:  # noqa: BLE001
+    broker_mod = None
+    _BROKER_IMPORT_ERROR = _broker_err
+
 try:
     import uiautomation as auto
 except ImportError:  # pragma: no cover
@@ -146,6 +156,13 @@ DEFAULTS = {
     "restoreUnreadable": "ask",  # ask | always | never: send Office files whose tokens
                                  # cannot be seen from here to the server to be checked
     "preambleSent": [],
+    # Sharing a folder with Claude through the file broker (docs/adr/0009).
+    # Off until the user picks a folder: nothing is served by simply installing.
+    "sharing": True,           # may the user share a folder at all
+    "shareRoot": "",           # the folder being served, remembered across restarts
+    "shareNames": "handles",   # handles | mask | real (see broker.Names)
+    "shareAllowCode": False,   # serve source files too
+    "sharePort": 47821,        # the loopback port the managed policy points at
 }
 OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
 OVERLAY_WALK_MIN_S = 0.30   # never re-walk the visible lines more often than this
@@ -196,14 +213,17 @@ def adopt_old_settings() -> None:
         log(f"could not adopt the previous settings: {e}")
 
 
-POLICY_KEY = r"SOFTWARE\\Policies\\SafePII\\Helper"
+POLICY_KEY = r"SOFTWARE\Policies\SafePII\Helper"
 # What an administrator may set, and how it is stored in the registry. Anything
 # outside this list is ignored, so a stray value cannot break the helper.
 POLICY_TYPES = {"serverUrl": str, "guard": bool, "unmask": bool, "overlay": bool,
                 "fileGuard": bool, "blockDrops": bool, "watchDownloads": bool,
                 "deleteTokenCopy": bool, "restoreUnreadable": str, "onGuardFailure": str,
                 "preamble": bool, "forgetAfterIdleMinutes": int, "filesDir": str,
-                "downloadsDir": str, "overlayDebug": bool}
+                "downloadsDir": str, "overlayDebug": bool,
+                # Sharing: whether it is allowed at all, and on what terms.
+                "sharing": bool, "shareNames": str, "shareAllowCode": bool,
+                "sharePort": int}
 POLICY: dict = {}      # what the administrator has actually set, this run
 
 
@@ -949,6 +969,106 @@ def find_page_document():
     return best, best_ctrl, best_win
 
 
+# ----------------------------------------------------------------------------- sharing
+class Sharing:
+    """One folder at a time, served to Claude through the file broker.
+
+    The user picks the folder from the bar rather than from Claude's own folder
+    picker, because with `allowedWorkspaceFolders` set to `[]` there is nothing
+    for that picker to offer: the policy removes every raw folder and this is
+    what replaces it. Deciding here also means the person is told what will be
+    served before it starts being served, which Claude's picker cannot do.
+
+    One at a time, deliberately. Two folders means two vaults to explain and two
+    sets of handles that look alike, for a case nobody has asked for yet.
+    """
+
+    def __init__(self, cfg: dict, server, on_change=None):
+        self.cfg = cfg
+        self.server = server            # only for its credentials and address
+        self.on_change = on_change or (lambda: None)
+        self.httpd = None
+        self.thread = None
+        self.workspace = None
+        self.root = ""
+        self.session = ""
+        self.error = ""
+
+    @property
+    def active(self) -> bool:
+        return self.httpd is not None
+
+    @property
+    def name(self) -> str:
+        return ntpath.basename(self.root.rstrip("\\/")) or self.root
+
+    def client(self):
+        """A broker client with this helper's credentials, so signing in once
+        signs in the folder too."""
+        return broker_mod.Client(self.cfg["serverUrl"],
+                                 token=(self.cfg.get("token") or "").strip(),
+                                 api_key=(self.cfg.get("apiKey") or "").strip())
+
+    def start(self, root: str, session: str) -> str:
+        """Serve `root` through `session`. Returns "" on success, else why not.
+
+        The session is made by the caller, with the same code that makes one for
+        a chat, so there is one place that talks to /api/session, one set of
+        credentials and one way a 401 is handled.
+        """
+        if broker_mod is None:
+            return "This build has no file broker."
+        if not self.cfg.get("sharing", True):
+            return ("Your administrator does not allow folders to be shared."
+                    if locked("sharing") else "Sharing folders is switched off.")
+        if not session:
+            return "SafePII has no session for that folder."
+        self.stop()
+        try:
+            workspace = broker_mod.Workspace(
+                Path(root), self.client(), session=session,
+                allow_code=bool(self.cfg.get("shareAllowCode", False)),
+                names=str(self.cfg.get("shareNames") or "handles"))
+            port = int(self.cfg.get("sharePort") or broker_mod.DEFAULT_PORT)
+            httpd = broker_mod.make_server(workspace, port)
+        except (broker_mod.BrokerError, OSError, ValueError) as e:
+            self.error = str(e)
+            log(f"sharing: could not serve {root}: {e}")
+            return self.error
+        self.httpd, self.workspace, self.root, self.session, self.error = (
+            httpd, workspace, str(workspace.root), session, "")
+        self.thread = threading.Thread(target=httpd.serve_forever, args=(0.2,),
+                                       name="broker", daemon=True)
+        self.thread.start()
+        self.cfg["shareRoot"] = self.root
+        save_config(self.cfg)
+        log(f"sharing {self.root} on port {port} as session {session[:8]}")
+        # The line an administrator needs to point Claude Desktop at this, in the
+        # log rather than in a wiki that will go stale.
+        log("managed configuration: " + " ".join(self.policy_snippet().split()))
+        self.on_change()
+        return ""
+
+    def stop(self) -> None:
+        if self.httpd is not None:
+            log(f"sharing: stopped serving {self.root}")
+            try:
+                self.httpd.shutdown()
+                self.httpd.server_close()
+            except Exception as e:  # noqa: BLE001
+                log(f"sharing: the broker did not stop cleanly: {e}")
+        self.httpd = self.thread = self.workspace = None
+        self.root = self.session = ""
+        if self.cfg.get("shareRoot"):
+            self.cfg["shareRoot"] = ""
+            save_config(self.cfg)
+        self.on_change()
+
+    def policy_snippet(self) -> str:
+        port = int(self.cfg.get("sharePort") or 47821)
+        return broker_mod.policy_snippet(port) if broker_mod else ""
+
+
 # ----------------------------------------------------------------------------- UIA worker
 class Automation(threading.Thread):
     """Owns every UI Automation and server call. Talks to the UI through `events`."""
@@ -976,6 +1096,7 @@ class Automation(threading.Thread):
         self.clip_ignore_until = 0.0
         self.claude_win = None        # top-level Claude window (overlay covers it)
         self.files = FileApi(self.server)
+        self.sharing = Sharing(cfg, self.server)
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_edit = None
         self.dialog_confirm = None
@@ -1007,6 +1128,10 @@ class Automation(threading.Thread):
         this loop is alive, so a thread that dies takes the user's Enter key
         with it: one unguarded accessibility error used to be enough."""
         with auto.UIAutomationInitializerInThread():
+            try:
+                self.resume_share()
+            except Exception as e:  # noqa: BLE001
+                log(f"sharing: could not resume: {e}")
             while True:
                 try:
                     self.cycle()
@@ -1416,6 +1541,70 @@ class Automation(threading.Thread):
         self.bind_session(sid, url, title)
         return sid
 
+    # ---- sharing a folder (ADR 0009)
+    def remember_share_session(self, sid: str, name: str) -> None:
+        """Put the folder's vault among the ones restore searches.
+
+        Deliberately not bind_session: that would also make this the session the
+        *chat* masks into, and a folder's vault is not a conversation's.
+        """
+        meta = self.cfg["sessions"].setdefault(sid, {})
+        meta["title"] = f"Folder: {name}"
+        meta["folder"] = True
+        meta["last"] = time.time()
+        keep = set(self.known_sessions())
+        self.cfg["sessions"] = {s: m for s, m in self.cfg["sessions"].items() if s in keep}
+        save_config(self.cfg)
+
+    def cmd_share_folder(self, path: str) -> None:
+        # Checked before a session is made, so a folder that cannot be served
+        # does not leave one behind on the server.
+        if broker_mod is None or not self.cfg.get("sharing", True):
+            self.toast(self.sharing.start(path, "x") or "Sharing is unavailable.", error=True)
+            return
+        if not Path(path).is_dir():
+            self.toast(f"{path} is not a folder.", error=True)
+            return
+        err = self.sharing.start(path, self.create_session())
+        if err:
+            self.toast(err, error=True)
+            self.emit(type="sharing", root="", name="", error=err)
+            return
+        name = self.sharing.name
+        self.remember_share_session(self.sharing.session, name)
+        # Fetch it now so a value read out of a file restores on screen from the
+        # first reply, rather than after whatever happens to refresh next.
+        self.load_vault(self.sharing.session)
+        counts = broker_mod.preview(self.sharing.root,
+                                    bool(self.cfg.get("shareAllowCode", False)))
+        self.emit(type="sharing", root=self.sharing.root, name=name,
+                  session=self.sharing.session, served=counts.get("served", 0))
+        self.toast(f"Sharing {name} with Claude — {counts.get('served', 0)} file(s), masked")
+
+    def cmd_stop_sharing(self) -> None:
+        was = self.sharing.name
+        self.sharing.stop()
+        self.emit(type="sharing", root="", name="")
+        if was:
+            self.toast(f"Stopped sharing {was}")
+
+    def resume_share(self) -> None:
+        """A folder that was being served when the helper last ran.
+
+        Resumed rather than dropped, because the helper restarts on every update
+        and a folder quietly disappearing mid-task is worse than one that comes
+        back. Never silent: it says so on the bar.
+        """
+        root = (self.cfg.get("shareRoot") or "").strip()
+        if not root or not self.cfg.get("sharing", True) or broker_mod is None:
+            return
+        if not Path(root).is_dir():
+            log(f"sharing: {root} is gone; not resuming")
+            self.cfg["shareRoot"] = ""
+            save_config(self.cfg)
+            return
+        self.commands.put(("share_folder", root))
+
     def cmd_new_session(self) -> None:
         """A fresh vault for the chat on screen, replacing whatever it was bound to."""
         url, title = self.chat_identity()
@@ -1440,6 +1629,11 @@ class Automation(threading.Thread):
         SHARED["index"] = self.index
         self.set_tip(None)
         self.emit(type="overlay", items=None)
+        # A folder still being served would keep answering with tokens this
+        # process can no longer turn back into values, which is a worse state
+        # than not serving it.
+        if self.sharing.active:
+            self.cmd_stop_sharing()
         log(f"vaults cleared ({n} tokens): {why}")
 
     def cmd_sign_out(self) -> None:
@@ -3349,6 +3543,7 @@ class Bar:
         self.settings_win = None
         self.blocked = False               # a blocking alert opened the panel once
         self.update = None                 # (version, url) when the server has a newer build
+        self.sharing = ("", 0)             # (folder name, files served) while a folder is shared
         self.rect = None
         self.visible = False
 
@@ -3463,7 +3658,12 @@ class Bar:
         """The four toggles, reported on hover instead of shown as controls."""
         parts = [("Guard", self.cfg.get("guard", True)), ("Unmask", self.cfg.get("unmask", True)),
                  ("Overlay", self.cfg.get("overlay", True)), ("Files", self.cfg.get("fileGuard", True))]
-        return "SafePII\n" + "   ".join(f"{name} {'on' if on else 'off'}" for name, on in parts)
+        said = "SafePII\n" + "   ".join(f"{name} {'on' if on else 'off'}" for name, on in parts)
+        # A shared folder is a live path out of the machine, so it belongs where
+        # the state is read at a glance, not only inside the panel.
+        if self.sharing[0]:
+            said += f"\nSharing {self.sharing[0]} ({self.sharing[1]} files)"
+        return said
 
     def show_pill_tip(self) -> None:
         if self.panel or not self.visible:
@@ -3702,6 +3902,8 @@ class Bar:
                                 ("Files", "fileGuard", "toggle_file_guard")):
             self.toggle_row(body, label, bool(self.cfg.get(key, True)), cmd, locked(key))
 
+        self.folder_rows(body)
+
         if self.recent:
             tk.Frame(body, bg=self.LINE, height=1).pack(fill="x", pady=(self.GAP, 0))
             tk.Label(body, text="Recent", bg=self.BG, fg=self.DIM, font=("Segoe UI", 8),
@@ -3770,6 +3972,90 @@ class Bar:
                            font=("Segoe UI", 8, "underline"), cursor="hand2", anchor="w")
             got.pack(anchor="w", pady=(2, 0))
             got.bind("<Button-1>", lambda e, m=p["msg"]: self.clear_problem(m))
+
+    def folder_rows(self, body) -> None:
+        """Sharing a folder with Claude, from the place the user already comes to
+        for masking. Claude's own folder picker has nothing to offer once the
+        administrator has emptied `allowedWorkspaceFolders`; this replaces it, and
+        unlike that picker it can say what will be served before it is."""
+        if broker_mod is None or not self.cfg.get("sharing", True):
+            return
+        tk.Frame(body, bg=self.LINE, height=1).pack(fill="x", pady=(self.GAP, 0))
+        name, served = self.sharing
+        if name:
+            row = tk.Frame(body, bg=self.BG, height=self.ROW_H)
+            row.pack(fill="x", padx=self.PAD, pady=1)
+            row.pack_propagate(False)
+            tk.Label(row, text=f"Sharing {name}", bg=self.BG, fg=self.FG,
+                     font=("Segoe UI", 9), anchor="w").pack(side="left")
+            stop = tk.Label(row, text="Stop", bg=self.BG, fg=self.DIM,
+                            font=("Segoe UI", 9, "underline"), cursor="hand2", anchor="e")
+            stop.pack(side="right")
+            stop.bind("<Button-1>", lambda e: self.commands.put(("stop_sharing",)))
+            tk.Label(body, text=f"{served} file(s) masked as Claude reads them.",
+                     bg=self.BG, fg=self.DIM, font=("Segoe UI", 8), anchor="w",
+                     wraplength=self.PANEL_W - 2 * self.PAD,
+                     justify="left").pack(fill="x", padx=self.PAD)
+            return
+        row = tk.Frame(body, bg=self.BG, height=self.ROW_H, cursor="hand2")
+        row.pack(fill="x", padx=self.PAD, pady=1)
+        row.pack_propagate(False)
+        tk.Label(row, text="Share a folder with Claude…", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI", 9), anchor="w").pack(side="left")
+        for w in (row,) + tuple(row.winfo_children()):
+            w.bind("<Button-1>", lambda e: self.pick_folder())
+
+    def pick_folder(self) -> None:
+        """Pick, then read what would happen, then decide. One folder at a time:
+        the panel shows what is being served and nothing is guessed at."""
+        try:
+            from tkinter import filedialog
+            chosen = filedialog.askdirectory(parent=self.root, mustexist=True,
+                                             title="Share a folder with Claude")
+        except Exception as e:  # noqa: BLE001
+            log(f"sharing: the folder picker failed: {e}")
+            return
+        if not chosen:
+            return
+        counts = broker_mod.preview(chosen, bool(self.cfg.get("shareAllowCode", False)))
+        if counts.get("error"):
+            self.alert(counts["error"], "warn")
+            return
+        if not counts["served"]:
+            self.alert(f"Nothing in that folder can be masked, so there is nothing "
+                       f"to share. {broker_mod.describe(counts)}", "warn")
+            return
+        self.confirm_share(chosen, counts)
+
+    def confirm_share(self, path: str, counts: dict) -> None:
+        """What will be served, before it is. The same shape as ask_restore:
+        consent is asked once, in words, with the count in it."""
+        w = tk.Toplevel(self.root)
+        w.title("SafePII")
+        w.resizable(False, False)
+        w.attributes("-topmost", True)
+        w.configure(bg=self.BG)
+        tk.Label(w, text=f"Share {ntpath.basename(path.rstrip('/' + chr(92))) or path}?",
+                 bg=self.BG, fg=self.FG, font=("Segoe UI Semibold", 10),
+                 anchor="w").pack(fill="x", padx=16, pady=(14, 4))
+        tk.Label(w, text=broker_mod.describe(counts), bg=self.BG, fg=self.DIM,
+                 font=("Segoe UI", 9), wraplength=380, justify="left",
+                 anchor="w").pack(fill="x", padx=16)
+        tk.Label(w, text="Claude never sees the folder itself, only what SafePII hands it. "
+                         "Anything it writes back lands beside the folder, not in it.",
+                 bg=self.BG, fg=self.DIM, font=("Segoe UI", 8), wraplength=380,
+                 justify="left", anchor="w").pack(fill="x", padx=16, pady=(6, 0))
+        btns = tk.Frame(w, bg=self.BG)
+        btns.pack(fill="x", padx=16, pady=14)
+        share = tk.Label(btns, text="Share it", bg=self.ACCENT, fg="#0e1420", padx=14, pady=4,
+                         font=("Segoe UI", 9, "bold"), cursor="hand2")
+        share.pack(side="left")
+        share.bind("<Button-1>", lambda e: (w.destroy(),
+                                            self.commands.put(("share_folder", path))))
+        cancel = tk.Label(btns, text="Cancel", bg=self.BG, fg=self.DIM,
+                          font=("Segoe UI", 9), cursor="hand2", padx=10)
+        cancel.pack(side="left")
+        cancel.bind("<Button-1>", lambda e: w.destroy())
 
     def toggle_row(self, parent, label: str, on: bool, cmd: str, fixed: bool = False) -> None:
         row = tk.Frame(parent, bg=self.BG, height=self.ROW_H,
@@ -3861,6 +4147,11 @@ class Bar:
                         self.check_label.configure(text=ev["msg"], fg="#065f46" if ev["ok"] else "#991b1b")
                 elif t == "session":
                     self.alert(f"New session for {ev.get('title') or 'this chat'}", "info")
+                elif t == "sharing":
+                    self.sharing = (ev.get("name") or "", ev.get("served") or 0)
+                    self.render_pill()
+                    if self.panel:
+                        self.build_panel()
                 elif t in ("guard", "unmask", "overlay_state", "file_guard"):
                     # The toggles live in the panel and the hover tooltip now,
                     # both of which read cfg, so one redraw covers all four.

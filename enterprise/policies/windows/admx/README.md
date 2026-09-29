@@ -44,6 +44,27 @@ reg add "HKLM\SOFTWARE\Policies\SafePII\Helper" /v guard /t REG_DWORD /d 1 /f
 
 The helper reads policy at startup, so restart it after a change.
 
+## Sharing a folder
+
+`sharing` governs whether the helper will serve a folder to Claude Desktop at all
+(see [`desktop/README.md`](../../../../desktop/README.md) and ADR 0009). It is
+only half of the control: set Claude Desktop's own `allowedWorkspaceFolders` to
+an empty list in the same breath, or a user can still attach a folder directly
+and SafePII will never see it.
+
+```
+reg add "HKLM\SOFTWARE\Policies\Claude" /v allowedWorkspaceFolders /t REG_SZ /d "[]" /f
+reg add "HKLM\SOFTWARE\Policies\SafePII\Helper" /v sharing /t REG_DWORD /d 1 /f
+```
+
+Then point Claude Desktop at the broker, which the helper prints to its log when
+it starts serving:
+
+```json
+{"managedMcpServers": [{"name": "safepii-files",
+                        "url": "http://127.0.0.1:47821/mcp", "transport": "http"}]}
+```
+
 ## What can be set
 
 | Setting | Value | Type |
@@ -59,6 +80,10 @@ The helper reads policy at startup, so restart it after a change.
 | When the guard cannot run | `onGuardFailure` | `hold` / `warn` |
 | Forget real values after idle minutes | `forgetAfterIdleMinutes` | number |
 | Diagnostic detail in the log | `overlayDebug` | 1 / 0 |
+| Let users share a folder with Claude | `sharing` | 1 / 0 |
+| What Claude sees a shared file called | `shareNames` | `handles` / `mask` / `real` |
+| Serve source files as well | `shareAllowCode` | 1 / 0 |
+| Loopback port for the file broker | `sharePort` | number (default 47821) |
 
 A value that is not on this list is ignored and the helper says so in its log,
 so a typo cannot stop it starting.
