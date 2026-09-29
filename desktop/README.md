@@ -209,6 +209,13 @@ move the port ([`enterprise/policies/windows/admx/`](../enterprise/policies/wind
 `tests/test_broker.py` covers the broker with both ends over real HTTP; `tests/test_desktop_sharing.py`
 covers the flow above, including that nothing is served until the user says so.
 
+**To try it on Windows**, [`TESTING-FOLDER-SHARING.md`](TESTING-FOLDER-SHARING.md) is a
+thirty-step walkthrough with a folder of samples in [`sample-folder/`](sample-folder/README.md)
+— eight files, one per path through the broker: prose, a table whose names sit in rows with no
+sentence around them, a name that is only in the file's name, a name inside a path, a file with
+no personal data at all, and the three kinds of thing that are refused. It proves the broker
+before Claude Desktop is involved at all, so a failure afterwards is known to be the policy.
+
 ## Diagnosing the overlay
 
 Every walk reports its whole outcome, so any fragment of `%APPDATA%\SafePII\helper.log`

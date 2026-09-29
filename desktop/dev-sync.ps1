@@ -6,11 +6,15 @@
 #
 # Files are written next to this script. helper.py is (re)started as a child
 # process of this window; close the window (or Ctrl+C) to stop both.
+#
+# broker.py has to land beside helper.py: the helper imports it from its own
+# folder, and without it the bar simply has no "Share a folder" row -- it does
+# not complain, so a missing file looks like a missing feature.
 # Dev-only: plain HTTP on the office LAN, no auth.
 
 param(
     [string]$Source = "http://10.27.149.168:8765",
-    [string[]]$Files = @("helper.py", "README.md"),
+    [string[]]$Files = @("helper.py", "broker.py", "README.md"),
     [int]$IntervalSeconds = 2,
     [switch]$NoRun
 )
