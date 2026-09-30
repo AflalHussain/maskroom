@@ -69,6 +69,16 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
 - SafePII becomes a *file server* to the model, not only a masking API. That is a new client
   shape: tools for listing, reading, searching and writing back, each one masking or restoring
   as it goes. `desktop/broker.py` is the prototype.
+- **Telling Claude Desktop where the broker is has three doors, and only two are usable.**
+  The managed `managedMcpServers` policy takes HTTP on `127.0.0.1` and is the deployment
+  answer. The app's own *Add a connector* field is not: it is for a remote server and requires
+  an https address, which a loopback endpoint cannot offer without a certificate the machine
+  trusts. The third is `claude_desktop_config.json` and stdio, where Claude starts the process
+  itself — `broker.py --stdio --bridge` relays to the helper's own broker, so the folder is
+  still served once, by the helper holding the sign-in and the vault, and the transport is the
+  only thing that changes. The bridge answers `initialize` and `tools/list` on its own when
+  nothing is being served, because Claude Desktop starts it before anybody has shared a folder
+  and a failure at that moment marks the connector broken for the session.
 - **The broker must route by file shape, not treat everything as text.** A table sent through
   `/api/mask` comes back with its identifiers masked and its people not, because a name in a
   comma-separated row has no context around it. Tabular files go through `/api/process`, which

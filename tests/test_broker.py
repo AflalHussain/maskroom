@@ -536,3 +536,81 @@ def test_the_policy_snippet_is_what_an_administrator_needs(served):
     assert entry["transport"] == "http", "a managed server may not speak stdio"
     assert entry["url"].startswith("http://127.0.0.1:"), "loopback is the accepted plain-HTTP host"
     assert entry["headers"]["Authorization"] == "Bearer abc"
+
+
+# ------------------------------------------------------------------ the stdio bridge
+def drive_stdio(monkeypatch, handle, messages):
+    """Feed newline-delimited JSON-RPC in, collect what comes out."""
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("".join(json.dumps(m) + "\n" for m in messages)))
+    out = io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    broker.serve_stdio(handle)
+    return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+
+
+def test_a_client_that_starts_the_process_gets_the_same_tools(served, monkeypatch):
+    """Claude Desktop's own connector field wants an https address, because it is
+    for a remote server. A process it starts and talks to over a pipe has no
+    address, and so no certificate to argue about."""
+    ws, _peer = served
+    out = drive_stdio(monkeypatch, lambda m: broker.handle_rpc(ws, m), [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "read_file", "arguments": {"path": "notes.md"}}}])
+    assert out[0]["result"]["serverInfo"]["name"] == broker.NAME
+    assert len(out[1]["result"]["tools"]) == 4
+    assert "TOK_PERSON_2615D96E" in out[2]["result"]["content"][0]["text"]
+
+
+def test_a_notification_produces_no_line_at_all(served, monkeypatch):
+    """A line written for a notification would desynchronise the stream."""
+    ws, _peer = served
+    out = drive_stdio(monkeypatch, lambda m: broker.handle_rpc(ws, m), [
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+    assert len(out) == 1 and out[0]["id"] == 1
+
+
+def test_rubbish_on_the_input_does_not_end_the_session(served, monkeypatch):
+    import io
+    ws, _peer = served
+    monkeypatch.setattr("sys.stdin", io.StringIO(
+        "not json\n\n" + json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping"}) + "\n"))
+    out = io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    broker.serve_stdio(lambda m: broker.handle_rpc(ws, m))
+    assert [json.loads(l)["id"] for l in out.getvalue().splitlines() if l.strip()] == [9]
+
+
+def test_the_bridge_relays_to_the_helpers_own_broker(served, monkeypatch):
+    """One folder, served once, by the helper that holds the sign-in and the
+    vault. The bridge only changes the transport Claude sees."""
+    _ws, peer = served
+    out = drive_stdio(monkeypatch, broker.forward_to(peer.url), [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "read_file", "arguments": {"path": "notes.md"}}}])
+    assert "TOK_PERSON_2615D96E" in out[0]["result"]["content"][0]["text"]
+
+
+def test_with_nothing_being_served_the_connector_still_looks_healthy(monkeypatch):
+    """Claude Desktop starts this process when it starts, which is before anybody
+    has shared anything. Failing there marks the connector broken for the whole
+    session; answering normally and explaining at the point of use does not."""
+    dead = "http://127.0.0.1:9/mcp"           # discard port: nothing ever listens
+    monkeypatch.setattr(broker, "log", lambda m: None)
+    out = drive_stdio(monkeypatch, broker.forward_to(dead, timeout=2), [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "list_files", "arguments": {}}}])
+    assert out[0]["result"]["serverInfo"]["name"] == broker.NAME, "initialize must not fail"
+    assert len(out[1]["result"]["tools"]) == 4, "the tools are still advertised"
+    said = out[2]["result"]["content"][0]["text"]
+    assert out[2]["result"]["isError"] is True
+    assert "share one from the SafePII bar" in said, "and the model is told what to ask for"
+    assert len(out) == 3, "the notification produced nothing"

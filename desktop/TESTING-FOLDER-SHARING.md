@@ -281,9 +281,43 @@ can be used here."* If a folder still attaches, the policy did not land and
 nothing below will mean much.
 
 > The exact registry encoding for `managedMcpServers` — a JSON document in a flat
-> registry value — is the one thing I could not confirm from the application
-> package. If step 24 finds no tools but Part 4 worked, this is the suspect, and
-> the helper logs the shape it expects (Part 7).
+> registry value — is the one thing that could not be confirmed from the
+> application package: the Linux build carries the macOS plist reader but not the
+> Windows registry one. If step 24 finds no tools but Part 4 worked, this is the
+> suspect, and the helper logs the shape it expects (Part 7).
+
+**If the policy will not take, use stdio instead and carry on.** Claude Desktop's
+own *Add a connector* field is not an alternative — it is for a remote server and
+asks for an https address, which a loopback endpoint cannot give it. The third
+door is a server Claude starts itself, which has no address at all.
+
+**23a.** Open, or create, `%APPDATA%\Claude\claude_desktop_config.json` and put
+this in it, with your own path to `broker.py`:
+
+```json
+{
+  "mcpServers": {
+    "safepii-files": {
+      "command": "py",
+      "args": ["C:\\Users\\aflal.h\\safepii-test\\broker.py", "--stdio", "--bridge"]
+    }
+  }
+}
+```
+
+`--bridge` is the important word: this process does not serve the folder itself,
+it relays to **the helper's** broker, so the folder is still served once by the
+helper that holds your sign-in and the vault. If `py` is not found, use the full
+path that `(Get-Command py).Source` prints.
+
+**23b.** Quit Claude Desktop from the tray and start it again. The connector
+should appear and look healthy **even with no folder shared** — that is
+deliberate, since Claude starts this process before you have shared anything.
+Asking it to list files then says *"Ask the person to share one from the SafePII
+bar"*, which is the answer you want rather than a broken connector.
+
+Keep `allowedWorkspaceFolders: []` from step 20 either way: it is what stops a raw
+folder being attached, and it is independent of how Claude finds the broker.
 
 ---
 

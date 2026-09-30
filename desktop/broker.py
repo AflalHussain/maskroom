@@ -831,6 +831,97 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, reply)
 
 
+# ----------------------------------------------------------------- MCP over stdio
+# Claude Desktop's own "add a connector" field wants an https address, because it
+# is meant for a *remote* server. A loopback endpoint is not what that door is
+# for -- the managed-server policy is, and it is the one place plain http on
+# 127.0.0.1 is accepted. Where that policy cannot be used, this is the third
+# door: a server Claude Desktop starts itself and talks to over a pipe, which
+# has no address and so no certificate to argue about.
+#
+# It is a *bridge*, not a second broker. Claude starts this tiny process, and it
+# relays to the helper's own HTTP broker, so the folder is still served once, by
+# the helper, with the sign-in and the vault the bar holds.
+
+def offline_reply(msg: dict) -> dict | None:
+    """What to say when the helper is not serving a folder.
+
+    Answering `initialize` and `tools/list` ourselves matters: Claude Desktop
+    starts this process when *it* starts, which is usually before anybody has
+    shared anything. A failure there marks the connector broken for the whole
+    session. Answering normally and explaining at the point of use turns a dead
+    connector into a sentence the model can pass on.
+    """
+    mid, method = msg.get("id"), msg.get("method")
+    if method == "initialize":
+        asked = (msg.get("params") or {}).get("protocolVersion")
+        return {"jsonrpc": "2.0", "id": mid, "result": {
+            "protocolVersion": asked if isinstance(asked, str) and asked else PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": NAME, "version": __version__},
+            "instructions": "SafePII serves one folder at a time, masked. Nothing is shared "
+                            "until the person shares it from the SafePII bar."}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": wire_tools()}}
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": mid, "result": {}}
+    if mid is None:
+        return None
+    return {"jsonrpc": "2.0", "id": mid, "result": {
+        "content": [{"type": "text", "text":
+                     "No folder has been shared with me. Ask the person to share one from the "
+                     "SafePII bar (the chevron, then \"Share a folder with Claude\"); I cannot "
+                     "open a folder myself, and SafePII is the only way files reach you."}],
+        "isError": True}}
+
+
+def forward_to(url: str, timeout: float = 300.0):
+    """Relay one message to the helper's broker, or answer for it when it is not
+    there. Never raises: a bridge that dies takes the connector with it."""
+    def send(msg: dict) -> dict | None:
+        body = json.dumps(msg).encode()
+        req = urllib.request.Request(url, data=body, method="POST", headers={
+            "Content-Type": "application/json", "Accept": "application/json",
+            "User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                raw = res.read()
+                return json.loads(raw) if raw else None
+        except Exception as e:  # noqa: BLE001
+            log(f"bridge: {url} did not answer ({e}); answering for it")
+            return offline_reply(msg)
+    return send
+
+
+def serve_stdio(handle) -> int:
+    """Newline-delimited JSON-RPC on stdin and stdout, which is what MCP's stdio
+    transport is. Nothing else may be written to stdout: every log line in this
+    file goes to stderr, which is why that was never optional."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            log("stdio: ignoring a line that is not JSON")
+            continue
+        if not isinstance(msg, dict):
+            continue
+        try:
+            reply = handle(msg)
+        except Exception as e:  # noqa: BLE001
+            log(f"stdio: {msg.get('method')} failed: {e!r}")
+            reply = None if msg.get("id") is None else {
+                "jsonrpc": "2.0", "id": msg.get("id"),
+                "error": {"code": -32603, "message": str(e)}}
+        if reply is None:
+            continue
+        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.flush()
+    return 0
+
+
 def make_server(workspace: Workspace, port: int = DEFAULT_PORT, token: str = "") -> ThreadingHTTPServer:
     """Bound to the loopback address only. Nothing off this machine can reach it."""
     handler = type("BoundHandler", (Handler,), {"workspace": workspace, "auth_token": token})
@@ -849,7 +940,7 @@ def policy_snippet(port: int, token: str = "") -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Serve a folder to Claude, masked by SafePII.")
-    ap.add_argument("--root", required=True, help="the real folder to serve")
+    ap.add_argument("--root", default="", help="the real folder to serve (not needed with --bridge)")
     ap.add_argument("--server", default=os.environ.get("SAFEPII_SERVER", "http://127.0.0.1:5170"))
     ap.add_argument("--token", default=os.environ.get("SAFEPII_TOKEN", ""), help="SafePII login token")
     ap.add_argument("--api-key", default=os.environ.get("SAFEPII_API_KEY", ""), help="SafePII service key")
@@ -857,6 +948,13 @@ def main(argv=None) -> int:
     ap.add_argument("--staging", default="", help="where write_file puts its output")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--auth", default="", help="require this bearer token from the MCP client")
+    ap.add_argument("--stdio", action="store_true",
+                    help="speak MCP on stdin/stdout instead of listening on a port, for a "
+                         "client that starts this process itself")
+    ap.add_argument("--bridge", nargs="?", const="auto", default="",
+                    help="with --stdio: relay to the helper's own broker rather than serving "
+                         "the folder here, so the folder is served once (default: the port "
+                         "the helper uses)")
     ap.add_argument("--names", default="handles", choices=Names.POLICIES,
                     help="what the model sees a file called: opaque handles (default), "
                          "best-effort masking, or the real name")
@@ -864,6 +962,16 @@ def main(argv=None) -> int:
                     help="serve source files too (masking them can corrupt them)")
     args = ap.parse_args(argv)
 
+    # A bridge needs nothing of its own: no folder, no server, no credentials.
+    if args.stdio and args.bridge:
+        url = args.bridge
+        if url == "auto":
+            url = f"http://127.0.0.1:{args.port}/mcp"
+        log(f"bridging stdio to {url}")
+        return serve_stdio(forward_to(url))
+
+    if not args.root:
+        ap.error("--root is required unless you are bridging with --stdio --bridge")
     client = Client(args.server, token=args.token, api_key=args.api_key)
     try:
         ws = Workspace(Path(args.root), client, session=args.session,
@@ -872,6 +980,9 @@ def main(argv=None) -> int:
     except BrokerError as e:
         log(str(e))
         return 1
+    if args.stdio:
+        log(f"serving {ws.root} masked, on stdin/stdout")
+        return serve_stdio(lambda msg: handle_rpc(ws, msg))
     httpd = make_server(ws, args.port, args.auth)
     log(f"serving {ws.root} masked, through {args.server}")
     log(f"output folder for write_file: {ws.staging}")
