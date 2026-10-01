@@ -174,7 +174,12 @@ SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": Fa
           "worker_beat": 0.0, "worker_busy": "", "alarm": "",
           # A reason string (or True) while Claude is waiting for a folder, which
           # the bar turns into its picker. Cleared when the person answers.
-          "want_folder": None}
+          "want_folder": None,
+          # Screen rectangles of the bar's own windows, published by the bar and
+          # read by the mouse hook so it can tell a click on us from a click
+          # anywhere else. panel_rect is None whenever the panel is closed, which
+          # is what keeps the hook's fast path fast.
+          "panel_rect": None, "pill_rect": None}
 ASK_FOLDER_S = 120.0       # how long a request_folder call waits for the person
 UPDATE_EVERY_S = 6 * 3600   # how often to ask the server what the current build is
 WORKER_DEAD_S = 15.0       # no heartbeat for this long, and not busy: not working
@@ -2731,16 +2736,22 @@ class Hotkeys(threading.Thread):
     WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
 
     def mouse_proc(self, n_code: int, w_param: int, l_param: int) -> int:
-        """Notes wheel scrolling, and swallows a click on the file dialog's
-        confirm button so the pick can be masked first."""
+        """Notes wheel scrolling, collapses the panel on a click elsewhere, and
+        swallows a click on the file dialog's confirm button so the pick can be
+        masked first."""
         try:
             if n_code >= 0:
+                ms = None
+                if w_param == self.WM_LBUTTONDOWN:
+                    ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                    # LLMHF_INJECTED: our own replayed click, never the user's.
+                    if SHARED["panel_rect"] and not (ms.flags & 0x01):
+                        self.collapse_if_outside(ms.pt.x, ms.pt.y)
                 if w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
                     SHARED["scroll_at"] = time.time()
                 elif (w_param == self.WM_LBUTTONDOWN and SHARED["dialog_open"]
                       and self.cfg.get("fileGuard", True)):
-                    ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                    if not (ms.flags & 0x01):                 # LLMHF_INJECTED: our own replay
+                    if ms is not None and not (ms.flags & 0x01):
                         if self.dialog_click(ms.pt.x, ms.pt.y):
                             self.swallow_click = True
                             self.commands.put(("dialog_confirm", time.time()))
@@ -2753,6 +2764,30 @@ class Hotkeys(threading.Thread):
         except Exception as e:  # noqa: BLE001
             log(f"mouse hook error {type(e).__name__}: {e}")
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+    def collapse_if_outside(self, x: int, y: int) -> None:
+        """A click anywhere but the bar closes the panel, the way a menu closes.
+
+        It has to be seen here because the bar never takes focus
+        (WS_EX_NOACTIVATE, so that clicking it leaves the caret in Claude): there
+        is no FocusOut to listen for. The click is passed on untouched -- it was
+        meant for whatever it landed on, and swallowing it would make the first
+        click after opening the panel vanish, which is worse than a panel that
+        stays open.
+
+        The pill is excluded as well as the panel: its own chevron already
+        toggles, and collapsing from here too would close and reopen on one
+        click.
+        """
+        for rect in (SHARED["panel_rect"], SHARED["pill_rect"]):
+            if rect and rect[0] <= x < rect[2] and rect[1] <= y < rect[3]:
+                return
+        # Not cleared here: close_panel owns that. A second click before the bar
+        # has caught up only queues a second collapse, and closing an already
+        # closed panel does nothing -- whereas clearing the rectangle from a
+        # hook that may be overruled would leave it stale and stop the next
+        # click working.
+        self.events.put({"type": "collapse"})
 
     @staticmethod
     def worker_alive() -> bool:
@@ -3824,6 +3859,7 @@ class Bar:
             y = bottom + self.CLEAR
         if rect != self.rect or force:
             self.win.geometry(f"{self.pill_w}x{self.PILL_H}+{x}+{y}")
+            SHARED["pill_rect"] = (x, y, x + self.pill_w, y + self.PILL_H)
             self.rect = rect
             if self.panel:
                 self.place_panel()
@@ -3837,6 +3873,7 @@ class Bar:
             self.win.withdraw()
             self.visible = False
             self.rect = None
+            SHARED["pill_rect"] = None
         if self.panel and not self.problems:
             self.close_panel()
 
@@ -3925,6 +3962,7 @@ class Bar:
 
     def close_panel(self) -> None:
         self.panel_at = None
+        SHARED["panel_rect"] = None       # the hook stops looking at clicks
         if self.panel:
             self.panel.destroy()
             self.panel = None
@@ -3972,6 +4010,9 @@ class Bar:
         if (self.PANEL_W, h, x, y, scrolls) == self.panel_at:
             return                       # nothing moved: do not redraw and flicker
         self.panel_at = (self.PANEL_W, h, x, y, scrolls)
+        # The hook compares a click against this to decide whether it landed on
+        # us. Published from here because here is where the geometry is decided.
+        SHARED["panel_rect"] = (x, y, x + self.PANEL_W, y + h)
         self.panel.geometry(f"{self.PANEL_W}x{h}+{x}+{y}")
         self.panel.update_idletasks()
         self.canvas.configure(scrollregion=(0, 0, self.PANEL_W, need))
@@ -4336,6 +4377,12 @@ class Bar:
                     self.set_alarm(None)
                 elif t == "block_drop":
                     self.blocker.show(ev["rect"]) if ev["rect"] else self.blocker.hide()
+                elif t == "collapse":
+                    # A click landed outside the bar. A blocking alert is the one
+                    # thing that keeps the panel open: it is not dismissed by
+                    # being clicked away from.
+                    if not any(p.get("alarm") for p in self.problems):
+                        self.close_panel()
                 elif t == "tip":
                     self.show_tip(ev["text"], ev["x"], ev["y"])
         except queue.Empty:

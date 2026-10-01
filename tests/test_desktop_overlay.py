@@ -858,6 +858,9 @@ def bar(monkeypatch):
     b = helper.Bar(cfg, queue.Queue(), queue.Queue())
     yield types.SimpleNamespace(b=b, helper=helper, cfg=cfg)
     b.root.destroy()
+    # SHARED is module state and the bar writes its window rectangles there, so
+    # a test that leaves the panel open would decide what the next one sees.
+    helper.SHARED["panel_rect"] = helper.SHARED["pill_rect"] = None
 
 
 def test_the_pill_is_a_fraction_of_the_width_of_the_strip_it_replaces(bar):
@@ -1532,3 +1535,101 @@ def test_the_dpi_falls_back_when_the_monitor_cannot_be_asked(helper_mod):
     number is used, so the arithmetic is exercised everywhere."""
     assert helper_mod.monitor_dpi((0, 0, 1920, 1080), 120.0) == 120.0
     assert helper_mod.monitor_dpi(None, 96.0) == 96.0
+
+
+# ------------------------------------------------ clicking away from the panel
+def test_the_panel_publishes_where_it_is_and_stops_when_it_closes(bar):
+    """The mouse hook has to be able to tell a click on us from a click
+    somewhere else, and the bar is the only thing that knows where it is."""
+    helper = bar.helper
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.root.update()
+    assert helper.SHARED["pill_rect"], "the pill's rectangle is published when it is placed"
+    assert helper.SHARED["panel_rect"] is None, "and no panel rectangle while it is closed"
+
+    b.open_panel()
+    b.root.update()
+    left, top, right, bottom = helper.SHARED["panel_rect"]
+    assert right - left == b.PANEL_W
+    assert bottom > top
+
+    b.close_panel()
+    assert helper.SHARED["panel_rect"] is None, \
+        "cleared on close, which is what keeps the hook's fast path fast"
+
+
+def test_a_click_outside_the_bar_asks_for_a_collapse(bar):
+    """The bar never takes focus, so there is no FocusOut to listen for: the
+    click has to be seen by the mouse hook."""
+    helper = bar.helper
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.open_panel()
+    b.root.update()
+    events = queue.Queue()
+    hook = helper.Hotkeys.__new__(helper.Hotkeys)
+    hook.events = events
+
+    panel = helper.SHARED["panel_rect"]
+    hook.collapse_if_outside(panel[0] - 50, panel[1] - 50)
+    assert events.get_nowait()["type"] == "collapse"
+
+
+@pytest.mark.parametrize("where", ["panel", "pill"])
+def test_a_click_on_the_bar_itself_is_not_a_collapse(bar, where):
+    """The pill is excluded as well as the panel: its own chevron already
+    toggles, and collapsing from the hook too would close and reopen at once."""
+    helper = bar.helper
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.open_panel()
+    b.root.update()
+    events = queue.Queue()
+    hook = helper.Hotkeys.__new__(helper.Hotkeys)
+    hook.events = events
+
+    rect = helper.SHARED["panel_rect" if where == "panel" else "pill_rect"]
+    hook.collapse_if_outside((rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2)
+    assert events.empty(), f"a click on the {where} must not collapse it"
+
+
+def test_the_rectangle_is_left_alone_by_the_hook(bar):
+    """Clearing it from a hook that the bar may overrule would leave it stale
+    and stop the next click working."""
+    helper = bar.helper
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.open_panel()
+    b.root.update()
+    hook = helper.Hotkeys.__new__(helper.Hotkeys)
+    hook.events = queue.Queue()
+    hook.collapse_if_outside(0, 0)
+    assert helper.SHARED["panel_rect"] is not None, "close_panel owns that"
+    hook.collapse_if_outside(0, 0)
+    assert hook.events.qsize() == 2, "a second click still reports"
+
+
+def test_the_collapse_closes_the_panel(bar):
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.open_panel()
+    b.root.update()
+    assert b.panel is not None
+    b.events.put({"type": "collapse"})
+    b.pump()
+    assert b.panel is None
+    assert b.chev.cget("text") == "⌄", "and the chevron turns back"
+
+
+def test_a_blocking_alert_is_not_dismissed_by_clicking_away(bar):
+    """An alarm has no "Got it": it goes when its cause goes. Letting a stray
+    click hide it would lose the one message that must not be missed."""
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.set_alarm("SafePII restarted its guard. Check the last message you sent was masked.")
+    b.root.update()
+    assert b.panel is not None, "an alarm opens the panel by itself"
+    b.events.put({"type": "collapse"})
+    b.pump()
+    assert b.panel is not None, "and a click elsewhere does not close it"
