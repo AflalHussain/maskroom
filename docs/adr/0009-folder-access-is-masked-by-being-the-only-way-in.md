@@ -51,11 +51,18 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
   firing when they were disabled. A control has to be dependable in both directions.
 - **A mirror of symlinks**, so nothing is copied. Rejected on a documented fact: the allowlist
   is enforced against the resolved path.
-- **A filesystem filter driver, or a Windows Projected File System provider**, presenting
-  masked content on demand with no duplication. Technically the nicest answer and rejected for
-  now: whether a projected filesystem survives being mounted into the sandbox VM is untested,
-  and it is a large piece of work resting on that assumption. Revisit only if both mechanisms
-  above prove insufficient.
+- **A synthetic filesystem — FUSE, WinFsp or ProjFS — presenting masked content under the
+  folder the user already attaches.** Technically the most appealing answer, and the only one
+  that would also mask what `grep` and `Bash` see inside the sandbox, which no MCP server can
+  reach. Deferred, assessed in full at §5.6.2. The blocking objection is not the platform work
+  but the size contract: a filesystem must answer `getattr` before anyone opens anything, and
+  masked content is a different length, so either reads are wrong or every file is masked to
+  answer a `stat` — which `ls -l`, `find` and `grep -r` all perform. On top of that it is a
+  kernel-mode driver per platform (no FUSE on Windows), virtiofsd's cache mode and DAX
+  behaviour cannot be read from the package, and it would still need
+  `allowedWorkspaceFolders`, because the raw folder would still exist. It replaces the
+  delivery, not the control. Revisit for a customer who needs code execution over masked
+  data.
 - **A pre-masked mirror as the only design.** Kept as the working profile, not as the answer.
   It duplicates data, can fall stale between passes, and needs write-back designed; the strict
   profile has none of those problems.
@@ -63,6 +70,15 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
   exactly this, and it is a legitimate answer for a customer who does not need the feature. It
   is the same refusal-as-solution we rejected for the desktop as a whole in ADR 0004, so it is
   the floor rather than the plan.
+
+We also decided **who asks for the folder**. Claude Desktop has a built-in tool for
+requesting folder access mid-session — one dialog, exact paths, granted for that session — and
+that interaction is the one users will already know. Rather than requiring the person to share
+a folder before they start, the broker offers `request_folder`: Claude calls it when it needs
+files and none are shared, the SafePII picker opens carrying the model's stated reason, and the
+tool call waits for the answer. The flow becomes *just ask Claude*. Two rules are copied
+straight from Anthropic's own tool description, which has evidently learned them: ask once for
+the minimal set, and on a decline ask in conversation rather than again.
 
 ## Consequences
 
@@ -112,6 +128,16 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
   Cowork guarantee.
 - The mirror root does not have to exist before the policy names it: the app creates an
   admin-configured workspace folder it cannot find.
+- **The broker listens for the helper's lifetime, not the folder's.** It used to come up when
+  a folder was shared, which made "nothing shared" indistinguishable from "nothing running" —
+  confusing in practice — and, more decisively, left Claude unable to ask for a folder, since
+  asking goes through the broker. One server; the folder is swapped in beneath it, so a change
+  of folder does not break the connection Claude Desktop already holds. With nothing shared,
+  a file tool answers with what to do about it rather than failing.
+- **A request has to end, one way or another.** `request_folder` blocks the model's tool call
+  because the result *is* what the person decided, but every exit answers it: a share, a
+  cancelled picker, a folder with nothing servable in it, or a timeout. A tool call left
+  hanging is worse than one that says nobody answered.
 - What is left to establish on a real machine is small and named in §5.6.6: that a Cowork task
   with no folder attached lists and calls a loopback managed server's tools, and how the agent
   behaves when a tool result is visibly tokenised. The second is a design question — the tool

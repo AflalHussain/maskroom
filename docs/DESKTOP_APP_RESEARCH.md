@@ -696,16 +696,46 @@ moment it happens.
   pointing at the real files resolves to the real paths. A masked mirror therefore has to be
   real bytes.
 
-A filesystem filter driver, or a Windows Projected File System provider presenting masked
-content on demand, would put us in the read path without duplication. Since the share is
-virtiofs (§5.6.1), and virtiofsd can export a host path that is itself a userspace
-filesystem, the idea is not absurd — but the Windows sandbox was not inspected, no such
-export was tested, and a control that depends on a VM's file-sharing daemon tolerating a
-synthetic filesystem is not one to promise a bank. It is a large piece of work resting on an
-untested assumption, and it is not recommended before the two mechanisms below are
-exhausted.
+**A synthetic filesystem (FUSE, WinFsp, ProjFS) assessed, 2026-10-01.** The proposal is to
+keep the folder the user attaches and mask underneath it: hold the real files somewhere
+Claude cannot reach, present a virtual folder whose reads are served from memory after
+masking, and let virtiofsd carry the masked bytes into the VM. Nothing pre-masked, nothing
+written to disk, and — the real prize — `grep` and `Bash` inside the sandbox would see masked
+content, which no MCP server can cover. It is the only design that protects a customer who
+needs Claude to *execute* against their data. Four things stand in the way.
 
-#### 5.6.3 The two places where we *can* stand
+1. **The size contract forces eager masking, and this is the one that breaks the design as
+   proposed.** A filesystem answers `getattr` — the file's size — on *stat*, long before
+   anyone calls `open`. Masked content is a different length, because `TOK_PERSON_4A66D755`
+   is longer than `Nimal Perera`. Report the real size and reads are truncated or padded;
+   report the masked size and the file must be masked to answer a `stat`. `ls -l`, `find` and
+   `grep -r` stat everything, so the whole tree is masked to list it — exactly the cost that
+   intercepting at `open` was meant to avoid. Intercepting at `open`/`release` does not escape
+   it.
+2. **It is a filesystem driver per platform.** The virtiofsd path in the package is tagged
+   `[linux-vm]` and is for a Linux *host*. Windows has no FUSE: it is WinFsp, a third-party
+   kernel-mode driver, or ProjFS, Microsoft's own but a projection model with different
+   semantics. macOS needs macFUSE, a kernel extension that on Apple Silicon requires reduced
+   security settings, or the newer FSKit. "We install a filesystem driver" is a far harder
+   endpoint review than "we run a user-space helper", and that review, not the code, is the
+   expensive part of this.
+3. **The caching question cannot be answered by reading the package.** virtiofsd's arguments
+   are built inside the native `cowork-linux-helper` binary, not in the JavaScript, so the
+   cache mode in use is not visible. The risks are real and named: virtiofsd's `--cache`
+   modes, and **DAX**, which maps host file memory directly into the guest and is precisely
+   the kind of thing a FUSE-backed file does not support. Only a test on a real machine
+   settles it.
+4. **It buys convenience, not protection.** The raw folder still exists, so it can still be
+   attached — and Claude has a built-in tool for asking the user to grant a folder
+   mid-session (§5.6.3(c)). `allowedWorkspaceFolders` is still doing the enforcing. A
+   synthetic filesystem replaces the *delivery*, not the *control*.
+
+Verdict: keep it for the customer who needs code execution over masked data, as
+platform-specific work with the `getattr` problem solved first. Not before the two mechanisms
+below are exhausted, and not as the answer to convenience — §5.6.3(c) is that, for a fraction
+of the cost.
+
+#### 5.6.3 Where we *can* stand
 
 **(a) The workspace-folder allowlist decides what can be attached.**
 `allowedWorkspaceFolders` in the managed configuration (macOS `com.anthropic.claudefordesktop`,
@@ -787,6 +817,26 @@ The schema settles how it should be deployed, and the answer is not the obvious 
 Neither is a masking mechanism on its own: (a) can only remove the raw path, and (b) can only
 serve a path the agent is willing to use. Used together they are one: **make the raw folder
 unattachable, and be the only way files get in.**
+
+**(c) The model can ask for a folder, and that is the convenient flow.** Claude Desktop has a
+built-in tool for exactly this, whose description is in the package: "Ask the user to grant
+this session access to one or more folders on this device that are not currently connected. A
+single confirmation dialog listing the exact resolved paths opens on the user's device; on
+Allow, every listed folder and its subtree becomes readable/writable for THIS session only,
+and the call returns the granted roots." It is accompanied by `get_device_info` and
+`device_list_dir` so the model can look before asking, and two rules Anthropic has evidently
+learned: "ask exactly once, for the minimal set of folders the task needs", and "if the user
+declines or doesn't respond, don't repeat the request — ask in conversation instead".
+
+Two things follow. First, `allowedWorkspaceFolders` is doing more work than it appears to: it
+is the only thing between that dialog and a user clicking Allow on their raw data folder.
+Second, the interaction it describes is the one to copy, because it is the one Claude Desktop
+users will already know. The broker therefore offers a `request_folder` tool: Claude calls it
+when it needs files and none are shared, the SafePII picker opens with the model's reason on
+it, and the tool call blocks until the person decides. The user's flow becomes *just ask
+Claude* — no step beforehand, and the consent prompt arrives with a reason attached rather
+than as homework whose purpose has been forgotten. A decline is remembered, so it is asked
+once.
 
 #### 5.6.4 Two deployment profiles
 

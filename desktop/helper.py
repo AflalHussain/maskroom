@@ -171,7 +171,11 @@ OVERLAY_MAX_LINES = 250     # safety cap on the line walk
 SHARED = {"scroll_at": 0.0, "dialog_open": False, "drag_at": 0.0, "blocking": False,
           "blocking_since": 0.0, "index": None, "composer_rect": None,
           "dialog_confirm_rect": None, "dialog_list_rect": None, "dialog_rect": None,
-          "worker_beat": 0.0, "worker_busy": "", "alarm": ""}
+          "worker_beat": 0.0, "worker_busy": "", "alarm": "",
+          # A reason string (or True) while Claude is waiting for a folder, which
+          # the bar turns into its picker. Cleared when the person answers.
+          "want_folder": None}
+ASK_FOLDER_S = 120.0       # how long a request_folder call waits for the person
 UPDATE_EVERY_S = 6 * 3600   # how often to ask the server what the current build is
 WORKER_DEAD_S = 15.0       # no heartbeat for this long, and not busy: not working
 BLOCKER_MAX_S = 6.0        # the drop blocker comes down after this, drop or no drop
@@ -989,7 +993,7 @@ class Sharing:
         self.on_change = on_change or (lambda: None)
         self.httpd = None
         self.thread = None
-        self.workspace = None
+        self.desk = None
         self.root = ""
         self.session = ""
         self.error = ""
@@ -997,10 +1001,23 @@ class Sharing:
         # read and cleared by the worker. A flag rather than a call, because the
         # vault index is the worker's and the overlay reads it.
         self.minted = False
+        # One pending "Claude would like a folder" at a time. The broker thread
+        # waits on the event; the bar's picker, or a refusal, sets the answer.
+        self.want = threading.Event()
+        self.answered = ("", False)
+        self.declined = False
 
     @property
     def active(self) -> bool:
+        return self.desk is not None and self.desk.workspace is not None
+
+    @property
+    def listening(self) -> bool:
         return self.httpd is not None
+
+    @property
+    def workspace(self):
+        return self.desk.workspace if self.desk else None
 
     @property
     def name(self) -> str:
@@ -1012,6 +1029,65 @@ class Sharing:
         return broker_mod.Client(self.cfg["serverUrl"],
                                  token=(self.cfg.get("token") or "").strip(),
                                  api_key=(self.cfg.get("apiKey") or "").strip())
+
+    def listen(self) -> str:
+        """Start answering, before anything is shared.
+
+        The server used to come up when a folder was shared and go down when it
+        stopped, which made "nothing shared" indistinguishable from "nothing
+        running" -- and left Claude unable to ask for a folder, since asking goes
+        through this. One server for the helper's lifetime; the folder is swapped
+        in and out underneath it, so Claude's connection survives a change.
+        """
+        if broker_mod is None:
+            return "This build has no file broker."
+        if self.httpd is not None:
+            return ""
+        port = int(self.cfg.get("sharePort") or broker_mod.DEFAULT_PORT)
+        try:
+            self.desk = broker_mod.Desk(ask=self.ask_for_folder)
+            self.httpd = broker_mod.make_server(self.desk, port)
+        except OSError as e:
+            self.desk = None
+            log(f"sharing: could not listen on port {port}: {e}")
+            return f"SafePII could not open port {port} ({e})."
+        self.thread = threading.Thread(target=self.httpd.serve_forever, args=(0.2,),
+                                       name="broker", daemon=True)
+        self.thread.start()
+        log(f"broker listening on http://127.0.0.1:{port}/mcp (nothing shared yet)")
+        return ""
+
+    def ask_for_folder(self, reason: str = "") -> tuple[bool, str]:
+        """Claude asked for a folder. Runs on a broker thread and blocks there.
+
+        Blocking is right: the model called a tool and is waiting for its result,
+        and the result is what the person decided. The wait is bounded, because a
+        tool call that never returns is worse than one that says nobody answered.
+        """
+        if self.declined:
+            return False, ("The person has already declined to share a folder. Do not ask "
+                           "again; ask them in conversation instead.")
+        if self.want.is_set():
+            return False, "SafePII is already asking the person about a folder."
+        self.answered = ("", False)
+        self.want.clear()
+        SHARED["want_folder"] = reason or True
+        log(f"Claude asked for a folder{f': {reason}' if reason else ''}")
+        if not self.want.wait(ASK_FOLDER_S):
+            SHARED["want_folder"] = None
+            return False, ("The person did not answer in time. Carry on without the files, or "
+                           "ask them in conversation.")
+        said, ok = self.answered
+        return ok, said
+
+    def answer(self, ok: bool, said: str) -> None:
+        """What the person decided, from the worker thread."""
+        if not SHARED.get("want_folder") and not self.want.is_set():
+            return                      # nobody asked; an ordinary share
+        SHARED["want_folder"] = None
+        self.declined = not ok
+        self.answered = (said, ok)
+        self.want.set()
 
     def start(self, root: str, session: str) -> str:
         """Serve `root` through `session`. Returns "" on success, else why not.
@@ -1027,27 +1103,27 @@ class Sharing:
                     if locked("sharing") else "Sharing folders is switched off.")
         if not session:
             return "SafePII has no session for that folder."
-        self.stop()
+        err = self.listen()
+        if err:
+            return err
         try:
             workspace = broker_mod.Workspace(
                 Path(root), self.client(), session=session,
                 allow_code=bool(self.cfg.get("shareAllowCode", False)),
                 names=str(self.cfg.get("shareNames") or "handles"),
                 on_mint=self.note_mint)
-            port = int(self.cfg.get("sharePort") or broker_mod.DEFAULT_PORT)
-            httpd = broker_mod.make_server(workspace, port)
         except (broker_mod.BrokerError, OSError, ValueError) as e:
             self.error = str(e)
             log(f"sharing: could not serve {root}: {e}")
             return self.error
-        self.httpd, self.workspace, self.root, self.session, self.error = (
-            httpd, workspace, str(workspace.root), session, "")
-        self.thread = threading.Thread(target=httpd.serve_forever, args=(0.2,),
-                                       name="broker", daemon=True)
-        self.thread.start()
+        # Swapped in under the running server, so a change of folder does not
+        # break the connection Claude Desktop already has.
+        self.desk.workspace = workspace
+        self.root, self.session, self.error = str(workspace.root), session, ""
+        self.declined = False
         self.cfg["shareRoot"] = self.root
         save_config(self.cfg)
-        log(f"sharing {self.root} on port {port} as session {session[:8]}")
+        log(f"sharing {self.root} as session {session[:8]}")
         # The line an administrator needs to point Claude Desktop at this, in the
         # log rather than in a wiki that will go stale.
         log("managed configuration: " + " ".join(self.policy_snippet().split()))
@@ -1066,14 +1142,12 @@ class Sharing:
         return True
 
     def stop(self) -> None:
-        if self.httpd is not None:
+        """Stop serving the folder. The broker keeps listening, so Claude can
+        still be told there is nothing shared, and can still ask for one."""
+        if self.active:
             log(f"sharing: stopped serving {self.root}")
-            try:
-                self.httpd.shutdown()
-                self.httpd.server_close()
-            except Exception as e:  # noqa: BLE001
-                log(f"sharing: the broker did not stop cleanly: {e}")
-        self.httpd = self.thread = self.workspace = None
+        if self.desk is not None:
+            self.desk.workspace = None
         self.root = self.session = ""
         if self.cfg.get("shareRoot"):
             self.cfg["shareRoot"] = ""
@@ -1146,9 +1220,12 @@ class Automation(threading.Thread):
         with it: one unguarded accessibility error used to be enough."""
         with auto.UIAutomationInitializerInThread():
             try:
+                err = self.sharing.listen()
+                if err:
+                    log(f"sharing: {err}")
                 self.resume_share()
             except Exception as e:  # noqa: BLE001
-                log(f"sharing: could not resume: {e}")
+                log(f"sharing: could not start the broker: {e}")
             while True:
                 try:
                     self.cycle()
@@ -1622,6 +1699,7 @@ class Automation(threading.Thread):
         if err:
             self.toast(err, error=True)
             self.emit(type="sharing", root="", name="", error=err)
+            self.sharing.answer(False, f"SafePII could not share that folder: {err}")
             return
         name = self.sharing.name
         self.remember_share_session(self.sharing.session, name)
@@ -1633,6 +1711,15 @@ class Automation(threading.Thread):
         self.emit(type="sharing", root=self.sharing.root, name=name,
                   session=self.sharing.session, served=counts.get("served", 0))
         self.toast(f"Sharing {name} with Claude — {counts.get('served', 0)} file(s), masked")
+        # If Claude was the one who asked, its tool call is still waiting.
+        self.sharing.answer(True, f"The person shared a folder. It has {counts.get('served', 0)} "
+                                  f"file(s) SafePII can serve. Use list_files to see them; the "
+                                  f"names are handles, not the real ones.")
+
+    def cmd_folder_declined(self, said: str = "") -> None:
+        """The person closed the picker, or there was nothing in the folder to
+        serve, while Claude was waiting."""
+        self.sharing.answer(False, said or "The person did not share a folder.")
 
     def cmd_stop_sharing(self) -> None:
         was = self.sharing.name
@@ -3596,6 +3683,7 @@ class Bar:
         self.blocked = False               # a blocking alert opened the panel once
         self.update = None                 # (version, url) when the server has a newer build
         self.sharing = ("", 0)             # (folder name, files served) while a folder is shared
+        self.asking = False               # a folder picker Claude asked for is open
         self.rect = None
         self.visible = False
 
@@ -4056,30 +4144,51 @@ class Bar:
                  font=("Segoe UI", 9), anchor="w").pack(side="left")
         for w in (row,) + tuple(row.winfo_children()):
             w.bind("<Button-1>", lambda e: self.pick_folder())
+        tk.Label(body, text="Claude can ask for one too, and this is what it opens.",
+                 bg=self.BG, fg=self.DIM, font=("Segoe UI", 8), anchor="w",
+                 wraplength=self.PANEL_W - 2 * self.PAD,
+                 justify="left").pack(fill="x", padx=self.PAD)
 
-    def pick_folder(self) -> None:
+    def pick_folder(self, reason: str = "", asked: bool = False) -> None:
         """Pick, then read what would happen, then decide. One folder at a time:
-        the panel shows what is being served and nothing is guessed at."""
+        the panel shows what is being served and nothing is guessed at.
+
+        `asked` means Claude is waiting on the other end, so every way out of
+        here has to tell it something -- a tool call left hanging is worse than
+        one that says no.
+        """
+        def no(said: str) -> None:
+            if asked:
+                self.commands.put(("folder_declined", said))
+
         try:
             from tkinter import filedialog
-            chosen = filedialog.askdirectory(parent=self.root, mustexist=True,
-                                             title="Share a folder with Claude")
+            title = "Share a folder with Claude"
+            if asked:
+                self.alert(f"Claude is asking for a folder"
+                           + (f": {reason}" if reason else "") + ".", "info")
+            chosen = filedialog.askdirectory(parent=self.root, mustexist=True, title=title)
         except Exception as e:  # noqa: BLE001
             log(f"sharing: the folder picker failed: {e}")
+            no("SafePII could not open a folder picker on this machine.")
             return
         if not chosen:
+            no("The person closed the folder picker without choosing one.")
             return
         counts = broker_mod.preview(chosen, bool(self.cfg.get("shareAllowCode", False)))
         if counts.get("error"):
             self.alert(counts["error"], "warn")
+            no(counts["error"])
             return
         if not counts["served"]:
-            self.alert(f"Nothing in that folder can be masked, so there is nothing "
-                       f"to share. {broker_mod.describe(counts)}", "warn")
+            said = (f"Nothing in that folder can be masked, so there is nothing "
+                    f"to share. {broker_mod.describe(counts)}")
+            self.alert(said, "warn")
+            no(said)
             return
-        self.confirm_share(chosen, counts)
+        self.confirm_share(chosen, counts, asked=asked)
 
-    def confirm_share(self, path: str, counts: dict) -> None:
+    def confirm_share(self, path: str, counts: dict, asked: bool = False) -> None:
         """What will be served, before it is. The same shape as ask_restore:
         consent is asked once, in words, with the count in it."""
         w = tk.Toplevel(self.root)
@@ -4107,7 +4216,10 @@ class Bar:
         cancel = tk.Label(btns, text="Cancel", bg=self.BG, fg=self.DIM,
                           font=("Segoe UI", 9), cursor="hand2", padx=10)
         cancel.pack(side="left")
-        cancel.bind("<Button-1>", lambda e: w.destroy())
+        cancel.bind("<Button-1>", lambda e: (
+            w.destroy(),
+            self.commands.put(("folder_declined", "The person decided not to share it."))
+            if asked else None))
 
     def toggle_row(self, parent, label: str, on: bool, cmd: str, fixed: bool = False) -> None:
         row = tk.Frame(parent, bg=self.BG, height=self.ROW_H,
@@ -4228,7 +4340,24 @@ class Bar:
                     self.show_tip(ev["text"], ev["x"], ev["y"])
         except queue.Empty:
             pass
+        self.check_folder_request()
         self.root.after(15, self.pump)
+
+    def check_folder_request(self) -> None:
+        """Claude has called request_folder and its tool call is waiting.
+
+        Read from SHARED rather than the event queue because the picker is modal
+        and the queue keeps filling while it is open: a second event behind this
+        one would raise a second picker over the first.
+        """
+        want = SHARED.get("want_folder")
+        if not want or self.asking:
+            return
+        self.asking = True
+        try:
+            self.pick_folder(reason="" if want is True else str(want), asked=True)
+        finally:
+            self.asking = False
 
     # ---- settings
     def open_settings(self) -> None:

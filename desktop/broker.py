@@ -474,6 +474,24 @@ class Workspace:
                 "reading your reply sees the real values in place of the tokens.\n\n")
 
 
+class Desk:
+    """What the broker is serving right now: one workspace, or none yet.
+
+    The MCP surface talks to this rather than straight to a workspace, because
+    it has to answer before anything is shared. That is not an edge case: it is
+    the moment Claude asks for a folder, and a server that is not listening
+    cannot be asked.
+
+    `ask` is how it asks -- a callable the helper provides that raises its folder
+    picker and blocks until the person decides. Without one (the standalone
+    broker) the tool is not offered at all, because there would be nobody to ask.
+    """
+
+    def __init__(self, workspace: Workspace | None = None, ask=None):
+        self.workspace = workspace
+        self.ask = ask
+
+
 # ----------------------------------------------------------------- the tools
 def tool_list_files(ws: Workspace, args: dict) -> str:
     where = ws.resolve(args.get("path") or ".")
@@ -610,6 +628,27 @@ def tool_write_file(ws: Workspace, args: dict) -> str:
     return "\n".join(said)
 
 
+def tool_request_folder(desk: "Desk", args: dict) -> str:
+    """Ask the person for a folder, at the moment it is needed.
+
+    Claude Desktop has this interaction for its own file access -- a dialog
+    naming the exact paths, granted for the session -- and its own tool
+    description has learned the two rules worth copying: ask once, for the
+    minimal set, and if the person declines, ask in conversation rather than
+    again. Both are in the description below.
+    """
+    if desk.ask is None:
+        raise BrokerError("this SafePII broker has no way to ask; it serves one folder, "
+                          "given to it when it started")
+    if desk.workspace is not None:
+        return (f"A folder is already shared. Use list_files to see what is in it. "
+                f"If you need a different one, ask the person in conversation.")
+    reason = (args.get("reason") or "").strip()
+    ok, said = desk.ask(reason)
+    return said if said else ("The person shared a folder." if ok else
+                              "The person did not share a folder.")
+
+
 TOOLS = [
     {"name": "list_files",
      "description": "List the files SafePII serves from the connected folder. Personal data in "
@@ -643,11 +682,29 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["path", "content"], "properties": {
          "path": {"type": "string"}, "content": {"type": "string"}}}},
 ]
-BY_NAME = {t["name"]: t for t in TOOLS}
+ASK_TOOL = {
+    "name": "request_folder",
+    "description": "Ask the person to share a folder with you. A picker opens on their screen "
+                   "and they choose; SafePII then serves that folder's files to you, masked. "
+                   "Use this when you need files and list_files says none are shared. Spend "
+                   "their attention once: say why in `reason`, and ask for one folder, the "
+                   "smallest that covers the task. If they decline, do not ask again — ask in "
+                   "conversation instead. You cannot open a folder yourself, and SafePII is the "
+                   "only way files reach you.",
+    "handler": tool_request_folder,
+    "inputSchema": {"type": "object", "properties": {
+        "reason": {"type": "string",
+                   "description": "Why you need it, in one line. The person sees this."}}},
+}
+BY_NAME = {t["name"]: t for t in TOOLS + [ASK_TOOL]}
 
 
-def wire_tools() -> list[dict]:
-    return [{k: t[k] for k in ("name", "description", "inputSchema")} for t in TOOLS]
+def wire_tools(desk: "Desk | None" = None) -> list[dict]:
+    """The tools, plus the one for asking -- only where there is someone to ask."""
+    offered = list(TOOLS)
+    if desk is not None and desk.ask is not None:
+        offered.append(ASK_TOOL)
+    return [{k: t[k] for k in ("name", "description", "inputSchema")} for t in offered]
 
 
 # ----------------------------------------------------------------- before sharing
@@ -709,7 +766,7 @@ def describe(p: dict) -> str:
 
 
 # ----------------------------------------------------------------- MCP over HTTP
-def handle_rpc(ws: Workspace, msg: dict) -> dict | None:
+def handle_rpc(desk: Desk, msg: dict) -> dict | None:
     """One JSON-RPC message in, one response out (None for a notification)."""
     mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
 
@@ -724,21 +781,31 @@ def handle_rpc(ws: Workspace, msg: dict) -> dict | None:
         return ok({"protocolVersion": asked if isinstance(asked, str) and asked else PROTOCOL_VERSION,
                    "capabilities": {"tools": {}},
                    "serverInfo": {"name": NAME, "version": __version__},
-                   "instructions": "Files from this folder arrive with personal data replaced by "
-                                   "TOK_<TYPE>_<ID> tokens. Quote them exactly and never guess "
-                                   "what is behind one."})
+                   "instructions": "Files arrive with personal data replaced by TOK_<TYPE>_<ID> "
+                                   "tokens. Quote them exactly and never guess what is behind "
+                                   "one. SafePII serves one folder at a time, and only one the "
+                                   "person has shared."})
     if method in ("notifications/initialized", "notifications/cancelled"):
         return None
     if method == "ping":
         return ok({})
     if method == "tools/list":
-        return ok({"tools": wire_tools()})
+        return ok({"tools": wire_tools(desk)})
     if method == "tools/call":
         tool = BY_NAME.get(params.get("name"))
         if tool is None:
             return err(-32602, f"no tool called {params.get('name')!r}")
+        target = desk if tool is ASK_TOOL else desk.workspace
+        if target is None:
+            # Nothing is shared. Say what to do about it rather than failing:
+            # the model can fix this, and being told is the whole point.
+            said = ("No folder has been shared with me, so there are no files to work with. "
+                    + ("Call request_folder, with a reason, to ask the person for one."
+                       if desk.ask is not None else
+                       "Ask the person to share one from the SafePII bar."))
+            return ok({"content": [{"type": "text", "text": said}], "isError": True})
         try:
-            text = tool["handler"](ws, params.get("arguments") or {})
+            text = tool["handler"](target, params.get("arguments") or {})
         except BrokerError as e:
             # A refusal the model should read and act on, not a transport fault.
             return ok({"content": [{"type": "text", "text": f"SafePII did not do that: {e}"}],
@@ -756,7 +823,7 @@ def handle_rpc(ws: Workspace, msg: dict) -> dict | None:
 class Handler(BaseHTTPRequestHandler):
     server_version = f"SafePII-broker/{__version__}"
     protocol_version = "HTTP/1.1"
-    workspace: Workspace
+    desk: Desk
     auth_token: str = ""
 
     def log_message(self, fmt, *a):            # quiet; the broker logs what matters
@@ -818,7 +885,7 @@ class Handler(BaseHTTPRequestHandler):
                                  "error": {"code": -32700, "message": "not JSON"}})
             return
         if isinstance(msg, list):               # batches: older revisions allow them
-            out = [r for r in (handle_rpc(self.workspace, m) for m in msg) if r is not None]
+            out = [r for r in (handle_rpc(self.desk, m) for m in msg) if r is not None]
             if not out:
                 self.send_response(202)
                 self.send_header("Content-Length", "0")
@@ -830,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32600, "message": "not a request"}})
             return
-        reply = handle_rpc(self.workspace, msg)
+        reply = handle_rpc(self.desk, msg)
         if reply is None:
             self.send_response(202)
             self.send_header("Content-Length", "0")
@@ -930,9 +997,9 @@ def serve_stdio(handle) -> int:
     return 0
 
 
-def make_server(workspace: Workspace, port: int = DEFAULT_PORT, token: str = "") -> ThreadingHTTPServer:
+def make_server(desk: Desk, port: int = DEFAULT_PORT, token: str = "") -> ThreadingHTTPServer:
     """Bound to the loopback address only. Nothing off this machine can reach it."""
-    handler = type("BoundHandler", (Handler,), {"workspace": workspace, "auth_token": token})
+    handler = type("BoundHandler", (Handler,), {"desk": desk, "auth_token": token})
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     httpd.daemon_threads = True
     return httpd
@@ -990,8 +1057,8 @@ def main(argv=None) -> int:
         return 1
     if args.stdio:
         log(f"serving {ws.root} masked, on stdin/stdout")
-        return serve_stdio(lambda msg: handle_rpc(ws, msg))
-    httpd = make_server(ws, args.port, args.auth)
+        return serve_stdio(lambda msg: handle_rpc(Desk(ws), msg))
+    httpd = make_server(Desk(ws), args.port, args.auth)
     log(f"serving {ws.root} masked, through {args.server}")
     log(f"output folder for write_file: {ws.staging}")
     log(f"listening on http://127.0.0.1:{args.port}/mcp")

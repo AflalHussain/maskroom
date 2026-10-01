@@ -11,6 +11,7 @@ import json
 import socket
 import sys
 import threading
+import time
 import types
 import urllib.request
 from pathlib import Path
@@ -22,6 +23,7 @@ import pytest
 # one here left whichever module ran first in sys.modules and broke the other.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_desktop_overlay import _fake_uia          # noqa: E402
+from test_broker import Peer                       # noqa: E402  (one MCP client, not two)
 
 
 @pytest.fixture
@@ -195,11 +197,12 @@ def test_sharing_a_second_folder_replaces_the_first(helper, folder, tmp_path):
     a.cmd_share_folder(str(folder))
     first = a.sharing.httpd
     a.cmd_share_folder(str(other))
-    try:
-        assert a.sharing.name == "other"
-        assert a.sharing.httpd is not first
-    finally:
-        a.cmd_stop_sharing()
+    assert a.sharing.name == "other"
+    assert a.sharing.workspace.root.name == "other"
+    # The folder is swapped in under the running server rather than the server
+    # being restarted, so the connection Claude Desktop already has survives a
+    # change of folder. (The autouse fixture stops it afterwards.)
+    assert a.sharing.httpd is first
 
 
 # --------------------------------------------------------------- stopping
@@ -337,3 +340,106 @@ def test_nothing_is_fetched_when_no_folder_is_shared(helper, tmp_path):
     a.sharing.minted = True
     a.poll_shared_vault()
     assert calls == []
+
+
+# --------------------------------------------------------------- Claude asks
+def test_the_broker_answers_before_anything_is_shared(helper, tmp_path):
+    """It used to come up when a folder was shared, which made "nothing shared"
+    look identical to "nothing running" -- and left Claude unable to ask for a
+    folder, since asking goes through this."""
+    a = a_worker(helper, config(tmp_path))
+    assert a.sharing.listen() == ""
+    assert a.sharing.listening and not a.sharing.active
+    port = a.sharing.httpd.server_address[1]
+    peer = Peer(port)
+    names = {t["name"] for t in peer.rpc("tools/list")["result"]["tools"]}
+    assert "request_folder" in names, "there is somebody to ask, so the tool is offered"
+    said, is_error = peer.call("list_files")
+    assert is_error and "request_folder" in said, said
+
+
+def test_a_standalone_broker_does_not_offer_to_ask(helper, folder, tmp_path):
+    """There would be nobody to ask: no bar, no picker."""
+    desk = helper.broker_mod.Desk(workspace=object())
+    assert "request_folder" not in {t["name"] for t in helper.broker_mod.wire_tools(desk)}
+
+
+def test_claude_asking_opens_the_picker_and_waits_for_the_answer(helper, folder, tmp_path):
+    """The tool call blocks because the model is waiting on what the person
+    decided. Here the bar's side is played by this thread."""
+    a = a_worker(helper, config(tmp_path))
+    a.sharing.listen()
+    answers = []
+
+    def claude_asks():
+        answers.append(a.sharing.ask_for_folder("to summarise the overdue loans"))
+
+    asker = threading.Thread(target=claude_asks, daemon=True)
+    asker.start()
+    for _ in range(100):                     # the bar notices through SHARED
+        if helper.SHARED.get("want_folder"):
+            break
+        time.sleep(0.01)
+    assert helper.SHARED["want_folder"] == "to summarise the overdue loans"
+    assert not answers, "and the tool call is still waiting"
+
+    a.cmd_share_folder(str(folder))          # what the picker leads to
+    asker.join(timeout=5)
+    ok, said = answers[0]
+    assert ok and "shared a folder" in said and "file(s)" in said
+    assert helper.SHARED["want_folder"] is None
+
+
+def test_a_refusal_reaches_claude_rather_than_hanging(helper, tmp_path):
+    a = a_worker(helper, config(tmp_path))
+    a.sharing.listen()
+    answers = []
+    asker = threading.Thread(target=lambda: answers.append(a.sharing.ask_for_folder("")),
+                             daemon=True)
+    asker.start()
+    for _ in range(100):
+        if helper.SHARED.get("want_folder"):
+            break
+        time.sleep(0.01)
+    a.cmd_folder_declined("The person closed the folder picker without choosing one.")
+    asker.join(timeout=5)
+    ok, said = answers[0]
+    assert ok is False and "closed the folder picker" in said
+
+
+def test_being_declined_once_is_not_asked_again(helper, tmp_path):
+    """Anthropic's own tool says it: if the person declines, ask in conversation
+    rather than again."""
+    a = a_worker(helper, config(tmp_path))
+    a.sharing.listen()
+    a.sharing.declined = True
+    ok, said = a.sharing.ask_for_folder("please")
+    assert ok is False
+    assert "already declined" in said and "conversation" in said
+
+
+def test_sharing_clears_the_refusal_so_a_later_task_may_ask(helper, folder, tmp_path):
+    a = a_worker(helper, config(tmp_path))
+    a.sharing.declined = True
+    a.cmd_share_folder(str(folder))
+    assert a.sharing.declined is False
+
+
+def test_asking_while_a_folder_is_shared_says_so_instead(helper, folder, tmp_path):
+    a = a_worker(helper, config(tmp_path))
+    a.cmd_share_folder(str(folder))
+    desk = a.sharing.desk
+    said = helper.broker_mod.tool_request_folder(desk, {"reason": "more files"})
+    assert "already shared" in said and "list_files" in said
+
+
+def test_a_request_nobody_answers_gives_up_rather_than_hanging(helper, tmp_path, monkeypatch):
+    """A tool call that never returns is worse than one that says nobody
+    answered."""
+    monkeypatch.setattr(helper, "ASK_FOLDER_S", 0.05)
+    a = a_worker(helper, config(tmp_path))
+    a.sharing.listen()
+    ok, said = a.sharing.ask_for_folder("")
+    assert ok is False
+    assert "did not answer in time" in said
+    assert helper.SHARED["want_folder"] is None, "and the bar stops being asked"

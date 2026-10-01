@@ -181,6 +181,7 @@ bar."*
 | `read_file` | One file, masked. Lines are numbered **after** masking, because a token is longer than the value it replaced and an offset taken from the real bytes points somewhere else. |
 | `search_files` | Masks the search term first, so looking for a real name finds that name's token. Only whole values match, and the reply says so. |
 | `write_file` | Restores the tokens and writes to an output folder *beside* the served one, never over the original. Tokens from another session are reported, not guessed. |
+| `request_folder` | **Asks the person for a folder**, at the moment Claude needs one. The SafePII picker opens carrying the model's reason, and the tool call waits for the answer. Offered only where there is somebody to ask, so a standalone broker does not advertise it. |
 
 **File names.** By default a name becomes a handle — `d01/f003.csv` — because a name discloses
 as much as the file does and masking one is only best-effort: measured against a live server,
@@ -196,9 +197,19 @@ model, which is the same choice the guard makes about a message it cannot check.
 served, through `/api/process` rather than `/api/mask`: sent as prose, a `.csv` comes back with
 its identifiers masked and its people still in place.
 
-**How a user shares a folder.** From the bar, not from Claude's folder picker — that picker
-has nothing to offer once an administrator has emptied `allowedWorkspaceFolders`, which is what
-makes SafePII the only way in.
+**How a user shares a folder.** Two ways in, and the second is the one most people will use.
+
+*Claude asks.* The user types what they want; Claude finds no files, calls `request_folder`,
+and the SafePII picker opens with its reason on it. They choose, and Claude carries on. No step
+beforehand, and the consent prompt arrives with a reason attached rather than as homework whose
+purpose has been forgotten. This mirrors the interaction Claude Desktop already has for its own
+file access, and copies two rules from Anthropic's own tool description: ask once for the
+smallest set that covers the task, and on a decline ask in conversation rather than again — a
+refusal is remembered until a folder is shared.
+
+*Or from the bar*, before starting. Not from Claude's own folder picker: that has nothing to
+offer once an administrator has emptied `allowedWorkspaceFolders`, which is what makes SafePII
+the only way in.
 
 1. Chevron → **Share a folder with Claude…** → the Windows folder picker.
 2. A confirmation says what will happen before anything happens: *"Claude would see 9 files
@@ -213,6 +224,12 @@ makes SafePII the only way in.
    token in it is minted later, by the broker calling the server as Claude reads. The broker
    runs in this process, so it raises a flag when a file minted something and the worker
    re-reads the vault on its next tick — once per handful of files, not once per file.
+
+The broker listens for as long as the helper runs, not for as long as a folder is shared. That
+is what lets Claude ask at all — and it means "nothing shared" is answerable rather than a
+connection error, which is how it used to look. With nothing shared, a file tool says what to
+do about it. The folder is swapped in beneath the running server, so changing folders does not
+break the connection Claude already holds.
 
 One folder at a time: sharing a second replaces the first. Two would mean two vaults to explain
 and two sets of handles that look alike, for a case nobody has asked for. Sharing survives the

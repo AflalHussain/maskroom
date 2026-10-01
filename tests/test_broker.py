@@ -199,7 +199,7 @@ class Peer:
 def start(safepii, folder, tmp_path, **kw):
     ws = broker.Workspace(folder, broker.Client(f"http://127.0.0.1:{safepii.server_address[1]}"),
                           staging=tmp_path / "out", **kw)
-    httpd = broker.make_server(ws, port=0)
+    httpd = broker.make_server(broker.Desk(ws), port=0)
     threading.Thread(target=httpd.serve_forever, args=(0.01,), daemon=True).start()
     return ws, Peer(httpd.server_address[1]), httpd
 
@@ -516,7 +516,7 @@ def test_a_page_served_from_this_machine_is_still_allowed(served):
 def test_a_bearer_token_is_enforced_when_one_is_set(safepii, folder, tmp_path):
     ws = broker.Workspace(folder, broker.Client(f"http://127.0.0.1:{safepii.server_address[1]}"),
                           staging=tmp_path / "out")
-    httpd = broker.make_server(ws, port=0, token="shared-secret")
+    httpd = broker.make_server(broker.Desk(ws), port=0, token="shared-secret")
     threading.Thread(target=httpd.serve_forever, args=(0.01,), daemon=True).start()
     try:
         port = httpd.server_address[1]
@@ -554,7 +554,7 @@ def test_a_client_that_starts_the_process_gets_the_same_tools(served, monkeypatc
     for a remote server. A process it starts and talks to over a pipe has no
     address, and so no certificate to argue about."""
     ws, _peer = served
-    out = drive_stdio(monkeypatch, lambda m: broker.handle_rpc(ws, m), [
+    out = drive_stdio(monkeypatch, lambda m: broker.handle_rpc(broker.Desk(ws), m), [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
@@ -568,7 +568,7 @@ def test_a_client_that_starts_the_process_gets_the_same_tools(served, monkeypatc
 def test_a_notification_produces_no_line_at_all(served, monkeypatch):
     """A line written for a notification would desynchronise the stream."""
     ws, _peer = served
-    out = drive_stdio(monkeypatch, lambda m: broker.handle_rpc(ws, m), [
+    out = drive_stdio(monkeypatch, lambda m: broker.handle_rpc(broker.Desk(ws), m), [
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 1, "method": "ping"}])
     assert len(out) == 1 and out[0]["id"] == 1
@@ -581,7 +581,7 @@ def test_rubbish_on_the_input_does_not_end_the_session(served, monkeypatch):
         "not json\n\n" + json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping"}) + "\n"))
     out = io.StringIO()
     monkeypatch.setattr("sys.stdout", out)
-    broker.serve_stdio(lambda m: broker.handle_rpc(ws, m))
+    broker.serve_stdio(lambda m: broker.handle_rpc(broker.Desk(ws), m))
     assert [json.loads(l)["id"] for l in out.getvalue().splitlines() if l.strip()] == [9]
 
 

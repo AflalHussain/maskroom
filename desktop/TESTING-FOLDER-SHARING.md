@@ -323,7 +323,20 @@ folder being attached, and it is independent of how Claude finds the broker.
 
 ## Part 6 — test it the way a user would
 
-**24.** In a Cowork task, type: **"list the files you can see"**.
+**23c.** Before sharing anything, check that Claude can ask for a folder. In a task,
+type: **"summarise the overdue loans in my files"**.
+
+Claude should find nothing shared, call `request_folder`, and the SafePII folder
+picker should open on your screen carrying its reason. Pick `sample-folder` and
+Claude should carry on with the answer. That is the flow a user will actually
+have — no step beforehand.
+
+Close the picker without choosing, and Claude should be told you declined rather
+than left waiting. Ask again and it should say you already declined; sharing a
+folder from the bar clears that.
+
+**24.** With a folder shared, in a Cowork task type: **"list the files you can
+see"**.
 
 Claude should call the SafePII tool — expect an approval prompt the first time —
 and answer with the handles. Then work through these, each of which checks
@@ -396,7 +409,8 @@ Remove-Item -Path HKCU:\SOFTWARE\Policies\Claude -Recurse -Force
 | Claude sees no tools, but Part 4 worked | The registry policy did not take | Check step 23 first, then compare with the `managed configuration:` log line |
 | Tooltip shows nothing on a token (step 25) | The folder's vault is not in the helper | Look for `shared folder vault: N new token(s)` in the log after Claude reads a file. No such line means the broker never told the helper it minted anything |
 | Sharing stopped by itself | You signed out | Expected: the broker serves with that sign-in. Share again after signing back in |
-| Step 11 worked, then "Unable to connect" later | The helper was closed or restarted, or you pressed Stop | Check the panel: if it offers **Share a folder** again, nothing is being served. Locking the screen is **not** a cause — that drops the values on screen but leaves the folder served |
+| "Unable to connect" on port 47821 | The helper is not running, or could not open the port | The broker now listens for as long as the helper runs, whether or not a folder is shared, so this means the helper itself is down. The log says if the port was taken |
+| Claude says no folder is shared | Correct, and it should offer to ask | It calls `request_folder`; if it does not, check `tools/list` includes it (step 11) |
 | Helper will not start after an update | A stale `.pyc`, or the two files disagree | Delete `__pycache__`, redo steps 3 and 4 together |
 
 ## What has not been tested anywhere yet
