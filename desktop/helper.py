@@ -992,10 +992,11 @@ class Sharing:
     sets of handles that look alike, for a case nobody has asked for yet.
     """
 
-    def __init__(self, cfg: dict, server, on_change=None):
+    def __init__(self, cfg: dict, server, on_change=None, on_resolve=None):
         self.cfg = cfg
         self.server = server            # only for its credentials and address
         self.on_change = on_change or (lambda: None)
+        self.on_resolve = on_resolve    # token -> value, across every known vault
         self.httpd = None
         self.thread = None
         self.desk = None
@@ -1116,7 +1117,7 @@ class Sharing:
                 Path(root), self.client(), session=session,
                 allow_code=bool(self.cfg.get("shareAllowCode", False)),
                 names=str(self.cfg.get("shareNames") or "handles"),
-                on_mint=self.note_mint)
+                on_mint=self.note_mint, resolve=self.resolve_tokens)
         except (broker_mod.BrokerError, OSError, ValueError) as e:
             self.error = str(e)
             log(f"sharing: could not serve {root}: {e}")
@@ -1134,6 +1135,21 @@ class Sharing:
         log("managed configuration: " + " ".join(self.policy_snippet().split()))
         self.on_change()
         return ""
+
+    def resolve_tokens(self, text: str) -> str:
+        """A token from any session the helper knows, back to its value.
+
+        The folder's tokens are not the chat's: the same name masked in two
+        sessions gets two ids. So a search term the model was handed -- the
+        person's own words, masked into the chat's vault -- cannot match
+        anything in the folder's files until it is turned back. The helper holds
+        the union of every vault, which is the only place that can do it.
+        """
+        try:
+            return self.on_resolve(text) if self.on_resolve else text
+        except Exception as e:  # noqa: BLE001
+            log(f"sharing: could not resolve a token in a search term: {e}")
+            return text
 
     def note_mint(self) -> None:
         """A file Claude read put new values in the vault."""
@@ -1191,7 +1207,8 @@ class Automation(threading.Thread):
         self.clip_ignore_until = 0.0
         self.claude_win = None        # top-level Claude window (overlay covers it)
         self.files = FileApi(self.server)
-        self.sharing = Sharing(cfg, self.server)
+        self.sharing = Sharing(cfg, self.server,
+                               on_resolve=lambda text: self.index.restore(text)[0])
         self.forgot = False           # values dropped for an unattended desk, to be re-fetched
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_edit = None

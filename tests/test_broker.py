@@ -457,21 +457,55 @@ def test_searching_for_a_real_name_masks_the_query_and_finds_it(served):
     assert not is_error, text
     assert "loans.csv:3" in text or "loans.csv:2" in text
     assert "TOK_PERSON_7F31A0B2" in text
-    assert "searched for its token" in text, "and the model is told why"
+    assert "masked form of it" in text, "and the model is told why"
 
 
 def test_a_term_that_is_not_personal_data_is_searched_as_it_is(served):
     _ws, peer = served
     text, _ = peer.call("search_files", query="amount")
     assert "loans.csv:1" in text
-    assert "searched for its token" not in text
+    assert "masked form of it" not in text
 
 
 def test_a_search_that_finds_nothing_says_why_it_might_not(served):
     _ws, peer = served
-    text, _ = peer.call("search_files", query="Nimal")      # part of a value, not the value
+    text, _ = peer.call("search_files", query="nothing like this exists")
     assert "No matches" in text
     assert "whole value" in text
+
+
+def test_a_file_is_found_by_its_name_without_the_name_being_given_away(served):
+    """What a person actually asks: "Kamala Silva's statement". The name is
+    matched against what they typed and answered with the handle the model
+    does see, so the file is findable and the name is still not disclosed."""
+    ws, peer = served
+    (ws.root / "Kamala_Silva_statement.csv").write_text("date,amount\n2026-08-01,120000\n")
+    text, is_error = peer.call("search_files", query="Kamala Silva statement")
+    assert not is_error, text
+    assert "whose name matches" in text
+    assert "statement" in text
+    assert "Kamala_Silva_statement.csv" not in text, "the real name still never appears"
+
+
+def test_a_part_of_a_name_is_not_enough(served):
+    """Strict enough not to match everything: every word has to be in the name."""
+    ws, peer = served
+    (ws.root / "Kamala_Silva_statement.csv").write_text("nothing\n")
+    text, _ = peer.call("search_files", query="Kamala Silva invoice")
+    assert "whose name matches" not in text
+
+
+def test_a_token_from_another_session_is_turned_back_before_searching(served, monkeypatch):
+    """The bug a person hit: they typed "Kamala Silva", the guard masked it into
+    the *chat's* token, and the model searched the folder for a token the
+    folder's files can never contain. The chat and the folder mint different ids
+    for the same name, so the term has to be resolved first."""
+    ws, peer = served
+    ws.resolve = lambda text: text.replace("TOK_PERSON_CHAT9999", "Kamala Silva")
+    text, is_error = peer.call("search_files", query="TOK_PERSON_CHAT9999")
+    assert not is_error, text
+    assert "token from another session" in text
+    assert "loans.csv:2" in text, "and it finds her row, which the raw token never would"
 
 
 # ------------------------------------------------------------------ writing back

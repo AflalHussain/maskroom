@@ -179,7 +179,7 @@ bar."*
 |---|---|
 | `list_files` | Everything in the folder, with what SafePII cannot check listed but marked **NOT SERVED** rather than quietly missing. |
 | `read_file` | One file, masked. Lines are numbered **after** masking, because a token is longer than the value it replaced and an offset taken from the real bytes points somewhere else. |
-| `search_files` | Masks the search term first, so looking for a real name finds that name's token. Only whole values match, and the reply says so. |
+| `search_files` | Searches contents **and names**. A term that is itself a token — the person's own words, masked into the chat's vault — is turned back into the value first, because the chat's tokens are not this folder's and a search for one could never match anything. A name is matched against what the person typed and answered with the handle, so "Kamala Silva's statement" finds the file without the name being disclosed. Inside files, only whole values match, and the reply says so. |
 | `write_file` | Restores the tokens and writes to an output folder *beside* the served one, never over the original. Tokens from another session are reported, not guessed. |
 | `request_folder` | **Asks the person for a folder**, at the moment Claude needs one. The SafePII picker opens carrying the model's reason, and the tool call waits for the answer. Offered only where there is somebody to ask, so a standalone broker does not advertise it. |
 

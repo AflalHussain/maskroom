@@ -317,7 +317,7 @@ class Workspace:
 
     def __init__(self, root: Path, client: Client, session: str = "",
                  staging: Path | None = None, allow_code: bool = False,
-                 names: str = "handles", on_mint=None):
+                 names: str = "handles", on_mint=None, resolve=None):
         self.root = Path(root).expanduser().resolve()
         if not self.root.is_dir():
             raise BrokerError(f"{self.root} is not a folder")
@@ -333,9 +333,15 @@ class Workspace:
         # re-read that vault: it holds the only copy the screen is restored
         # from, and masking here happens without it ever being asked.
         self.on_mint = on_mint or (lambda: None)
+        # Turns a token from *any* session back into its value. The helper holds
+        # every vault; the folder holds one. A person typing "Kamala Silva" into
+        # the composer has it masked into the chat's token, and the same name in
+        # the folder has a different one, so a search for what the model was
+        # given could never match. This is how the two are reconciled.
+        self.resolve = resolve or (lambda text: text)
 
     # ---- paths
-    def resolve(self, given: str) -> Path:
+    def resolve_path(self, given: str) -> Path:
         """A path inside the root, or an error.
 
         Resolved before the check, so a symlink out of the tree and `..` are both
@@ -494,7 +500,7 @@ class Desk:
 
 # ----------------------------------------------------------------- the tools
 def tool_list_files(ws: Workspace, args: dict) -> str:
-    where = ws.resolve(args.get("path") or ".")
+    where = ws.resolve_path(args.get("path") or ".")
     pattern = (args.get("glob") or "").strip()
     if not where.is_dir():
         raise BrokerError(f"{args.get('path')!r} is not a folder")
@@ -532,7 +538,7 @@ def tool_list_files(ws: Workspace, args: dict) -> str:
 
 
 def tool_read_file(ws: Workspace, args: dict) -> str:
-    real = ws.resolve(args.get("path") or "")
+    real = ws.resolve_path(args.get("path") or "")
     if not real.is_file():
         raise BrokerError(f"{args.get('path')!r} is not a file")
     state, why = ws.classify(real)
@@ -550,16 +556,34 @@ def tool_read_file(ws: Workspace, args: dict) -> str:
     return head + body
 
 
+def loose_match(term: str, name: str) -> bool:
+    """Does this file name answer that term?
+
+    A person says "Kamala Silva's statement" and the file is called
+    `Kamala_Silva_statement.csv`. Every word of the term has to appear in the
+    name, with separators and case ignored, which is strict enough not to match
+    everything and loose enough to find what was meant.
+    """
+    flat = re.sub(r"[\s_.\-/]+", " ", name).lower()
+    words = [w for w in re.split(r"[\s_.\-]+", term.lower()) if len(w) > 1]
+    return bool(words) and all(w in flat for w in words)
+
+
 def tool_search_files(ws: Workspace, args: dict) -> str:
     """The query is masked too, which is the whole trick: tokens are
     deterministic, so a search for a real name becomes a search for that name's
     token and matches the masked text. An exact value only -- a partial or
     fuzzy search cannot work against masked content, and saying so is better
     than quietly returning nothing."""
-    query = (args.get("query") or "").strip()
-    if not query:
+    asked = (args.get("query") or "").strip()
+    if not asked:
         raise BrokerError("nothing to search for")
-    where = ws.resolve(args.get("path") or ".")
+    where = ws.resolve_path(args.get("path") or ".")
+    # A token in the search term came from somewhere else -- usually the person's
+    # own message, masked into the chat's vault, whose tokens are not this
+    # folder's. Turn it back into the value and search for that.
+    query = ws.resolve(asked)
+    was_token = query != asked
     masked_query, _ = ws.mask(query)
     try:
         needle = re.compile(re.escape(masked_query), re.IGNORECASE)
@@ -590,11 +614,40 @@ def tool_search_files(ws: Workspace, args: dict) -> str:
                 break
         if len(hits) >= MAX_HITS:
             break
+    # The file whose *name* is the match. A name the model never sees, matched
+    # against the value the person actually typed, answered with the handle it
+    # does see: "Kamala Silva's statement" finds the file without the name ever
+    # being disclosed.
+    named = []
+    for dirpath, dirnames, filenames in os.walk(where):
+        dirnames[:] = [d for d in sorted(dirnames) if not d.startswith(".")]
+        for fn in sorted(filenames):
+            if fn.startswith("."):
+                continue
+            full = Path(dirpath) / fn
+            rel = full.relative_to(ws.root).as_posix()
+            if not loose_match(query, rel):
+                continue
+            state, why = ws.classify(full)
+            shown = ws.show_names([rel])[0]
+            named.append(f"  {shown}" + ("" if state != "refused" else f"  -- NOT SERVED: {why}"))
+            if len(named) >= 20:
+                break
+
     told = ""
+    if was_token:
+        told = (f"The term was a token from another session, which this folder's files cannot "
+                f"contain. SafePII turned it back into the value it stands for and searched "
+                f"for that.\n")
     if masked_query != query:
-        told = ("The term you searched for is personal data, so SafePII searched for its token "
-                f"({masked_query}) instead. Matches are the same ones.\n")
+        told += ("The term holds personal data, so inside the files SafePII searched for this "
+                 f"folder's masked form of it: {masked_query}\n")
+    if named:
+        told += (f"{len(named)} file(s) whose name matches, which you would not see from the "
+                 f"handles:\n" + "\n".join(named) + "\n")
     if not hits:
+        if named:
+            return ws.note() + told + f"Nothing inside the {scanned} file(s) searched matched."
         return (ws.note() + told + f"No matches in {scanned} file(s)"
                 + (f"; {skipped} not served." if skipped else ".")
                 + " Masked content only matches a whole value, not part of one.")

@@ -115,6 +115,15 @@ the minimal set, and on a decline ask in conversation rather than again.
   of tokens.
 - A folder session is one more vault. Because restore already searches every known vault
   (ADR 0007), the chat surfaces — hover, copy, the screen overlay — need no changes.
+- **The folder's tokens are not the chat's, and that breaks the obvious thing a person does.**
+  The same name masked in two sessions gets two different ids — measured, not assumed. So when
+  someone types "what is in Kamala Silva's statement", the guard masks it into the *chat's*
+  token and the model then searches the folder for a token the folder's files can never
+  contain. It found nothing, which is the correct answer to the wrong question. The broker
+  therefore resolves a token in a search term through the helper's union of every known vault
+  before searching, which is the only place that can: the folder knows one vault, the helper
+  knows them all. The same reconciliation is needed anywhere else a term crosses from the chat
+  into the folder.
 - **Dropping the values and stopping the folder are separate things**, learned on the first
   Windows run. The helper forgets the real values when the desk is unattended, and that was
   wired to stop serving too; locking the screen then killed a folder mid-task. But the folder
