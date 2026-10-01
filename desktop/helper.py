@@ -993,6 +993,10 @@ class Sharing:
         self.root = ""
         self.session = ""
         self.error = ""
+        # Set by the broker's threads when a file it served minted new tokens,
+        # read and cleared by the worker. A flag rather than a call, because the
+        # vault index is the worker's and the overlay reads it.
+        self.minted = False
 
     @property
     def active(self) -> bool:
@@ -1028,7 +1032,8 @@ class Sharing:
             workspace = broker_mod.Workspace(
                 Path(root), self.client(), session=session,
                 allow_code=bool(self.cfg.get("shareAllowCode", False)),
-                names=str(self.cfg.get("shareNames") or "handles"))
+                names=str(self.cfg.get("shareNames") or "handles"),
+                on_mint=self.note_mint)
             port = int(self.cfg.get("sharePort") or broker_mod.DEFAULT_PORT)
             httpd = broker_mod.make_server(workspace, port)
         except (broker_mod.BrokerError, OSError, ValueError) as e:
@@ -1048,6 +1053,17 @@ class Sharing:
         log("managed configuration: " + " ".join(self.policy_snippet().split()))
         self.on_change()
         return ""
+
+    def note_mint(self) -> None:
+        """A file Claude read put new values in the vault."""
+        self.minted = True
+
+    def take_mint(self) -> bool:
+        """True once per batch of new tokens, for the worker to act on."""
+        if not self.minted:
+            return False
+        self.minted = False
+        return True
 
     def stop(self) -> None:
         if self.httpd is not None:
@@ -1170,6 +1186,10 @@ class Automation(threading.Thread):
                 except Exception as e:  # noqa: BLE001
                     log(f"downloads poll error {type(e).__name__}: {e}")
             self.poll_idle()
+            try:
+                self.poll_shared_vault()
+            except Exception as e:  # noqa: BLE001
+                log(f"shared folder vault error {type(e).__name__}: {e}")
             try:
                 self.poll_update()
             except Exception as e:  # noqa: BLE001
@@ -1298,6 +1318,27 @@ class Automation(threading.Thread):
         SHARED["index"] = self.index          # the overlay thread reads this
         self.token_owner = owner
         log(f"vault index: {len(union)} tokens across {len(self.vaults)} sessions")
+
+    def poll_shared_vault(self) -> None:
+        """Re-read the shared folder's vault after Claude has read a file.
+
+        The folder's vault is fetched once when the folder is shared, and at that
+        moment it is empty: every token in it is minted later, as Claude reads
+        files, by the broker calling the server directly. Nothing asked the
+        helper, so its copy stayed empty and the overlay had nothing to restore a
+        file's values with -- which is exactly how it looked, tokens on screen
+        that hover and the overlay ignored.
+
+        The broker is in this process, so it raises a flag and this reads it.
+        Once per batch rather than once per file: Claude reads a folder in
+        handfuls, and one fetch covers all of them.
+        """
+        if not self.sharing.active or not self.sharing.take_mint():
+            return
+        before = len(self.index.vault)
+        self.load_vault(self.sharing.session)
+        log(f"shared folder vault: {len(self.index.vault) - before} new token(s) "
+            f"from {self.sharing.name}")
 
     def poll_update(self) -> None:
         """Ask the server what the current helper is.

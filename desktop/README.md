@@ -208,7 +208,11 @@ makes SafePII the only way in.
 3. **Share it.** The panel then reads *Sharing loans* with a **Stop** beside it, and the hover
    readout says so too, because a shared folder is a live path off the machine.
 4. In Claude, the user just asks. The folder's vault joins the ones restore searches, so a
-   value Claude read out of a file is a real value under the mouse in the chat.
+   value Claude read out of a file is a real value under the mouse in the chat. It is kept
+   current, which is not automatic: the vault is empty when the folder is shared and every
+   token in it is minted later, by the broker calling the server as Claude reads. The broker
+   runs in this process, so it raises a flag when a file minted something and the worker
+   re-reads the vault on its next tick — once per handful of files, not once per file.
 
 One folder at a time: sharing a second replaces the first. Two would mean two vaults to explain
 and two sets of handles that look alike, for a case nobody has asked for. Sharing survives the

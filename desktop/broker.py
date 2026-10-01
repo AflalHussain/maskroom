@@ -317,7 +317,7 @@ class Workspace:
 
     def __init__(self, root: Path, client: Client, session: str = "",
                  staging: Path | None = None, allow_code: bool = False,
-                 names: str = "handles"):
+                 names: str = "handles", on_mint=None):
         self.root = Path(root).expanduser().resolve()
         if not self.root.is_dir():
             raise BrokerError(f"{self.root} is not a folder")
@@ -329,6 +329,10 @@ class Workspace:
         self.cache: dict[tuple, str] = {}       # (realpath, mtime_ns, size) -> masked text
         self.names_policy = Names(self, names)
         self.preamble_sent = False
+        # Called when a mask added to the session's vault. The helper uses it to
+        # re-read that vault: it holds the only copy the screen is restored
+        # from, and masking here happens without it ever being asked.
+        self.on_mint = on_mint or (lambda: None)
 
     # ---- paths
     def resolve(self, given: str) -> Path:
@@ -390,6 +394,8 @@ class Workspace:
         if not res["ok"]:
             raise BrokerError(f"SafePII could not mask this: {res['error']}")
         data = res["data"]
+        if data.get("changed"):
+            self.on_mint()
         return data.get("masked", text), data
 
     def unmask(self, text: str) -> tuple[str, dict]:
@@ -417,6 +423,8 @@ class Workspace:
         run = data.get("run_id")
         if not out or not run:
             raise BrokerError(f"SafePII masked {real.name} but returned no file to read")
+        if data.get("vault_entries"):
+            self.on_mint()
         body, err = self.client.download(f"/api/download/{run}/{urllib.parse.quote(out)}")
         if err or body is None:
             raise BrokerError(f"SafePII masked {real.name} but the masked copy could not be read ({err})")

@@ -283,3 +283,57 @@ def test_a_folder_that_has_gone_is_not_resumed(helper, tmp_path):
     a.resume_share()
     assert a.commands.empty()
     assert a.cfg["shareRoot"] == ""
+
+
+# --------------------------------------------------------------- the file values
+def test_a_value_claude_read_from_a_file_can_be_restored_on_screen(helper, folder, tmp_path):
+    """The point of the whole thing, and what was broken on the first real run.
+
+    The folder's vault is fetched when the folder is shared, and at that moment
+    it is empty: every token in it is minted afterwards, as Claude reads files,
+    by the broker calling the server directly. Nothing asked the helper, so its
+    copy stayed empty and the overlay ignored the tokens on screen.
+    """
+    a = a_worker(helper, config(tmp_path))
+    a.cmd_share_folder(str(folder))
+
+    # Nothing has been read yet, so there is nothing to refresh.
+    assert a.poll_shared_vault() is None
+    assert a.sharing.minted is False
+
+    # Claude reads a file: the broker masks it and says so.
+    a.server = types.SimpleNamespace(api=lambda path, method="GET", body=None: {
+        "ok": True, "status": 200,
+        "data": {"mappings": {"TOK_PERSON_1": "Nimal Perera",
+                              "TOK_LK_NIC_9": "912345678V"}}})
+    a.sharing.workspace.on_mint()
+    a.poll_shared_vault()
+
+    assert a.index.vault.get("TOK_LK_NIC_9") == "912345678V", \
+        "a value read out of a file has to be restorable under the mouse"
+    assert helper.SHARED["index"] is a.index, "and the overlay thread reads this one"
+
+
+def test_one_fetch_covers_a_handful_of_files(helper, folder, tmp_path):
+    """Claude reads a folder in handfuls; a fetch per file would be a fetch per
+    token."""
+    a = a_worker(helper, config(tmp_path))
+    a.cmd_share_folder(str(folder))
+    calls = []
+    a.server = types.SimpleNamespace(api=lambda path, method="GET", body=None: (
+        calls.append(path), {"ok": True, "status": 200, "data": {"mappings": {}}})[1])
+    for _ in range(5):
+        a.sharing.workspace.on_mint()
+    a.poll_shared_vault()
+    a.poll_shared_vault()
+    assert len(calls) == 1, calls
+
+
+def test_nothing_is_fetched_when_no_folder_is_shared(helper, tmp_path):
+    a = a_worker(helper, config(tmp_path))
+    calls = []
+    a.server = types.SimpleNamespace(api=lambda *args, **kw: (
+        calls.append(args), {"ok": True, "status": 200, "data": {}})[1])
+    a.sharing.minted = True
+    a.poll_shared_vault()
+    assert calls == []
