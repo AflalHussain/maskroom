@@ -191,21 +191,26 @@ class Names:
 
     So there are three policies, and the safe one is the default.
 
+    - `mask` (the default): each path component is masked separately, and a
+      component the detector passes over is probed again with its separators
+      turned into spaces, with whatever values that finds substituted back into
+      the original spelling. Best-effort, and deliberately held to the same
+      standard as a file's contents, which are also best-effort -- the engine
+      misses a name in prose too. Demanding certainty of names while accepting
+      it of contents was two standards for one risk.
     - `handles`: every name becomes `f003.csv` in `d01/`, and a map remembers
       which is which. Nothing about a name can leak, whatever the detector does
-      or does not notice. The cost is that the model loses the meaning a folder
-      tree carries.
-    - `mask`: each path component is masked separately, and a component the
-      detector passes over is probed again with its separators turned into
-      spaces, with whatever values that finds substituted back into the original
-      spelling. Better than passing names through, and still best-effort: it
-      cannot be promised.
+      or does not notice. It was the default until a real run showed the cost:
+      the model cannot tell `loans_overdue.csv` from `branch_targets.md`, so it
+      reads every file to find out what it has -- six, in the run that settled
+      this -- which sends *more* content out, not less. For a customer who wants
+      the stricter guarantee on names and will pay that.
     - `real`: names as they are. For a folder whose names are known to be safe.
     """
 
-    POLICIES = ("handles", "mask", "real")
+    POLICIES = ("mask", "handles", "real")
 
-    def __init__(self, workspace, policy: str = "handles"):
+    def __init__(self, workspace, policy: str = "mask"):
         if policy not in self.POLICIES:
             raise BrokerError(f"name policy must be one of {', '.join(self.POLICIES)}")
         self.ws = workspace
@@ -317,7 +322,7 @@ class Workspace:
 
     def __init__(self, root: Path, client: Client, session: str = "",
                  staging: Path | None = None, allow_code: bool = False,
-                 names: str = "handles", on_mint=None, resolve=None):
+                 names: str = "mask", on_mint=None, resolve=None):
         self.root = Path(root).expanduser().resolve()
         if not self.root.is_dir():
             raise BrokerError(f"{self.root} is not a folder")
@@ -828,7 +833,7 @@ def describe(p: dict) -> str:
     if p["refused"]:
         parts = ", ".join(f"{n} {why}" for why, n in sorted(p["refusals"].items()))
         said.append(f"{p['refused']} would not be served: {parts}.")
-    said.append("File names are replaced with handles.")
+    said.append("Personal data in the file names is masked too.")
     return " ".join(said)
 
 
@@ -1097,7 +1102,7 @@ def main(argv=None) -> int:
                     help="with --stdio: relay to the helper's own broker rather than serving "
                          "the folder here, so the folder is served once (default: the port "
                          "the helper uses)")
-    ap.add_argument("--names", default="handles", choices=Names.POLICIES,
+    ap.add_argument("--names", default="mask", choices=Names.POLICIES,
                     help="what the model sees a file called: opaque handles (default), "
                          "best-effort masking, or the real name")
     ap.add_argument("--allow-code", action="store_true",

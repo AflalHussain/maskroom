@@ -124,7 +124,7 @@ missing, `broker.py` is not beside `helper.py`: check with `dir` and redo step 4
 
 > Claude would see 5 file(s) (1 kB), masked. 3 would not be served: 1 cannot be
 > checked (.png), 1 needs the document pipeline, 1 source code. File names are
-> replaced with handles.
+> names is masked too.
 
 That count is arithmetic over file extensions, so it appears instantly and costs
 no server call. **This is the sentence a customer's security officer will read**,
@@ -156,22 +156,27 @@ Four tools: `list_files`, `read_file`, `search_files`, `write_file`.
 (Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_files","arguments":{}}}').result.content[0].text
 ```
 
-Expect eight files, none of them by their real name, three marked **NOT SERVED**
-with a different reason each, and the subfolder as `d01/`:
+Expect eight files, three marked **NOT SERVED** with a different reason each,
+and **no person's name anywhere** — though names with nothing personal in them,
+like `loans_overdue.csv`, survive intact:
 
 ```
-f001.csv  (128 bytes)
-f002.png  -- NOT SERVED: SafePII cannot check .png, so it is not served
-f003.md   (271 bytes)
-f004.xlsx -- NOT SERVED: .xlsx needs SafePII's document pipeline ...
-f005.csv  (258 bytes)
-f006.md   (518 bytes)
-f007.py   -- NOT SERVED: source code: masking it would corrupt it ...
-d01/f008.txt  (201 bytes)
+TOK_PERSON_83170620_statement.csv  (128 bytes)
+branch_logo.png     -- NOT SERVED: SafePII cannot check .png ...
+branch_targets.md   (271 bytes)
+leave_register.xlsx -- NOT SERVED: .xlsx needs SafePII's document pipeline ...
+loans_overdue.csv   (258 bytes)
+notes.md            (518 bytes)
+reconcile.py        -- NOT SERVED: source code: masking it would corrupt it ...
+kyc/TOK_PERSON_B59D2435.txt  (201 bytes)
 ```
 
-**Handles are assigned in walk order, so match by byte size, not by number.** If
-your listing has an extra file, everything after it shifts along:
+Token ids will differ; what matters is that no person's name appears.
+
+Names come back masked rather than replaced, so most of them are recognisable:
+`loans_overdue.csv`, `notes.md`, `branch_targets.md`. The two that carry a person
+do not: `TOK_PERSON_…_statement.csv` and `kyc/TOK_PERSON_….txt`. **Match by byte
+size** if anything is ambiguous:
 
 | Size | Which sample it is |
 |---|---|
@@ -183,21 +188,21 @@ your listing has an extra file, everything after it shifts along:
 
 The three refusals are named by their extension, so those are unambiguous.
 
-**13.** Read the table — this is the one that matters most. Use **the 258-byte
-`.csv`** from your own listing; it is `f005.csv` in a clean copy:
+**13.** Read the table — this is the one that matters most: `loans_overdue.csv`,
+the 258-byte one:
 
 ```powershell
-(Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"f005.csv"}}}').result.content[0].text
+(Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"loans_overdue.csv"}}}').result.content[0].text
 ```
 
 Every name, NIC and mobile must be a `TOK_…`. Branch, amount and days stay as
 they are. **If a name comes back in the clear, stop and send me the output**:
 that is the leak the tabular route exists to prevent.
 
-**14.** Read the prose file — **the 518-byte `.md`**, `f006.md` in a clean copy:
+**14.** Read the prose file — `notes.md`, the 518-byte one:
 
 ```powershell
-(Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"f006.md"}}}').result.content[0].text
+(Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"notes.md"}}}').result.content[0].text
 ```
 
 Known and expected here, measured on 2026-09-29: **"Call Nimal Perera on …" comes
@@ -210,7 +215,7 @@ ordinary dates should not be.
 **15.** Check the refusal is a refusal, using the `.py` from your listing:
 
 ```powershell
-(Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"f007.py"}}}').result.content[0].text
+(Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"reconcile.py"}}}').result.content[0].text
 ```
 
 One sentence explaining why, and **no trace of `API_SECRET`**.
@@ -222,7 +227,7 @@ its own token:
 (Invoke-RestMethod -Uri http://127.0.0.1:47821/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"search_files","arguments":{"query":"Sunil Fernando"}}}').result.content[0].text
 ```
 
-It should say it searched for the token instead, and find the row in `f005.csv`.
+It should say it searched for this folder's masked form of the name, and find the row in `loans_overdue.csv`.
 
 **17.** Check a path cannot escape the folder:
 
@@ -339,15 +344,17 @@ folder from the bar clears that.
 see"**.
 
 Claude should call the SafePII tool — expect an approval prompt the first time —
-and answer with the handles. Then work through these, each of which checks
+and answer with the file names, the personal data in them masked. Then work
+through these, each of which checks
 something different:
 
 | Ask Claude | What you are checking |
 |---|---|
-| "read f005.csv and tell me who is most overdue" | It reasons over tokens without complaining about them |
+| "read loans_overdue.csv and tell me who is most overdue" | It reasons over tokens without complaining about them |
 | "search for Sunil Fernando" | The query is masked before the search |
+| "what is in Kamala Silva's statement?" | **The case that failed before.** Your words are masked into the *chat's* token, which the folder's files cannot contain; SafePII turns it back and matches the file name. Claude should find the statement |
 | "what is behind TOK_PERSON_…?" | It should say it cannot know. If it guesses a name, tell me — that is the behaviour worth catching |
-| "read f007.py" | It reports the refusal instead of working around it |
+| "read reconcile.py" | It reports the refusal instead of working around it |
 | "write a one-line summary to summary.md" | The output lands in `sample-folder-safepii-out`, restored |
 
 **25.** Now the point of all of it. In Claude's reply, rest the mouse on a

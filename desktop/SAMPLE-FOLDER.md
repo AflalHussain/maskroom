@@ -18,8 +18,8 @@ no person or account in it exists.
 |---|---|---|
 | `notes.md` | Prose with names, NICs, mobiles, a street address, a birth date, a salary and two ordinary dates | Masked through the free-text path. The salary and the ordinary dates stay as they are — they are analytical fields; the birth date and the street address do not |
 | `loans_overdue.csv` | A table whose **names are in rows with no sentence around them** | Masked through the *tabular* pipeline. If a name comes back in the clear, the file went through the prose path and that is the bug this file exists to catch |
-| `Kamala_Silva_statement.csv` | A file whose **name** is the personal data; the contents hold none | Contents unchanged. The name must not appear: by default it comes back as a handle such as `f001.csv` |
-| `kyc/Nimal Perera - KYC.txt` | A name **inside a path**, in a subfolder | Served as `d01/f008.txt`. Under `--names mask` the path is masked one component at a time, because a separator glues the folder to the name and defeats the detector |
+| `Kamala_Silva_statement.csv` | A file whose **name** is the personal data; the contents hold none | Contents unchanged. The name comes back masked — `TOK_PERSON_…_statement.csv` — so the person is hidden and the model can still tell what the file is |
+| `kyc/Nimal Perera - KYC.txt` | A name **inside a path**, in a subfolder | The path is masked one component at a time, because a separator glues the folder to the name and defeats the detector reading it as prose |
 | `branch_targets.md` | No personal data at all | Byte for byte what it was. A file that comes back changed means something is being masked that should not be |
 | `reconcile.py` | Source code, with a secret and a variable named after a person | **Refused.** Masking it would corrupt it, and `silva_adjustment` is exactly what a name recognizer trips over. The secret must never appear |
 | `leave_register.xlsx` | A spreadsheet | **Refused** — it needs the server's document pipeline, which the broker does not call yet |

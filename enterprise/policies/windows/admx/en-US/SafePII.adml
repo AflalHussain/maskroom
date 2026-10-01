@@ -86,9 +86,11 @@ Pair it with Claude Desktop's own allowedWorkspaceFolders policy: set that to an
       <string id="ShareNames">What Claude sees a shared file called</string>
       <string id="ShareNames_Help">A file name can disclose as much as the file does.
 
-Handles (recommended) replaces every name with d01/f003.csv and keeps the mapping, so nothing in a name can leak. Masked names are best-effort: a name is prose to the detector, and a path separator or an underscore can defeat it. Real names are for folders whose names are known to carry nothing personal.</string>
-      <string id="ShareNames_Handles">Opaque handles (recommended)</string>
-      <string id="ShareNames_Mask">Mask names where recognised</string>
+Masked names (recommended) hide the personal data and keep the rest, so Claude can still tell a loan register from a branch report. This is best-effort, exactly as masking a file's contents is.
+
+Handles replace every name with d01/f003.csv, so nothing in a name can leak whatever the detector misses. The cost is that Claude cannot tell one file from another and reads them all to find out, which sends more content out rather than less. Real names are for folders whose names are known to carry nothing personal.</string>
+      <string id="ShareNames_Handles">Opaque handles (stricter, less useful)</string>
+      <string id="ShareNames_Mask">Mask names where recognised (recommended)</string>
       <string id="ShareNames_Real">Use the real names</string>
       <string id="ShareAllowCode">Serve source files as well</string>
       <string id="ShareAllowCode_Help">Off by default. Masking a source file can corrupt it, and identifiers, keys and host names are easily mistaken for personal data, so SafePII refuses to serve code rather than mangle or leak it. Enable this only for a folder where that trade is understood.</string>

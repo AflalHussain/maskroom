@@ -100,11 +100,15 @@ the minimal set, and on a decline ask in conversation rather than again.
   comma-separated row has no context around it. Tabular files go through `/api/process`, which
   masks by column. Verified against a live server, and the reason a broker can look like it
   works while leaking.
-- **File names are replaced with handles by default, not masked.** Masking a name is
-  best-effort in a way masking content is not — a path separator or an underscore defeats the
-  detector, and a probe that gets around them read a file extension as a surname. A handle
-  cannot leak what the detector misses; masking names stays available for a folder whose names
-  matter to the work, and is documented as best-effort.
+- **File names are masked, not replaced — reversed after a real run.** Handles (`f001.csv`)
+  were the default on the reasoning that masking a name is best-effort while a handle cannot
+  leak at all. Two things were wrong with that. The model, unable to tell one file from
+  another, read six of them to work out what it had, so hiding the names sent *more* content to
+  Anthropic rather than less; and it could not answer "what is in Kamala's statement" at all.
+  The standard was also inconsistent: a file's contents are masked best-effort, and the engine
+  does miss a name in prose, so demanding certainty of names while accepting best-effort of
+  contents was two standards for one risk. Handles remain available for a customer who wants
+  the stricter guarantee and accepts the cost.
 - The strict profile costs the model shell access to the real files. For an analyst with
   spreadsheets that is acceptable; for a developer it is not, which is why the working profile
   exists.

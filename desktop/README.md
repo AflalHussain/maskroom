@@ -183,12 +183,21 @@ bar."*
 | `write_file` | Restores the tokens and writes to an output folder *beside* the served one, never over the original. Tokens from another session are reported, not guessed. |
 | `request_folder` | **Asks the person for a folder**, at the moment Claude needs one. The SafePII picker opens carrying the model's reason, and the tool call waits for the answer. Offered only where there is somebody to ask, so a standalone broker does not advertise it. |
 
-**File names.** By default a name becomes a handle — `d01/f003.csv` — because a name discloses
-as much as the file does and masking one is only best-effort: measured against a live server,
-`kyc/Nimal Perera - loan.csv` is not recognised at all, and a probe that gets around the
-separator read the `md` in `notes.md` as a surname. A handle cannot leak what the detector
-misses. `--names mask` is available for a folder whose names carry meaning the work needs, and
-`--names real` for one whose names are known to be safe.
+**File names are masked, not replaced.** `Kamala_Silva_statement.csv` is served as
+`TOK_PERSON_83170620_statement.csv`: the person is hidden and the model can still tell it is a
+statement. `loans_overdue.csv` and `notes.md` pass through unchanged, because there is nothing
+personal in them.
+
+Opaque handles (`f001.csv`) were the default until a real run showed the cost. Unable to tell
+one file from another, the model read **six** of them to work out what it had — so hiding the
+names sent *more* content out, not less, which is the wrong way round for a privacy tool. It
+also could not answer "what is in Kamala's statement" at all. And the standard was inconsistent:
+a file's *contents* are masked best-effort, and the engine does miss a name in prose, so
+demanding certainty of names while accepting best-effort of contents was two standards for one
+risk.
+
+`--names handles` is still there for a customer who wants the stricter guarantee on names and
+accepts that cost, and `--names real` for a folder whose names are known to carry nothing.
 
 **What it will not serve.** Source code (masking it would corrupt it), spreadsheets and PDFs
 (they need the server's document pipeline, which this prototype does not call yet), and

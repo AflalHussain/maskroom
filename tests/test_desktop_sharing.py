@@ -99,7 +99,7 @@ def a_worker(helper, cfg, folder=None):
 def config(tmp_path, **kw):
     cfg = {"serverUrl": "http://127.0.0.1:1", "token": "tok", "apiKey": "",
            "sessions": {}, "chats": {}, "sharing": True, "shareRoot": "",
-           "shareNames": "handles", "shareAllowCode": False, "sharePort": free_port()}
+           "shareNames": "mask", "shareAllowCode": False, "sharePort": free_port()}
     cfg.update(kw)
     return cfg
 
@@ -120,7 +120,7 @@ def test_the_preview_is_what_the_user_is_shown_and_costs_no_server_call(helper, 
     assert p["refused"] == 2                        # the .py and the .png
     said = helper.broker_mod.describe(p)
     assert "2 file(s)" in said and "would not be served" in said
-    assert "handles" in said
+    assert "names is masked" in said
 
 
 def test_source_files_are_counted_as_served_only_when_that_was_chosen(helper, folder):

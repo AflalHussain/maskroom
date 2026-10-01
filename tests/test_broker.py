@@ -215,9 +215,9 @@ def served(safepii, folder, tmp_path):
 
 
 @pytest.fixture
-def default_served(safepii, folder, tmp_path):
+def handles_served(safepii, folder, tmp_path):
     """A broker with nothing configured, to pin down what the defaults are."""
-    ws, peer, httpd = start(safepii, folder, tmp_path)
+    ws, peer, httpd = start(safepii, folder, tmp_path, names="handles")
     yield ws, peer
     httpd.shutdown()
     httpd.server_close()
@@ -301,11 +301,12 @@ def test_lines_are_counted_after_masking_not_before(served):
 
 
 # ------------------------------------------------------------------ names
-def test_by_default_a_name_cannot_disclose_anything(default_served):
-    """Handles, not masking, because masking a name is best-effort: measured
-    against the real engine, `kyc/Nimal Perera - loan.csv` is not recognised at
-    all. A handle cannot leak whatever the detector misses."""
-    _ws, peer = default_served
+def test_handles_hide_a_name_completely(handles_served):
+    """The stricter policy, and no longer the default. Nothing in a name can
+    leak whatever the detector misses -- but the model cannot tell one file from
+    another either, so it reads all of them to find out what it has, which sends
+    more content out rather than less. That cost is why `mask` is the default."""
+    _ws, peer = handles_served
     text, _ = peer.call("list_files")
     assert "Nimal Perera" not in text and "Perera" not in text
     listed = [ln.strip().split("  ")[0] for ln in text.splitlines() if ln.startswith("  ")]
@@ -315,8 +316,8 @@ def test_by_default_a_name_cannot_disclose_anything(default_served):
     assert "handles" in text, "and the model is told why the names look like that"
 
 
-def test_a_handle_is_stable_and_reads_back(default_served):
-    _ws, peer = default_served
+def test_a_handle_is_stable_and_reads_back(handles_served):
+    _ws, peer = handles_served
     first, _ = peer.call("list_files")
     again, _ = peer.call("list_files")
     handles = re.findall(r"(?:d\d\d/)?f\d\d\d\.txt", first)
@@ -327,8 +328,8 @@ def test_a_handle_is_stable_and_reads_back(default_served):
     assert "TOK_LK_NIC_5B20C1D4" in text
 
 
-def test_the_handle_keeps_the_extension_so_the_type_is_known(default_served):
-    _ws, peer = default_served
+def test_the_handle_keeps_the_extension_so_the_type_is_known(handles_served):
+    _ws, peer = handles_served
     text, _ = peer.call("list_files")
     assert ".csv" in text and ".md" in text and ".xlsx" in text
 
@@ -659,3 +660,16 @@ def test_a_token_that_cannot_be_resolved_is_not_reported_as_absent(served):
     assert not is_error, text
     assert "could not turn back into a value" in text
     assert "unknown rather than no" in text
+
+
+def test_the_default_keeps_a_name_that_says_what_the_file_is(served):
+    """`loans_overdue.csv` tells the model what it is without disclosing
+    anything; a handle does not, and the model then reads the file to find out.
+    Masking names rather than replacing them holds them to the same standard as
+    file contents, which are best-effort too."""
+    ws, peer = served
+    (ws.root / "branch_targets.md").write_text("| Colombo | 12000000 |\n")
+    text, _ = peer.call("list_files")
+    assert "branch_targets.md" in text, "a name with nothing personal in it survives"
+    assert "loans.csv" in text
+    assert "Kamala Silva" not in text and "Nimal Perera" not in text

@@ -160,7 +160,7 @@ DEFAULTS = {
     # Off until the user picks a folder: nothing is served by simply installing.
     "sharing": True,           # may the user share a folder at all
     "shareRoot": "",           # the folder being served, remembered across restarts
-    "shareNames": "handles",   # handles | mask | real (see broker.Names)
+    "shareNames": "mask",      # mask | handles | real (see broker.Names)
     "shareAllowCode": False,   # serve source files too
     "sharePort": 47821,        # the loopback port the managed policy points at
 }
@@ -1116,7 +1116,7 @@ class Sharing:
             workspace = broker_mod.Workspace(
                 Path(root), self.client(), session=session,
                 allow_code=bool(self.cfg.get("shareAllowCode", False)),
-                names=str(self.cfg.get("shareNames") or "handles"),
+                names=str(self.cfg.get("shareNames") or "mask"),
                 on_mint=self.note_mint, resolve=self.resolve_tokens)
         except (broker_mod.BrokerError, OSError, ValueError) as e:
             self.error = str(e)
