@@ -48,8 +48,9 @@ maskroom/            the engine, installed as a package (`pip install -e .`)
 extension/           Chrome extension for claude.ai (mask the composer, unmask replies on screen)
 desktop/             Windows helper for Claude Desktop (UI Automation; masks the composer in place)
   packaging/         builds helper.py into a signed MSI (PyInstaller + WiX)
-enterprise/          fleet deployment: Chrome/Edge/Firefox policies, the helper's ADMX
-                     template, and RUNBOOK.md for the people who roll it out
+enterprise/          fleet deployment: RUNBOOK.md for the browser, WINDOWS-RUNBOOK.md for
+                     the desktop helper and Claude Desktop, plus the policy files and the
+                     helper's ADMX template
 samples/             demo/test prompt sets with generated workbooks and a PDF (samples/README.md)
 webui/               Flask UI + JSON API (app.py); static/index.html = file studio,
                      static/staging.html = LLM staging page; per-run scratch files

@@ -252,6 +252,10 @@ move the port ([`enterprise/policies/windows/admx/`](../enterprise/policies/wind
 `tests/test_broker.py` covers the broker with both ends over real HTTP; `tests/test_desktop_sharing.py`
 covers the flow above, including that nothing is served until the user says so.
 
+**To deploy it to a fleet**, [`enterprise/WINDOWS-RUNBOOK.md`](../enterprise/WINDOWS-RUNBOOK.md)
+is the sysadmin runbook: the MSI, both sets of policy keys, what each one closes, and an
+honest account of what is enforced and what is not.
+
 **To try it on Windows**, [`TESTING-FOLDER-SHARING.md`](TESTING-FOLDER-SHARING.md) is a
 thirty-step walkthrough with a folder of samples in [`sample-folder/`](SAMPLE-FOLDER.md)
 — eight files, one per path through the broker: prose, a table whose names sit in rows with no

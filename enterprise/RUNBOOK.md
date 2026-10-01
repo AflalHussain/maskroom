@@ -3,6 +3,10 @@
 Force-install the Maskroom extension across a managed Chrome fleet and lock its guard
 on. Background and citations: [`../docs/ENTERPRISE_ENFORCEMENT.md`](../docs/ENTERPRISE_ENFORCEMENT.md).
 
+**This is the browser half.** The desktop helper and Claude Desktop are
+[`WINDOWS-RUNBOOK.md`](WINDOWS-RUNBOOK.md). Do both: locking the browser and leaving
+Claude Desktop open means a user simply opens the app instead.
+
 - **Fixed extension ID:** `lcmdehcdpfddkjgajmlpgfholdekpgio`
   (set by the `key` in [`../extension/manifest.json`](../extension/manifest.json); stable on
   every machine and every rebuild).

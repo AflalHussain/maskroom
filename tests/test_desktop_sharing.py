@@ -443,3 +443,21 @@ def test_a_request_nobody_answers_gives_up_rather_than_hanging(helper, tmp_path,
     assert ok is False
     assert "did not answer in time" in said
     assert helper.SHARED["want_folder"] is None, "and the bar stops being asked"
+
+
+# --------------------------------------------------------------- the packaged shape
+def test_the_helper_is_also_the_bridge(helper, tmp_path, monkeypatch, capsys):
+    """A packaged build is one executable. Claude Desktop starts it with --stdio
+    when the broker is registered as a stdio server, and there is no separate
+    broker.py in Program Files to point at, so the same entry point answers to
+    both jobs."""
+    import io
+    monkeypatch.setattr(sys, "argv", ["SafePIIHelper.exe", "--stdio", "--bridge",
+                                      "--port", "9"])
+    monkeypatch.setattr("sys.stdin", io.StringIO(
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"))
+    out = io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    assert helper.main() == 0
+    reply = json.loads(out.getvalue().strip())
+    assert [t["name"] for t in reply["result"]["tools"]][:1] == ["list_files"]

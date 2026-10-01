@@ -24,6 +24,10 @@ The test is built so you can prove each half separately. **Parts 3 and 4 need no
 Claude Desktop at all** — do them first, and if something breaks in Part 6 you
 already know it is the policy and not the masking.
 
+This walks one machine by hand, to see it work. Rolling it out to a fleet is
+[`../enterprise/WINDOWS-RUNBOOK.md`](../enterprise/WINDOWS-RUNBOOK.md), which uses
+the MSI and Group Policy instead of the manual steps below.
+
 ## Before you start
 
 - Python 3.12 from python.org, `py -m pip install uiautomation`.

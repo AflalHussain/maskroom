@@ -116,8 +116,14 @@ except Exception as _broker_err:  # noqa: BLE001
 try:
     import uiautomation as auto
 except ImportError:  # pragma: no cover
-    print("Missing dependency. Run:  py -m pip install uiautomation")
-    sys.exit(1)
+    # The stdio bridge is this same executable with --stdio, and it never touches
+    # the accessibility layer: it relays JSON-RPC to the helper that does. Making
+    # a missing uiautomation fatal there would kill the bridge on any machine
+    # where the import is unavailable, for a dependency it does not use.
+    if "--stdio" not in sys.argv[1:]:
+        print("Missing dependency. Run:  py -m pip install uiautomation")
+        sys.exit(1)
+    auto = None
 
 APP_NAME = "SafePII"
 # Its own number, because the helper ships on its own cadence. Sent to the
@@ -4519,6 +4525,15 @@ class Bar:
 
 # ----------------------------------------------------------------------------- main
 def main() -> int:
+    # Claude Desktop starts this process itself when the broker is registered as
+    # a stdio server, and hands it --stdio --bridge. A packaged build has no
+    # separate broker.py to point at -- there is one executable -- so the same
+    # one answers to both, and nothing but JSON-RPC may reach stdout.
+    if "--stdio" in sys.argv[1:]:
+        if broker_mod is None:
+            print("This build has no file broker.", file=sys.stderr)
+            return 1
+        return broker_mod.main(sys.argv[1:])
     if not sys.platform.startswith("win"):
         print("This prototype is Windows-only (UI Automation). See docs/DESKTOP_APP_RESEARCH.md for macOS.")
         return 1
