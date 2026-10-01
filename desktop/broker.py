@@ -584,6 +584,15 @@ def tool_search_files(ws: Workspace, args: dict) -> str:
     # folder's. Turn it back into the value and search for that.
     query = ws.resolve(asked)
     was_token = query != asked
+    # Logged either way: when this does not happen the model searches for a token
+    # the folder cannot contain and gets a confident "no matches", which is the
+    # hardest kind of wrong to notice from the outside.
+    left = re.findall(r"TOK_[A-Z_]+_[0-9A-Fa-f]{4,}", query)
+    if was_token:
+        log(f"search: a token in the term resolved to a value ({len(asked)} -> {len(query)} chars)")
+    elif left:
+        log(f"search: {len(left)} token(s) in the term could NOT be resolved: {', '.join(left[:3])}"
+            f" -- the vault holding them is not loaded here")
     masked_query, _ = ws.mask(query)
     try:
         needle = re.compile(re.escape(masked_query), re.IGNORECASE)
@@ -639,6 +648,11 @@ def tool_search_files(ws: Workspace, args: dict) -> str:
         told = (f"The term was a token from another session, which this folder's files cannot "
                 f"contain. SafePII turned it back into the value it stands for and searched "
                 f"for that.\n")
+    elif left:
+        told = ("The term contains a token SafePII could not turn back into a value, so it "
+                "searched for the token itself and this folder's files cannot contain it. "
+                "Treat a result of no matches as unknown rather than no. Ask the person what "
+                "the token stands for, or for a word from the file's name.\n")
     if masked_query != query:
         told += ("The term holds personal data, so inside the files SafePII searched for this "
                  f"folder's masked form of it: {masked_query}\n")

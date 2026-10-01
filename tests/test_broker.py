@@ -648,3 +648,14 @@ def test_with_nothing_being_served_the_connector_still_looks_healthy(monkeypatch
     assert out[2]["result"]["isError"] is True
     assert "share one from the SafePII bar" in said, "and the model is told what to ask for"
     assert len(out) == 3, "the notification produced nothing"
+
+
+def test_a_token_that_cannot_be_resolved_is_not_reported_as_absent(served):
+    """Without the chat's vault loaded, the term stays a token the folder can
+    never contain, and "no matches" would read as "she is not in these files".
+    The model is told the difference."""
+    _ws, peer = served
+    text, is_error = peer.call("search_files", query="TOK_PERSON_AD4350B6")
+    assert not is_error, text
+    assert "could not turn back into a value" in text
+    assert "unknown rather than no" in text
