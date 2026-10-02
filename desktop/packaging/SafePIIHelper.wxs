@@ -30,6 +30,8 @@
     <Launch Condition="Installed OR (VersionNT &gt;= 603)"
             Message="The SafePII desktop helper needs Windows 8.1 or later." />
 
+    <!-- Found through the build's -bindpath, which points here. A SourceFile is
+         resolved against the working directory, not against this file. -->
     <Icon Id="SafePIIIcon" SourceFile="safepii.ico" />
     <Property Id="ARPPRODUCTICON" Value="SafePIIIcon" />
     <Property Id="ARPHELPLINK" Value="https://safepii.hsenidmobile.com/" />

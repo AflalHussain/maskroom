@@ -194,8 +194,13 @@ README.md has the handful of commands that put it on a machine without one.
 }
 Write-Host "building the MSI"
 $msi = Join-Path $dist "SafePIIHelper-$version.msi"
+# -bindpath, because WiX resolves a SourceFile relative to the working directory
+# rather than to the .wxs that names it -- so building from anywhere but this
+# folder failed to find safepii.ico, which sits beside the .wxs. Binding the
+# folder keeps the .wxs free of absolute paths and works from any directory.
 & wix build (Join-Path $here "SafePIIHelper.wxs") `
     -d ProductVersion=$version -d AppDir=$appDir `
+    -bindpath $here `
     -arch x64 -out $msi
 if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
 Invoke-Sign $msi
