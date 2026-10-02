@@ -1001,7 +1001,7 @@ CLAUDE_PACKAGES = ("Claude_pzs8sxrjxfjjc", "AnthropicPBC.Claude_fnn82j28hfe8t")
 
 
 def claude_config_paths() -> list[Path]:
-    """Every place Claude Desktop is known to keep that file, in the order worth
+    r"""Every place Claude Desktop is known to keep that file, in the order worth
     looking. There is no single answer: a packaged install puts it under
     Packages\...\LocalCache, which is how a real machine surprised us."""
     appdata = os.environ.get("APPDATA") or ""
