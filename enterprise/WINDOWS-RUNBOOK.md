@@ -91,19 +91,59 @@ pilot technique and not a deployment.
 
 ## Step 1 — Install the helper
 
-Per machine, with the server address baked in:
+The MSI installs into Program Files — so a standard user cannot replace the
+binary that reads their screen — and starts the helper per user through
+`HKLM\…\Run`, because it has to run as the interactive user to read that
+session's accessibility tree. It deliberately does **not** launch itself after
+installing: an MSI's custom action runs as SYSTEM, which is the wrong user and
+has no desktop to attach to.
+
+### By Group Policy
+
+**Put the MSI on a UNC share, and give `Domain Computers` read access** — not
+just Domain Users. A computer-assigned package installs at boot, as the machine
+account, so a share only users can read fails with nothing useful in the event
+log.
+
+```
+\\fileserver\software$\SafePII\SafePIIHelper-0.3.0.msi
+```
+
+Then **Computer Configuration → Policies → Software Settings → Software
+installation → New → Package**, give it the **UNC path** (never a mapped drive or
+a local path — the machine resolves it, not you), and choose **Assigned**.
+
+**Do not try to pass `SERVERURL`.** Software Installation has no command line;
+properties need an `.mst` transform, which is a thing to build and maintain for
+one string. Set the server address through SafePII's own policy in Step 2
+instead, which is where every other setting is anyway. The MSI's `SERVERURL`
+property is for `msiexec` and Intune, not for this.
+
+Machines install at the **next boot**, and the helper starts at the **logon after
+that** — so two restarts before anything appears. That is normal for assigned
+software and worth saying in advance, or the first report will be that nothing
+happened.
+
+### By Intune, or by hand
+
+Here the property works and saves a step:
 
 ```
 msiexec /i SafePIIHelper-0.3.0.msi SERVERURL=https://safepii.yourco.example /qn
 ```
 
-That writes the server address into SafePII's own policy key, so it agrees with
-Step 2 rather than competing with it. The MSI installs into Program Files — so a
-standard user cannot replace the binary that reads their screen — and starts the
-helper per user through `HKLM\…\Run`, because it has to run as the interactive
-user to read that session's accessibility tree.
+It writes the address into the same policy key Step 2 uses, so the two agree
+rather than compete. Elevated, or it fails silently with `/qn`.
 
-Deploy it through Group Policy Software Installation or Intune like any other MSI.
+### What to hand the administrator
+
+- **The MSI**, on that share.
+- **`SafePII.admx` and `en-US\SafePII.adml`** for the central store (Step 2).
+- **This runbook**, and the paragraph for users further down.
+- **Whether it is signed.** For a pilot it will not be, and they need to hear
+  that from you rather than from SmartScreen. See the pilot notes above: a hash
+  rule in application allowlisting covers an unsigned binary on machines they
+  control, and nothing covers it beyond that.
 
 ---
 
