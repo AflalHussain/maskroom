@@ -1040,11 +1040,30 @@ def forward_to(url: str, timeout: float = 300.0):
     return send
 
 
+def stdio_streams():
+    """The two streams, even when Python has not got them.
+
+    The shipped helper is frozen windowed -- no console, because its only
+    interface is a floating pill and a console behind it looks like a fault. In
+    a windowed build Python's own sys.stdout can be None, and this is the same
+    executable: Claude Desktop starts it with pipes on the standard handles and
+    expects JSON-RPC back. So fall through to the file descriptors, which exist
+    whenever a parent has provided them, whatever sys.stdout happens to be.
+    """
+    rin, wout = sys.stdin, sys.stdout
+    if rin is None:
+        rin = os.fdopen(0, "r", encoding="utf-8", errors="replace")
+    if wout is None:
+        wout = os.fdopen(1, "w", encoding="utf-8", errors="replace")
+    return rin, wout
+
+
 def serve_stdio(handle) -> int:
     """Newline-delimited JSON-RPC on stdin and stdout, which is what MCP's stdio
     transport is. Nothing else may be written to stdout: every log line in this
     file goes to stderr, which is why that was never optional."""
-    for line in sys.stdin:
+    rin, wout = stdio_streams()
+    for line in rin:
         line = line.strip()
         if not line:
             continue
@@ -1064,8 +1083,8 @@ def serve_stdio(handle) -> int:
                 "error": {"code": -32603, "message": str(e)}}
         if reply is None:
             continue
-        sys.stdout.write(json.dumps(reply) + "\n")
-        sys.stdout.flush()
+        wout.write(json.dumps(reply) + "\n")
+        wout.flush()
     return 0
 
 

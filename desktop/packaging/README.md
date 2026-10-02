@@ -8,11 +8,27 @@ through Group Policy or Intune, and that reports when a newer build exists.
 On a Windows machine with Python 3.12:
 
 ```powershell
-pip install pyinstaller uiautomation
-dotnet tool install --global wix          # the WiX toolset, for the MSI
-.\desktop\packaging\build.ps1             # unsigned, for testing
-.\desktop\packaging\build.ps1 -Sign       # for release; see Signing below
+py -m pip install pyinstaller uiautomation
+winget install Microsoft.DotNet.SDK.8     # or any .NET SDK; needed only for the MSI
+dotnet tool install --global wix          # the WiX toolset
+
+powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -SkipMsi
+powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1
+powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -Sign
 ```
+
+**The `-ExecutionPolicy Bypass` prefix is not optional** on a machine with the
+default policy, which refuses to run the script and reports it in a way that reads
+like the script is broken.
+
+**Start with `-SkipMsi`.** It freezes and stops, which is the quickest way to find
+out whether the bundle is right before dealing with WiX at all — and the build
+checks itself at that point: it starts the frozen executable as the stdio bridge
+and asks it for its tools. That one question proves the executable runs, that
+Python froze, that `broker.py` came with it, that `http.server` survived the
+exclude list and that the `--stdio` entry point works. A frozen build fails in
+ways the source never does, and quietly; this is what stops a silently crippled
+MSI leaving the machine.
 
 Output: `desktop\packaging\dist\SafePIIHelper-<version>.msi`.
 

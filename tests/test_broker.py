@@ -673,3 +673,27 @@ def test_the_default_keeps_a_name_that_says_what_the_file_is(served):
     assert "branch_targets.md" in text, "a name with nothing personal in it survives"
     assert "loans.csv" in text
     assert "Kamala Silva" not in text and "Nimal Perera" not in text
+
+
+def test_the_bridge_works_when_python_has_no_stdio_of_its_own(monkeypatch, tmp_path):
+    """The shipped helper is frozen windowed -- no console -- and in that build
+    Python's sys.stdout can be None. It is the same executable Claude Desktop
+    starts with pipes on the standard handles, so the streams are taken from the
+    file descriptors when Python has not got them."""
+    import os
+    written = tmp_path / "out.txt"
+    r_fd = os.open(os.devnull, os.O_RDONLY)
+    w_fd = os.open(written, os.O_WRONLY | os.O_CREAT)
+    try:
+        monkeypatch.setattr("sys.stdin", None)
+        monkeypatch.setattr("sys.stdout", None)
+        monkeypatch.setattr(os, "fdopen", lambda fd, *a, **k: (
+            open(r_fd, "r", closefd=False) if fd == 0 else open(w_fd, "w", closefd=False)))
+        rin, wout = broker.stdio_streams()
+        assert rin is not None and wout is not None
+        wout.write("ok\n")
+        wout.flush()
+    finally:
+        os.close(r_fd)
+        os.close(w_fd)
+    assert written.read_text() == "ok\n"

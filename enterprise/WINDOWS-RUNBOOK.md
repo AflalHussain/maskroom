@@ -37,12 +37,34 @@ it outstanding wastes their time. The second is what they need on the day.
 
 | | Why it blocks | Where |
 |---|---|---|
-| **A code-signing certificate** | The MSI installs a program that holds a global keyboard hook. Unsigned, SmartScreen stops it, endpoint protection is likely to quarantine it, and application allowlisting — which this deployment *depends on* (Step 4a) — will not pass it. Since 1 June 2023 the private key must live in a FIPS 140-2 Level 2 or CC EAL4+ module, so this is a purchase with a lead time, not a build step | [`../desktop/packaging/README.md`](../desktop/packaging/README.md) |
+| **A code-signing certificate** — *for the real rollout, not the pilot* | The MSI installs a program that holds a global keyboard hook. Unsigned, SmartScreen stops it, endpoint protection is likely to quarantine it, and a publisher allowlisting rule cannot name it. Since 1 June 2023 the private key must live in a FIPS 140-2 Level 2 or CC EAL4+ module, so this is a purchase with a lead time, not a build step. **A pilot can go ahead without it** — see below | [`../desktop/packaging/README.md`](../desktop/packaging/README.md) |
 | **One signed MSI built and installed end to end** | The build kit has never been run to completion on a Windows machine. Until a signed MSI has installed, started the helper, shared a folder and survived a reboot, this document describes something unproven | `desktop/packaging/build.ps1 -Sign` |
 | **The server carrying this build** | `/api/event` (posture reporting) and `/desktop/latest.json` (update checks) exist in the source and not on the deployed image | [`../docs/DEPLOY_AWS.md`](../docs/DEPLOY_AWS.md) §1, §6 |
 | **A decision on `onGuardFailure`** | `hold` stops anything being sent when the guard cannot run; `warn` lets it through loudly. It is the customer's call about their own risk, and it should be made before rollout rather than discovered during one | Step 2 |
 | **A decision on folder sharing** | Whether users may share folders at all, and under which name policy. Step 2 again | Step 2 |
 | **The browser half** | Locking Claude Desktop while leaving Chrome open protects nothing: the user opens claude.ai instead. That has its own prerequisites, including a packaged extension and its signing key | [`RUNBOOK.md`](RUNBOOK.md) |
+
+### Piloting before the certificate arrives
+
+The certificate blocks the *rollout*, not the *trial*, and waiting for it to
+validate the design would be a waste of weeks. On machines the admin controls,
+every control the certificate buys has an unsigned equivalent:
+
+| Control | Signed | For a pilot |
+|---|---|---|
+| SmartScreen | passes on reputation | an admin installs it anyway; or exclude the path by policy |
+| Endpoint protection | less likely to quarantine | add an exclusion for `C:\Program Files\SafePII` on the pilot machines |
+| **Application allowlisting** | a **publisher** rule names the certificate | a **hash** or **path** rule names this exact binary |
+
+That last row is the one that matters, because Step 4a — the control that stops a
+user adding their own file-reading MCP server — leans on allowlisting. A hash rule
+over `SafePIIHelper.exe` enforces exactly the same thing for a pilot group; it just
+has to be reissued on every new build, which is why a publisher rule is what you
+want at scale.
+
+**What a pilot genuinely cannot tell you**: whether the signed artefact passes the
+customer's own gates. Keep it to machines you can reimage, and do not take an
+unsigned MSI past the pilot group.
 
 ### What the administrator needs on the day
 

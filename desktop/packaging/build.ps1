@@ -6,8 +6,21 @@
     Run on a Windows machine with Python 3.12 installed.
 
         cd <repo>
-        .\desktop\packaging\build.ps1
-        .\desktop\packaging\build.ps1 -Sign        # also sign, see SIGNING below
+        powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1
+        powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -Sign
+
+    The ExecutionPolicy prefix is not optional on a machine with the default
+    policy, which refuses to run a downloaded script and says so in a way that
+    reads like the script is broken.
+
+    First time on a machine:
+
+        py -m pip install pyinstaller uiautomation
+        winget install Microsoft.DotNet.SDK.8      # or any .NET SDK
+        dotnet tool install --global wix
+
+    -SkipMsi stops after freezing, which is the quickest way to find out whether
+    the bundle is right before dealing with WiX at all.
 
     Produces desktop\packaging\dist\SafePIIHelper-<version>.msi.
 
@@ -77,6 +90,28 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 $appDir = Join-Path $dist "SafePIIHelper"
 $exe = Join-Path $appDir "SafePIIHelper.exe"
 if (-not (Test-Path $exe)) { throw "expected $exe" }
+
+# ---- 2a. does the thing we just built actually work?
+# A frozen build fails in ways the source never does, and quietly: a module left
+# out of the bundle produces a helper that starts and is missing a feature. One
+# question answers most of it at once. Asking the bridge for its tools proves the
+# executable runs, that Python froze, that broker.py came with it, that
+# http.server survived the exclude list, and that the --stdio entry point works.
+# --port 1 is closed on purpose: the bridge answers for itself when nothing is
+# behind it, so this needs no running helper.
+Write-Host "checking the frozen build answers"
+$probe = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+$answer = $probe | & $exe --stdio --bridge --port 1 2>$null | Out-String
+if ($answer -notmatch '"list_files"') {
+    throw @"
+The frozen build did not answer. It produced:
+$answer
+A build that starts and cannot do this is missing something from the bundle --
+check the spec's hiddenimports and excludes before shipping it.
+"@
+}
+Write-Host "  the bridge answered; the bundle is complete"
+
 Invoke-Sign $exe
 
 if ($SkipMsi) { Write-Host "built $appDir (no MSI requested)"; exit 0 }
