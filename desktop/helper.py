@@ -1263,6 +1263,7 @@ class Automation(threading.Thread):
         self.claude_cfg = None        # where Claude Desktop's own config turned out to be
         self.claude_cfg_at = 0.0      # its mtime when last read
         self.claude_said = None       # the last set of foreign servers reported, to say it once
+        self.update_checked = 0.0     # when the server was last asked what the current build is
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_edit = None
         self.dialog_confirm = None
@@ -3147,7 +3148,6 @@ class OverlayWorker(threading.Thread):
         self.composer = None          # the composer element, focused or not
         self.composer_at = 0.0
         self.covered = False          # last placement failed because something covered it
-        self.update_checked = 0.0
 
     # ---- plumbing
     def run(self) -> None:
