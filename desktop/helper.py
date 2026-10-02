@@ -91,6 +91,7 @@ import ntpath
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
 import time
@@ -170,6 +171,7 @@ DEFAULTS = {
     "shareAllowCode": False,   # serve source files too
     "sharePort": 47821,        # the loopback port the managed policy points at
     "watchClaudeConfig": True,  # report MCP servers in Claude Desktop that are not ours
+    "registerWithClaude": True,  # add our own entry to Claude Desktop's config
 }
 OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
 OVERLAY_WALK_MIN_S = 0.30   # never re-walk the visible lines more often than this
@@ -239,7 +241,8 @@ POLICY_TYPES = {"serverUrl": str, "guard": bool, "unmask": bool, "overlay": bool
                 "downloadsDir": str, "overlayDebug": bool,
                 # Sharing: whether it is allowed at all, and on what terms.
                 "sharing": bool, "shareNames": str, "shareAllowCode": bool,
-                "sharePort": int, "watchClaudeConfig": bool}
+                "sharePort": int, "watchClaudeConfig": bool,
+                "registerWithClaude": bool}
 POLICY: dict = {}      # what the administrator has actually set, this run
 
 
@@ -1018,6 +1021,25 @@ def claude_config_paths() -> list[Path]:
     return out
 
 
+def our_mcp_entry(port: int) -> dict:
+    """What Claude Desktop needs in order to start our bridge.
+
+    Frozen, the executable is the bridge: it answers to --stdio itself, because a
+    packaged build has one binary and no broker.py to point a python at. From
+    source, broker.py directly, which keeps a bridge process from importing
+    tkinter and everything else the bar needs.
+    """
+    if getattr(sys, "frozen", False):
+        command, args = sys.executable, []
+    else:
+        command = sys.executable
+        args = [str(Path(__file__).resolve().parent / "broker.py")]
+    args = args + ["--stdio", "--bridge"]
+    if port and port != (broker_mod.DEFAULT_PORT if broker_mod else 47821):
+        args += ["--port", str(port)]
+    return {"command": command, "args": args}
+
+
 def read_claude_mcp_servers(path: Path) -> set[str] | None:
     """The names of the MCP servers configured there, or None if unreadable."""
     try:
@@ -1201,6 +1223,58 @@ class Sharing:
             log(f"sharing: could not resolve a token in a search term: {e}")
             return text
 
+    def register_with_claude(self) -> str:
+        """Put our entry in Claude Desktop's own config, leaving the rest alone.
+
+        Hand-editing that file is how this goes wrong: it holds a user's whole
+        desktop configuration, a Windows path in it needs doubled backslashes,
+        and one trailing comma stops Claude reading any of it. So the helper
+        writes its own entry and touches nothing else.
+
+        It will not write over a file it cannot parse. A file that is already
+        broken is somebody's settings, and replacing it with a working file that
+        has lost them is worse than leaving it and saying so.
+        """
+        if broker_mod is None or not self.cfg.get("registerWithClaude", True):
+            return ""
+        path = next((p for p in claude_config_paths() if p.is_file()), None)
+        if path is None:
+            # Only where Claude Desktop already keeps its data: guessing a
+            # directory would write a file it never reads.
+            path = next((p for p in claude_config_paths() if p.parent.is_dir()), None)
+            if path is None:
+                return "Claude Desktop's configuration folder was not found."
+        try:
+            raw = path.read_text("utf-8") if path.is_file() else "{}"
+            doc = json.loads(raw or "{}")
+            if not isinstance(doc, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as e:
+            log(f"register: {path} could not be read ({e}); leaving it alone")
+            return (f"Claude Desktop's configuration could not be read ({e}). SafePII has not "
+                    f"changed it; fix the file and restart.")
+        servers = doc.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+        want = our_mcp_entry(int(self.cfg.get("sharePort") or 0))
+        if servers.get(broker_mod.NAME) == want:
+            return ""                      # already right; say nothing, do nothing
+        servers[broker_mod.NAME] = want
+        doc["mcpServers"] = servers
+        try:
+            if path.is_file() and not path.with_suffix(".json.safepii-bak").exists():
+                shutil.copyfile(path, path.with_suffix(".json.safepii-bak"))
+            tmp = path.with_suffix(".json.safepii-tmp")
+            tmp.write_text(json.dumps(doc, indent=2), "utf-8")
+            os.replace(tmp, path)
+        except OSError as e:
+            log(f"register: could not write {path}: {e}")
+            return (f"SafePII could not add itself to Claude Desktop's configuration ({e}). "
+                    f"An administrator may have locked that file.")
+        log(f"register: added {broker_mod.NAME} to {path}")
+        return ("SafePII added itself to Claude Desktop's connectors. "
+                "Restart Claude Desktop for it to take effect.")
+
     def note_mint(self) -> None:
         """A file Claude read put new values in the vault."""
         self.minted = True
@@ -1299,6 +1373,10 @@ class Automation(threading.Thread):
                 err = self.sharing.listen()
                 if err:
                     log(f"sharing: {err}")
+                else:
+                    said = self.sharing.register_with_claude()
+                    if said:
+                        self.emit(type="alert", msg=said, level="info")
                 self.resume_share()
             except Exception as e:  # noqa: BLE001
                 log(f"sharing: could not start the broker: {e}")

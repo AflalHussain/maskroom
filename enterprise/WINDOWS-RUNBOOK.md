@@ -181,10 +181,15 @@ demonstrably in force on the same key, `managedMcpServers` was ignored in both i
 HTTP and its stdio form, from `HKLM` and `HKCU`. Anthropic's own reference says why
 — that key "applies only while the app runs in third-party mode (3P)".
 
-So the registration goes in `claude_desktop_config.json`, the file that
-**Developer → Open App Config File** opens. Its location varies: a packaged
-install keeps it under `%LOCALAPPDATA%\Packages\…\LocalCache\Roaming\Claude\`,
-nowhere near `%APPDATA%`. Use the menu item rather than guessing.
+So the registration goes in `claude_desktop_config.json` — and **the helper does
+it itself**. On its first start it adds one key to that file and leaves every
+other byte alone: the folder Cowork uses, every preference, any MCP server
+already there. It will not write over a file it cannot parse, because a broken
+file is still somebody's settings, and it keeps one backup beside it the first
+time it writes.
+
+So there is normally nothing to do here. What follows is what it writes, for
+when you want to check it or put it back by hand:
 
 ```json
 {
@@ -201,6 +206,15 @@ The same executable answers to both: given `--stdio` it is the bridge, and given
 nothing it is the helper. `--bridge` means that process does not serve the folder
 itself; it relays to the helper's broker, so the folder is still served once, by
 the helper that holds the sign-in and the vault.
+
+Hand-editing it is worth avoiding: that file's location varies — a packaged
+install keeps it under `%LOCALAPPDATA%\Packages\…\LocalCache\Roaming\Claude\`,
+nowhere near `%APPDATA%` — a Windows path inside it needs doubled backslashes, and
+one trailing comma stops Claude Desktop reading any of it. All three have bitten
+us. **Developer → Open App Config File** opens the right one if you must.
+
+Set `registerWithClaude` to `0` in SafePII's policy to stop the helper doing this,
+for a fleet that would rather deploy the file itself.
 
 ### What this costs, and how to get it back
 

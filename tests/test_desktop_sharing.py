@@ -555,3 +555,98 @@ def test_the_packaged_install_path_is_among_those_looked_at(helper, monkeypatch)
     looked = [str(p).replace("\\", "/") for p in helper.claude_config_paths()]
     assert any("Packages" in p and "LocalCache" in p for p in looked), looked
     assert any(p.endswith("Roaming/Claude/claude_desktop_config.json") for p in looked), looked
+
+
+# --------------------------------------------------------------- registering itself
+def test_it_adds_itself_and_leaves_everything_else_alone(helper, tmp_path, monkeypatch):
+    """That file holds a whole desktop configuration -- the folder Cowork uses,
+    every preference, a sidebar mode. Our entry is one key in it, and a
+    registration that replaced the file would take the rest with it."""
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text(json.dumps({
+        "mcpServers": {"something-else": {"command": "node"}},
+        "coworkUserFilesPath": "C:\\Users\\x\\Claude",
+        "preferences": {"sidebarMode": "chat", "nested": {"deep": [1, 2]}},
+    }), "utf-8")
+    monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
+    a = a_worker(helper, config(tmp_path))
+    said = a.sharing.register_with_claude()
+    assert "Restart Claude Desktop" in said
+
+    doc = json.loads(cfg.read_text("utf-8"))
+    assert doc["coworkUserFilesPath"] == "C:\\Users\\x\\Claude"
+    assert doc["preferences"]["nested"]["deep"] == [1, 2]
+    assert doc["mcpServers"]["something-else"] == {"command": "node"}
+    ours = doc["mcpServers"]["safepii-files"]
+    assert "--stdio" in ours["args"] and "--bridge" in ours["args"]
+    assert ours["command"]
+
+
+def test_a_second_run_changes_nothing_and_says_nothing(helper, tmp_path, monkeypatch):
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text("{}", "utf-8")
+    monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
+    a = a_worker(helper, config(tmp_path))
+    assert a.sharing.register_with_claude()
+    before = cfg.read_text("utf-8")
+    assert a.sharing.register_with_claude() == ""
+    assert cfg.read_text("utf-8") == before
+
+
+def test_a_file_it_cannot_read_is_left_exactly_as_it_was(helper, tmp_path, monkeypatch):
+    """A broken file is still somebody's settings. Replacing it with a working
+    one that has lost them is worse than leaving it and saying so -- and a
+    trailing comma is how this file actually broke on a real machine."""
+    cfg = tmp_path / "claude_desktop_config.json"
+    broken = '{\n  "mcpServers": {\n    "x": {}\n  },\n}\n'          # trailing comma
+    cfg.write_text(broken, "utf-8")
+    monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
+    a = a_worker(helper, config(tmp_path))
+    said = a.sharing.register_with_claude()
+    assert "could not be read" in said
+    assert cfg.read_text("utf-8") == broken, "not one byte of it"
+
+
+def test_the_original_is_kept_once(helper, tmp_path, monkeypatch):
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text('{"preferences": {"sidebarMode": "chat"}}', "utf-8")
+    monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
+    a = a_worker(helper, config(tmp_path))
+    a.sharing.register_with_claude()
+    backup = cfg.with_suffix(".json.safepii-bak")
+    assert json.loads(backup.read_text("utf-8")) == {"preferences": {"sidebarMode": "chat"}}
+
+
+def test_it_will_not_invent_a_folder_to_write_into(helper, tmp_path, monkeypatch):
+    """Guessing where Claude Desktop keeps its data writes a file it never reads.
+    On a real machine it was under Packages\\...\\LocalCache, not %APPDATA%."""
+    monkeypatch.setattr(helper, "claude_config_paths",
+                        lambda: [tmp_path / "nowhere" / "claude_desktop_config.json"])
+    a = a_worker(helper, config(tmp_path))
+    assert "not found" in a.sharing.register_with_claude()
+    assert not (tmp_path / "nowhere").exists()
+
+
+def test_an_administrator_can_switch_registration_off(helper, tmp_path, monkeypatch):
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text("{}", "utf-8")
+    monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
+    a = a_worker(helper, config(tmp_path, registerWithClaude=False))
+    assert a.sharing.register_with_claude() == ""
+    assert cfg.read_text("utf-8") == "{}"
+
+
+def test_a_frozen_build_registers_the_executable_itself(helper, monkeypatch):
+    """There is no broker.py in Program Files to hand to a python that is not
+    there either: the one binary answers to --stdio."""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\SafePII\SafePIIHelper.exe")
+    entry = helper.our_mcp_entry(47821)
+    assert entry["command"].endswith("SafePIIHelper.exe")
+    assert entry["args"] == ["--stdio", "--bridge"]
+
+
+def test_a_port_that_is_not_the_default_is_passed_on(helper, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\SafePII\SafePIIHelper.exe")
+    assert helper.our_mcp_entry(50000)["args"] == ["--stdio", "--bridge", "--port", "50000"]

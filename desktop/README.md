@@ -167,7 +167,7 @@ broker is, and which way you do that decides the transport:
 |---|---|---|
 | `managedMcpServers` policy | HTTP on `127.0.0.1` | The deployment answer. A managed server may speak only `http` or `sse`, and loopback is the one plain-HTTP endpoint the app's URL check accepts without complaint |
 | **Add a connector** in the app | HTTPS only | Not this. That field is for a *remote* server and asks for an https address; a loopback endpoint has no certificate to offer |
-| `claude_desktop_config.json` | stdio | `broker.py --stdio --bridge`. Claude starts the process and talks over a pipe, so there is no address and no certificate. The bridge **relays to the helper's own broker**, so the folder is still served once, by the helper that holds the sign-in and the vault |
+| `claude_desktop_config.json` | stdio | **The helper writes this one itself** on first start, adding its key and leaving the rest of the file alone. Claude starts the process and talks over a pipe, so there is no address and no certificate. The bridge **relays to the helper's own broker**, so the folder is still served once, by the helper that holds the sign-in and the vault |
 
 The bridge answers `initialize` and `tools/list` itself when the helper is not serving
 anything, because Claude Desktop starts it when *it* starts — usually before anybody has
