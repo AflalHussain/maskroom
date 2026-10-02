@@ -2894,6 +2894,9 @@ class Hotkeys(threading.Thread):
 
     WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
 
+    _panel_seen = None          # the panel rectangle the click log is counting against
+    _clicks_said = 0
+
     def mouse_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         """Notes wheel scrolling, collapses the panel on a click elsewhere, and
         swallows a click on the file dialog's confirm button so the pick can be
@@ -2903,8 +2906,24 @@ class Hotkeys(threading.Thread):
                 ms = None
                 if w_param == self.WM_LBUTTONDOWN:
                     ms = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                    # LLMHF_INJECTED: our own replayed click, never the user's.
-                    if SHARED["panel_rect"] and not (ms.flags & 0x01):
+                    rect = SHARED["panel_rect"]
+                    if rect is not None:
+                        # The first few clicks after the panel opens say what the
+                        # hook actually saw. This is the one part of the collapse
+                        # no test off Windows can reach, and guessing at it from
+                        # a machine that cannot run it has already cost a round
+                        # trip. Bounded, so it cannot fill the log.
+                        if rect != self._panel_seen:
+                            self._panel_seen, self._clicks_said = rect, 0
+                        if self._clicks_said < 5:
+                            self._clicks_said += 1
+                            log(f"click at {ms.pt.x},{ms.pt.y} flags={ms.flags:#x} "
+                                f"panel={rect} pill={SHARED['pill_rect']}")
+                        # Injected clicks are not excluded here, deliberately. A
+                        # touchpad driver, a virtual machine's guest additions and
+                        # a remote desktop session all mark real clicks injected,
+                        # and the only clicks SafePII itself synthesises are on a
+                        # file dialog, where this panel is not open.
                         self.collapse_if_outside(ms.pt.x, ms.pt.y)
                 if w_param in (self.WM_MOUSEWHEEL, self.WM_MOUSEHWHEEL) and foreground_exe() == CLAUDE_EXE:
                     SHARED["scroll_at"] = time.time()

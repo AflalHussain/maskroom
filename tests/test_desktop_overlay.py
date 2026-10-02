@@ -1708,3 +1708,25 @@ def test_offscreen_wins_over_a_rectangle_that_still_looks_fine(automation):
     """A tab you left can keep its last rectangle; what it cannot do is claim to
     be on screen."""
     assert automation.on_screen(_Composer(offscreen=True, rect=(100, 690, 900, 730))) is False
+
+
+def test_a_click_marked_injected_still_collapses(bar, monkeypatch):
+    """A touchpad driver, a virtual machine's guest additions and a remote
+    desktop session all mark real clicks injected. Excluding them is right for
+    the file dialog, where SafePII replays clicks of its own, and wrong here:
+    the panel is never open during that, and a user on a VM could not close it."""
+    helper = bar.helper
+    events = queue.Queue()
+    hook = helper.Hotkeys.__new__(helper.Hotkeys)
+    hook.events = events
+    b = bar.b
+    b.place((400, 500, 1000, 560))
+    b.open_panel()
+    b.root.update()
+    panel = helper.SHARED["panel_rect"]
+    assert panel, "the panel has to publish where it is"
+
+    # What the hook does with a click away from the bar is now independent of
+    # how the click was produced; the flags only ever decided the logging.
+    hook.collapse_if_outside(panel[0] - 60, panel[1] - 60)
+    assert events.get_nowait()["type"] == "collapse"
