@@ -25,6 +25,12 @@ found here is architectural: it is all finishable work.
 P0 is live exposure or data at risk now. P1 blocks the customer's security review. P2 blocks
 a fleet rollout. P3 is needed for contract signature and for scale.
 
+Two of these cannot be closed by writing code here. **FOLDER-1** is a limit of what
+Claude Desktop lets a standard deployment enforce, and is answered with the
+customer's own endpoint controls; **PKG-2**'s certificate is a purchase with a lead
+time. Both are listed anyway, because a reader asking "what is outstanding" needs
+to see them.
+
 | # | Id | Item | Category | Effort |
 |---|---|---|---|---|
 | 1 | SEC-1 | Reflected XSS on `/auth/signed-out` | Security | hours |
@@ -38,6 +44,9 @@ a fleet rollout. P3 is needed for contract signature and for scale.
 | 9 | ~~DATA-2~~ | ~~Downloads watcher uploads every Office file~~ **done** | Data | 1 day |
 | 10 | ~~DATA-3~~ | ~~Helper log records conversation text, no rotation~~ **done** | Data | 1 day |
 | 11 | MASK-1 | PDF redaction reports success when it did not redact | Masking | 1 day |
+| 11a | FOLDER-1 | A user can add their own file-reading MCP server | Folder | not closable here |
+| 11b | PKG-6 | The deployed server predates the posture and update routes | Packaging | hours |
+| 11c | FOLDER-2 | Spreadsheets and PDFs are refused rather than served | Folder | days |
 | 12 | SEC-5 | Bundled Keycloak is a dev realm with seeded accounts | Security | 1 day |
 | 13 | SEC-6 | Legacy shared API key bypasses single sign-on | Security | hours |
 | 14 | ~~DATA-4~~ | ~~Overlay paints real PII into every screen capture~~ **done** | Data | hours |
@@ -357,6 +366,22 @@ element that harvests the built folder arrived in v5, and v6 brought the fee. So
 nothing is blocked, and the room to move is one major version wide. If the
 toolchain is ever taken forward, that fee is a line item somebody has to own.
 
+### PKG-6 — The deployed server predates this work — P1, verified 2026-10-02
+`/api/event` (the helper reporting posture an administrator should see) and
+`/desktop/latest.json` (update checks) exist in source and not on the image
+running at `safepii.hsenidmobile.com`. Until it is rebuilt, an unmanaged MCP
+server is reported only on the machine it happened on, and no helper can discover
+that it is out of date. `docker-build.sh && docker-publish.sh`, then
+[`DEPLOY_AWS.md`](DEPLOY_AWS.md) §6.
+
+### PKG-7 — The update check had never run — **DONE 2026-10-02**
+`update_checked` was initialised in `OverlayWorker.__init__` and read in
+`Automation.poll_update`, which raised on every idle tick. Caught and logged, so
+nothing looked broken and the helper never once asked the server what the current
+build was. Found by a user's log filling up. `tests/test_source_hygiene.py` now
+fails on an attribute read in one class and initialised only in another's
+`__init__`, which is the shape of that mistake.
+
 ### PKG-3 — Desktop users are invisible in the audit console — P2, verified
 The extension records intercept outcomes; the helper sends nothing to the server. The only
 trail is the local log. A regulator asking you to prove masking was enabled for a given user
@@ -370,6 +395,57 @@ Exclude it from any customer artefact, and expect a penetration tester to find i
 ### PKG-5 — Windows only — P3
 No macOS build. The `AXValue` write-back experiment in
 [`DESKTOP_APP_RESEARCH.md`](DESKTOP_APP_RESEARCH.md) section 8.2 is still open.
+
+---
+
+## Folder access (FOLDER)
+
+The broker (`desktop/broker.py`) serves one folder to Claude Desktop with the
+personal data replaced as it is read. Design and the options rejected:
+[ADR 0009](adr/0009-folder-access-is-masked-by-being-the-only-way-in.md),
+[`DESKTOP_APP_RESEARCH.md`](DESKTOP_APP_RESEARCH.md) §5.6. Deployment:
+[`enterprise/WINDOWS-RUNBOOK.md`](../enterprise/WINDOWS-RUNBOOK.md).
+
+### FOLDER-1 — A user can add their own MCP server — P1, verified on a machine
+The protection half is enforced: `allowedWorkspaceFolders: []` forbids every
+folder, and Claude's own request-a-folder tool with it ("denied without prompting
+the user"). The *registration* half is not. `managedMcpServers` is third-party
+only — tested 2026-10-02, both transports, both hives, while
+`allowedWorkspaceFolders` on the same key was demonstrably in force — so on a
+standard deployment the broker is registered through `claude_desktop_config.json`,
+which needs `isLocalDevMcpEnabled` left on. That same key is what would otherwise
+stop a user adding a filesystem MCP server of their own and reading raw files.
+**Not closable from here.** The answers are application allowlisting (a user's
+server has to execute something; ours is the signed MSI binary), an ACL on the
+config file, and the helper reporting `unmanaged-mcp-server` to the audit trail.
+Fully closed only in third-party mode.
+
+### FOLDER-2 — Spreadsheets and PDFs are refused, not served — P2, verified
+The broker serves prose through `/api/mask` and tables through `/api/process`,
+and refuses `.xlsx .docx .pptx .pdf` because serving them means rendering the
+masked output back as text. For a finance customer that is most of their data.
+The server already masks all of them; what is missing is the text view.
+
+### FOLDER-3 — Masked file names are best-effort — P2, verified
+Measured against a live engine: `kyc/Nimal Perera - loan.csv` is not recognised
+as prose, and a probe that works around the separator read the `md` in `notes.md`
+as a surname. Names are masked per path component with a separator probe, to the
+same standard as file contents, which are also best-effort. `--names handles`
+removes the risk and costs the model the ability to tell one file from another,
+which makes it read more of them (ADR 0009).
+
+### FOLDER-4 — Nothing is masked for a Code session's shell — P2, reported
+`mode: ro` is enforced at the OS level on Cowork's mount, but in Code sessions it
+binds Claude's file tools only, not Bash or SSH. The runbook switches Code off.
+A customer who needs Claude to execute against their data needs the synthetic
+filesystem assessed in §5.6.2, whose blocking problem is `getattr`: a filesystem
+must report a size before anything is opened, and masked content is a different
+length.
+
+### FOLDER-5 — Write-back is one-way — P3, reported
+`write_file` restores tokens and writes beside the served folder, never into it.
+There is no path for Claude to edit a file in place, and `mode: ro` means there
+should not be one until somebody has decided what review looks like.
 
 ---
 
