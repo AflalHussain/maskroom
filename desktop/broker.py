@@ -81,8 +81,25 @@ CACHE_MAX = 64                  # masked files held in memory
 
 
 def log(msg: str) -> None:
-    sys.stderr.write(f"{time.strftime('%H:%M:%S')} broker: {msg}\n")
-    sys.stderr.flush()
+    """Diagnostics, to stderr, never to stdout -- stdout carries JSON-RPC.
+
+    Never raises. The shipped helper is frozen windowed, so it has no console,
+    and Python's sys.stderr is None unless whoever started it supplied a handle.
+    Claude Desktop does; a person double-clicking the executable does not, and a
+    log line that kills the program it is describing is worse than no log line.
+    """
+    line = f"{time.strftime('%H:%M:%S')} broker: {msg}\n"
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        os.write(2, line.encode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ----------------------------------------------------------------- SafePII server

@@ -11,7 +11,7 @@ be impossible for the user to switch off, and be verifiable as ours.
 
 We decided:
 
-- **PyInstaller builds a one-directory executable**, and **WiX v4 packages it as an MSI**
+- **PyInstaller builds a one-directory executable**, and **WiX v5 packages it as an MSI**
   (`desktop/packaging/`). The version comes from `__version__` in `desktop/helper.py` and
   nowhere else, so the file properties, the MSI, the startup log line and the update check
   cannot disagree.

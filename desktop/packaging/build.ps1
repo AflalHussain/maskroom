@@ -135,33 +135,44 @@ Invoke-Sign $exe
 
 if ($SkipMsi) { Write-Host "built $appDir (no MSI requested)"; exit 0 }
 
-# ---- 3. the MSI. WiX v4 globs the directory itself, so there is no separate
+# ---- 3. the MSI. WiX v5 globs the directory itself, so there is no separate
 #         harvest step and no generated file list to fall out of step.
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     throw @"
 The WiX toolset is not on PATH. Install it with:
 
-    dotnet tool install --global wix --version 4.*
+    dotnet tool install --global wix --version 5.*
 
 Pin the version. An unpinned install now fetches WiX v7, which refuses to build
 until its Open Source Maintenance Fee EULA is accepted -- a commercial licence
 question, not a build step. This project's .wxs is written for v4 anyway.
 "@
 }
-# A v6 or later toolset will not build without that EULA, and says so in a way
-# that reads like our file is wrong. Say what it actually is, before the attempt.
+# There is exactly one usable band, and both ways out of it fail in a way that
+# reads like this project's .wxs is wrong rather than the toolset. Say which it
+# is before the attempt: v4 has no Files element, v6 and later want the fee.
 $wixVersion = (& wix --version 2>&1 | Out-String).Trim()
+if ($wixVersion -match '^(\d+)\.' -and [int]$Matches[1] -lt 5) {
+    throw @"
+WiX $wixVersion is installed, and the Files element that harvests the built
+folder arrived in v5. On v4 it fails as "ComponentGroup contains an unexpected
+child element 'Files'", which reads like this project's .wxs is wrong. It is not:
+
+    dotnet tool uninstall --global wix
+    dotnet tool install --global wix --version 5.*
+"@
+}
 if ($wixVersion -match '^(\d+)\.' -and [int]$Matches[1] -ge 6) {
     throw @"
 WiX $wixVersion is installed, and v6 and later require the Open Source
 Maintenance Fee EULA to be accepted before they will build anything. For a
 commercial product that is a licence to buy, not a prompt to click through.
 
-Either settle that (https://wixtoolset.org/osmf/), or use the version this build
-kit was written for:
+Either settle that (https://wixtoolset.org/osmf/), or use v5, which has the
+Files element this .wxs needs and predates the fee:
 
     dotnet tool uninstall --global wix
-    dotnet tool install --global wix --version 4.*
+    dotnet tool install --global wix --version 5.*
 
 Or skip the MSI altogether: -SkipMsi leaves the frozen build in dist\, and
 README.md has the handful of commands that put it on a machine without one.

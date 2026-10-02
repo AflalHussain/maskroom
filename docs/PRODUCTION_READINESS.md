@@ -352,9 +352,10 @@ repository is developed on Linux. The first build on a Windows machine is the te
 **WiX licensing, found 2026-10-02:** an unpinned `dotnet tool install --global wix`
 now installs v7, which will not build until its **Open Source Maintenance Fee**
 EULA is accepted — a commercial licence for a product that is sold. The build is
-pinned to WiX v4, which predates the fee and is MIT-licensed, so nothing is
-blocked; but if the toolchain is ever moved forward, that fee is a line item
-somebody has to own. Not a blocker, and not free to ignore either.
+pinned to WiX v5, which is the only version band that works at all: the `Files`
+element that harvests the built folder arrived in v5, and v6 brought the fee. So
+nothing is blocked, and the room to move is one major version wide. If the
+toolchain is ever taken forward, that fee is a line item somebody has to own.
 
 ### PKG-3 — Desktop users are invisible in the audit console — P2, verified
 The extension records intercept outcomes; the helper sends nothing to the server. The only

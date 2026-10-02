@@ -10,20 +10,21 @@ On a Windows machine with Python 3.12:
 ```powershell
 py -m pip install pyinstaller uiautomation
 winget install Microsoft.DotNet.SDK.8     # or any .NET SDK; needed only for the MSI
-dotnet tool install --global wix --version 4.*   # pin it; see below
+dotnet tool install --global wix --version 5.*   # pin it; see below
 
 powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -SkipMsi
 powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1
 powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -Sign
 ```
 
-**Pin WiX to v4.** An unpinned `dotnet tool install --global wix` now fetches v7,
-which refuses to build anything until its **Open Source Maintenance Fee** EULA is
-accepted. For a product being sold that is a commercial licence to settle, not a
-prompt to click through, and it has nothing to do with this build. WiX v4 and v5
-predate it and are MIT-licensed; the `.wxs` here is written for v4's `<Files
-Include>` globbing in any case. If the fee is settled later, nothing here needs to
-change.
+**Pin WiX to v5 — there is exactly one version band that works.** The `<Files
+Include>` element that harvests the built folder arrived in **v5**; on v4 the build
+fails with "ComponentGroup contains an unexpected child element 'Files'". And **v6
+and later** will not build at all until the **Open Source Maintenance Fee** EULA is
+accepted, which for a product being sold is a commercial licence to settle rather
+than a prompt to click through. So: v5. An unpinned install fetches v7 and stops
+at the fee. `build.ps1` checks the installed version before trying, because both
+failures read like this project's `.wxs` is at fault.
 
 **The `-ExecutionPolicy Bypass` prefix is not optional** on a machine with the
 default policy, which refuses to run the script and reports it in a way that reads
@@ -163,7 +164,7 @@ affects a global low-level keyboard hook and always-on-top windows is the sort
 of thing to establish on a real machine before betting a release on it. MSI is
 plain Win32, deploys through Group Policy, and has no such questions.
 
-**No separate harvest step.** WiX v4 globs the built folder itself, so there is
+**No separate harvest step.** WiX v5 globs the built folder itself, so there is
 no generated file list that can fall out of step with what PyInstaller actually
 produced.
 

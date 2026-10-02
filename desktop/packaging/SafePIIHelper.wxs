@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- WiX v4/v5 source for the SafePII desktop helper MSI.
+<!-- WiX v5 source for the SafePII desktop helper MSI.
 
      An MSI rather than a plain setup executable, because that is what deploys
      through Group Policy software installation and what an endpoint team can
@@ -56,7 +56,7 @@
     </Feature>
 
     <ComponentGroup Id="HelperFiles" Directory="INSTALLFOLDER">
-      <!-- Everything PyInstaller produced. WiX v4 globs a directory itself, so
+      <!-- Everything PyInstaller produced. WiX v5 globs a directory itself, so
            there is no separate harvest step and no generated file list to get
            out of step with the build. -->
       <Files Include="$(var.AppDir)\**" />

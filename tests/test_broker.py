@@ -697,3 +697,22 @@ def test_the_bridge_works_when_python_has_no_stdio_of_its_own(monkeypatch, tmp_p
         os.close(r_fd)
         os.close(w_fd)
     assert written.read_text() == "ok\n"
+
+
+def test_logging_cannot_kill_the_process_it_is_describing(monkeypatch, capfd):
+    """A frozen windowed build has no console, so sys.stderr is None unless
+    whoever started it supplied a handle. Claude Desktop does; a person
+    double-clicking the executable does not, and that is how the first packaged
+    build died -- on its own startup log line, before doing anything."""
+    monkeypatch.setattr("sys.stderr", None)
+    broker.log("this must not raise")          # it went to fd 2 or nowhere
+
+    class Broken:
+        def write(self, _):
+            raise OSError("the handle went away")
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr("sys.stderr", Broken())
+    broker.log("nor this")
