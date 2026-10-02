@@ -20,7 +20,11 @@ HERE = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 
 a = Analysis(
     [os.path.join(HERE, "desktop", "helper.py")],
-    pathex=[HERE],
+    # desktop/ as well as the repo root: helper.py imports broker from its own
+    # folder, after putting that folder on sys.path at runtime. PyInstaller reads
+    # the import statement but resolves it against these paths, not against what
+    # the program will do to sys.path later.
+    pathex=[HERE, os.path.join(HERE, "desktop")],
     binaries=[],
     datas=[],
     # comtypes builds its typelib wrappers at import time, and uiautomation
@@ -29,13 +33,22 @@ a = Analysis(
     # the first accessibility call rather than at startup.
     hiddenimports=["comtypes", "comtypes.stream", "comtypes.automation",
                    "comtypes.typeinfo", "comtypes.client", "comtypes.client._generate",
-                   "uiautomation"],
+                   "uiautomation",
+                   # The file broker. Named here as well as found on pathex,
+                   # because helper.py imports it inside a try/except -- a build
+                   # that quietly leaves it out produces a helper with no folder
+                   # sharing and no stdio bridge, and says nothing about it.
+                   "broker"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Nothing here needs the test suite, the REPL or a web server.
-    excludes=["pytest", "unittest", "pydoc", "doctest", "idlelib",
-              "email", "http.server", "xmlrpc", "distutils", "setuptools"],
+    # Nothing here needs the test suite or the REPL. `http.server` and `email`
+    # were on this list and must not be: the sign-in loopback listener and the
+    # broker are both built on http.server, which parses its headers with email.
+    # Excluding a module the program imports does not shrink the build, it breaks
+    # it at the first use -- here, at sign-in.
+    excludes=["pytest", "pydoc", "doctest", "idlelib", "xmlrpc",
+              "distutils", "setuptools"],
     noarchive=False,
 )
 # PyInstaller 6 dropped bytecode encryption, so there is no cipher argument and

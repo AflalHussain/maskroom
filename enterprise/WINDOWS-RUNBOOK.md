@@ -27,19 +27,37 @@ ours can see. Take away the second and Claude has no files at all.
 
 ---
 
-## Before you start
+## Prerequisites
 
-- **A signed MSI.** `desktop/packaging/build.ps1 -Sign` produces it. Do not deploy
-  unsigned: it installs a global keyboard hook, and SmartScreen, endpoint
-  protection and application allowlisting will all object — correctly.
-  [`../desktop/packaging/README.md`](../desktop/packaging/README.md) covers the
-  certificate, which is a purchase with a lead time.
-- **A reachable SafePII server**, and a way for clients to authenticate: either
-  OIDC sign-on, or a service key per machine (`maskroom-admin key create …`).
-- **Claude Desktop ≥ 1.26832.0** on every machine, for the per-folder `mode`
-  field. Anything current is well past that.
+Two lists. The first is what must be finished **before an administrator is given
+this document**; none of it is their job, and handing the runbook over with any of
+it outstanding wastes their time. The second is what they need on the day.
 
----
+### Not ready until we have done these
+
+| | Why it blocks | Where |
+|---|---|---|
+| **A code-signing certificate** | The MSI installs a program that holds a global keyboard hook. Unsigned, SmartScreen stops it, endpoint protection is likely to quarantine it, and application allowlisting — which this deployment *depends on* (Step 4a) — will not pass it. Since 1 June 2023 the private key must live in a FIPS 140-2 Level 2 or CC EAL4+ module, so this is a purchase with a lead time, not a build step | [`../desktop/packaging/README.md`](../desktop/packaging/README.md) |
+| **One signed MSI built and installed end to end** | The build kit has never been run to completion on a Windows machine. Until a signed MSI has installed, started the helper, shared a folder and survived a reboot, this document describes something unproven | `desktop/packaging/build.ps1 -Sign` |
+| **The server carrying this build** | `/api/event` (posture reporting) and `/desktop/latest.json` (update checks) exist in the source and not on the deployed image | [`../docs/DEPLOY_AWS.md`](../docs/DEPLOY_AWS.md) §1, §6 |
+| **A decision on `onGuardFailure`** | `hold` stops anything being sent when the guard cannot run; `warn` lets it through loudly. It is the customer's call about their own risk, and it should be made before rollout rather than discovered during one | Step 2 |
+| **A decision on folder sharing** | Whether users may share folders at all, and under which name policy. Step 2 again | Step 2 |
+| **The browser half** | Locking Claude Desktop while leaving Chrome open protects nothing: the user opens claude.ai instead. That has its own prerequisites, including a packaged extension and its signing key | [`RUNBOOK.md`](RUNBOOK.md) |
+
+### What the administrator needs on the day
+
+- **Domain or Intune** rights to push an MSI, ADMX templates and registry policy to
+  `HKLM`.
+- **The signed MSI**, and the SafePII server address.
+- **Credentials for the clients**: either OIDC sign-on configured on the server, or
+  one service key per machine (`maskroom-admin key create desktop-<machine>`).
+- **Claude Desktop ≥ 1.26832.0** on every machine, for the per-folder `mode` field.
+  Anything current is well past that; `winver` in the app's About dialog shows it.
+- **Application allowlisting already operating** (AppLocker or WDAC). Step 4a leans
+  on it, and it is the only thing that closes the one hole in this design. A fleet
+  without it gets a weaker deployment, and should be told so rather than not.
+- **A pilot machine** that can be broken and reimaged. Step 5 is not a formality:
+  three of the behaviours here were wrong on a real machine and right on ours.
 
 ## Step 1 — Install the helper
 
@@ -223,6 +241,50 @@ is fully enforceable, and it is a commercial decision rather than a technical on
    `watching Claude Desktop's config at …`, `posture: …`.
 
 ---
+
+## Rolling it out to a fleet
+
+Steps 1 to 5 describe one machine. A fleet is not one machine repeated, and the
+order matters because two of these are visible to users the moment they land.
+
+1. **Pilot, 1 machine.** Steps 1–5 by hand, on something reimageable. Confirm the
+   whole round trip, not just that the helper starts.
+2. **Pilot group, 5–10 machines, policy only.** Push Steps 2 and 3 — SafePII's
+   settings and `allowedWorkspaceFolders: []` — *without* the MSI, to a group that
+   does not use Cowork folders. This proves the policy lands on real, varied
+   machines and is quiet: the only visible change is that folders cannot be
+   attached.
+3. **Pilot group, with the helper.** Add Step 1 and Step 4 to the same group. Now
+   it is visible: a bar appears above the composer. Tell them first, and tell them
+   what it is for — a privacy tool that arrives unannounced gets reported to the
+   service desk as malware, and they are not wrong to.
+4. **Measure before widening.** Over a week on the pilot group, look for
+   `unmanaged-mcp-server` in the audit trail, helper restarts in the log, and
+   anything in Recent that users have had to acknowledge. The point of a pilot is
+   to find the thing nobody predicted; three of the behaviours in this document
+   were wrong on a real machine and right in our tests.
+5. **Widen by department**, not all at once, and keep one group unpoliced until
+   last so there is somewhere to compare against.
+6. **Then the browser half** ([`RUNBOOK.md`](RUNBOOK.md)), or users simply move to
+   Chrome and the measurement above means nothing.
+
+**Order these two together.** `allowedWorkspaceFolders: []` without the helper
+takes a feature away and gives nothing back; the helper without the policy leaves
+the raw folder reachable. Either alone is worse than neither, so stages 2 and 3
+should be days apart, not weeks.
+
+## What to tell users, once
+
+The deployment is not silent and should not pretend to be. One paragraph, from
+their own IT, before stage 3 lands:
+
+> A tool called SafePII now runs alongside Claude. It replaces personal data —
+> names, NIC numbers, phone numbers, account numbers — with placeholders before
+> anything leaves your machine, and shows you the real values on your screen. You
+> will see a small bar above the message box. Claude can no longer open folders on
+> your computer directly; ask it for files and it will ask you to choose a folder
+> through SafePII, which masks them as it hands them over. If something looks
+> wrong, the bar has a panel with the last few things it did.
 
 ## Step 6 — Updating
 
