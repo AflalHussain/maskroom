@@ -308,3 +308,33 @@ def test_the_installer_is_reachable_without_signing_in(client, tmp_path, monkeyp
     extension."""
     from webui import auth as auth_mod
     assert "/desktop/" in auth_mod.OPEN_PREFIXES
+
+
+# --------------------------------------------------------------- client events
+def test_a_client_can_report_posture_an_administrator_should_see(client):
+    """The desktop helper reports what it can observe and cannot fix: an MCP
+    server in Claude Desktop that is not ours. Claude Desktop scopes the policy
+    that would prevent it to third-party deployments, so on a standard fleet the
+    answer is that it becomes a record somebody reads."""
+    r = client.post("/api/event", json={"kind": "unmanaged-mcp-server",
+                                        "detail": "C:\\...\\claude_desktop_config.json: filesystem"})
+    assert r.status_code == 200 and r.get_json()["recorded"] is True
+    # Read the trail directly: the listing route needs an admin key, and what is
+    # under test is that the event is recorded, not who may read it back.
+    from webui import app as webapp
+    rows = webapp.audit.list(limit=20)["records"]
+    mine = [x for x in rows if x["action"] == "client-alert"]
+    assert mine and mine[0]["kind"] == "unmanaged-mcp-server"
+
+
+def test_a_client_cannot_write_whatever_it_likes_into_the_audit_trail(client):
+    """A closed vocabulary, so the trail stays readable rather than becoming a
+    log sink a client controls."""
+    r = client.post("/api/event", json={"kind": "whatever", "detail": "x"})
+    assert r.status_code == 400
+    assert "Unknown event kind" in r.get_json()["error"]
+
+
+def test_an_event_with_no_body_is_refused(client):
+    assert client.post("/api/event", data="not json",
+                       content_type="application/json").status_code == 400

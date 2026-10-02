@@ -791,9 +791,22 @@ The schema settles how it should be deployed, and the answer is not the obvious 
   "**Cowork, Chat and Code sessions** connect the managed list above and the servers the
   desktop serves from the administrator's org-plugins directory". Tools are not a Chat-only
   surface.
-- **`managedMcpServers` is the admin route, and it is available in standard mode**
-  (`scopes: ["3p"]` since `1.2581.0`, `scopes: ["1p"]` since `1.24012.11`). It is pushed by
-  MDM, so the user cannot remove it.
+- **`managedMcpServers` did not work in standard mode, whatever its schema says.** The
+  package declares `scopes: ["3p"]` since `1.2581.0` and `["1p"]` since `1.24012.11`, which
+  read as "available in both". Tested on a real machine on 2026-10-02 it was ignored in
+  standard mode — in its HTTP and its stdio form, from `HKLM` and `HKCU` — while
+  `allowedWorkspaceFolders` on the *same key* was demonstrably in force, which rules out the
+  key path, the hive and the encoding. Anthropic's configuration reference agrees with the
+  machine rather than with the schema: the key "applies only while the app runs in third-party
+  mode (3P)". **A declared scope in the package is not a promise about behaviour**, and this is
+  the one place in this document where the two disagreed.
+- The consequence for a standard, claude.ai-sign-in fleet: the broker is registered through
+  `claude_desktop_config.json`, which the user can edit, and that route needs
+  `isLocalDevMcpEnabled` left on — the same key that would otherwise stop a user adding their
+  own file-reading MCP server. The protection does not depend on this (an empty
+  `allowedWorkspaceFolders` still forbids every folder), but the residual risk does, and it is
+  addressed outside Anthropic's controls: application allowlisting, an ACL on the file, and
+  the helper reporting what it cannot prevent. `enterprise/WINDOWS-RUNBOOK.md` §4.
 - **A managed server must speak HTTP or SSE, not stdio.** Its transport field is
   `enum(["http", "sse"])`; "Local command (stdio)" exists only as a label for the user-added
   kind. So the broker is **not** an `.mcpb` stdio extension if it is to be deployed by policy.

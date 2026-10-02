@@ -107,6 +107,10 @@ def _audit(**kw):
     except Exception as e:  # noqa: BLE001
         app.logger.warning("audit record failed: %s", e)
 
+# What a client may report through /api/event. A closed set, so the audit trail
+# keeps a vocabulary rather than becoming whatever a client felt like saying.
+CLIENT_EVENTS = {"unmanaged-mcp-server", "safepii-not-registered", "guard-disabled"}
+
 # ---------------------------------------------------------------- engines
 _nlp_engines = {}
 _engines = {}
@@ -487,6 +491,30 @@ def mask_text():
         "findings": findings, "vault_entries": entries,
         "preamble": rules.LLM_TOKEN_PREAMBLE, "elapsed_s": round(time.time() - t0, 2),
     })
+
+
+@app.post("/api/event")
+def client_event():
+    """A client reporting something an administrator should see.
+
+    The desktop helper uses this for posture it can observe and cannot fix: an
+    MCP server configured in Claude Desktop that is not ours, or SafePII missing
+    from that configuration entirely. Neither is something the helper can
+    prevent -- Claude Desktop scopes the policy that would to third-party
+    deployments -- so the answer is that it becomes a record somebody reads.
+
+    Deliberately narrow: a kind, a line of detail, nothing else. It is not a log
+    sink, and a client cannot write arbitrary audit rows through it.
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send a JSON object body."}), 400
+    kind = str(data.get("kind") or "").strip()[:40]
+    if kind not in CLIENT_EVENTS:
+        return jsonify({"error": f"Unknown event kind. One of: {', '.join(sorted(CLIENT_EVENTS))}."}), 400
+    _audit(action="client-alert", user=_user(), ip=_ip(), kind=kind,
+           output_text=str(data.get("detail") or "")[:2000])
+    return jsonify({"recorded": True})
 
 
 @app.post("/api/unmask")

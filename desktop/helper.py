@@ -169,6 +169,7 @@ DEFAULTS = {
     "shareNames": "mask",      # mask | handles | real (see broker.Names)
     "shareAllowCode": False,   # serve source files too
     "sharePort": 47821,        # the loopback port the managed policy points at
+    "watchClaudeConfig": True,  # report MCP servers in Claude Desktop that are not ours
 }
 OVERLAY_TICK_S = 0.06      # overlay thread: how often rectangles are refreshed
 OVERLAY_WALK_MIN_S = 0.30   # never re-walk the visible lines more often than this
@@ -238,7 +239,7 @@ POLICY_TYPES = {"serverUrl": str, "guard": bool, "unmask": bool, "overlay": bool
                 "downloadsDir": str, "overlayDebug": bool,
                 # Sharing: whether it is allowed at all, and on what terms.
                 "sharing": bool, "shareNames": str, "shareAllowCode": bool,
-                "sharePort": int}
+                "sharePort": int, "watchClaudeConfig": bool}
 POLICY: dict = {}      # what the administrator has actually set, this run
 
 
@@ -984,6 +985,49 @@ def find_page_document():
     return best, best_ctrl, best_win
 
 
+# ----------------------------------------------------------------------------- watching Claude's own config
+# Claude Desktop reads MCP servers from claude_desktop_config.json, and that file
+# is the user's to edit. On a standard (claude.ai sign-in) deployment there is no
+# policy that changes this: managedMcpServers is scoped to third-party
+# deployments, verified on a real machine. So the helper cannot prevent a user
+# adding an MCP server of their own -- one that reads raw files, say -- and the
+# honest answer is that it notices and says so, to the person and to the audit
+# trail. Prevention is the endpoint team's, through application allowlisting and
+# an ACL on this file; see enterprise/WINDOWS-RUNBOOK.md.
+CLAUDE_CONFIG_NAME = "claude_desktop_config.json"
+# Package family names read from the shipped app, for a Store/MSIX install, whose
+# config is nowhere near %APPDATA%.
+CLAUDE_PACKAGES = ("Claude_pzs8sxrjxfjjc", "AnthropicPBC.Claude_fnn82j28hfe8t")
+
+
+def claude_config_paths() -> list[Path]:
+    """Every place Claude Desktop is known to keep that file, in the order worth
+    looking. There is no single answer: a packaged install puts it under
+    Packages\...\LocalCache, which is how a real machine surprised us."""
+    appdata = os.environ.get("APPDATA") or ""
+    local = os.environ.get("LOCALAPPDATA") or ""
+    out = []
+    if appdata:
+        out.append(Path(appdata) / "Claude" / CLAUDE_CONFIG_NAME)
+    if local:
+        out.append(Path(local) / "Claude" / CLAUDE_CONFIG_NAME)
+        out.append(Path(local) / "Claude-3p" / CLAUDE_CONFIG_NAME)
+        for pkg in CLAUDE_PACKAGES:
+            out.append(Path(local) / "Packages" / pkg / "LocalCache" / "Roaming"
+                       / "Claude" / CLAUDE_CONFIG_NAME)
+    return out
+
+
+def read_claude_mcp_servers(path: Path) -> set[str] | None:
+    """The names of the MCP servers configured there, or None if unreadable."""
+    try:
+        data = json.loads(path.read_text("utf-8") or "{}")
+    except (OSError, ValueError):
+        return None
+    servers = data.get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
+
+
 # ----------------------------------------------------------------------------- sharing
 class Sharing:
     """One folder at a time, served to Claude through the file broker.
@@ -1216,6 +1260,9 @@ class Automation(threading.Thread):
         self.sharing = Sharing(cfg, self.server,
                                on_resolve=lambda text: self.index.restore(text)[0])
         self.forgot = False           # values dropped for an unattended desk, to be re-fetched
+        self.claude_cfg = None        # where Claude Desktop's own config turned out to be
+        self.claude_cfg_at = 0.0      # its mtime when last read
+        self.claude_said = None       # the last set of foreign servers reported, to say it once
         self.dialog = None            # the open file dialog, while Claude has one
         self.dialog_edit = None
         self.dialog_confirm = None
@@ -1295,6 +1342,10 @@ class Automation(threading.Thread):
                 self.poll_shared_vault()
             except Exception as e:  # noqa: BLE001
                 log(f"shared folder vault error {type(e).__name__}: {e}")
+            try:
+                self.poll_claude_config()
+            except Exception as e:  # noqa: BLE001
+                log(f"client config watch error {type(e).__name__}: {e}")
             try:
                 self.poll_update()
             except Exception as e:  # noqa: BLE001
@@ -1423,6 +1474,69 @@ class Automation(threading.Thread):
         SHARED["index"] = self.index          # the overlay thread reads this
         self.token_owner = owner
         log(f"vault index: {len(union)} tokens across {len(self.vaults)} sessions")
+
+    def poll_claude_config(self) -> None:
+        """Notice an MCP server in Claude Desktop that is not ours.
+
+        It cannot be prevented on a standard deployment -- the policy that would,
+        managedMcpServers, is scoped to third-party ones -- so it is reported
+        instead: to the person on the bar, and to the audit trail, where an
+        administrator can see which machines have one. A filesystem server added
+        here would read raw files and SafePII would never see them, which is the
+        one hole left in the fleet story and deserves to be visible rather than
+        argued about.
+
+        Cheap: a stat, and a parse only when the file has changed.
+        """
+        if not self.cfg.get("watchClaudeConfig", True):
+            return
+        if self.claude_cfg is None or not self.claude_cfg.is_file():
+            self.claude_cfg = next((p for p in claude_config_paths() if p.is_file()), None)
+            if self.claude_cfg is None:
+                return
+            log(f"watching Claude Desktop's config at {self.claude_cfg}")
+            self.claude_cfg_at = 0.0
+        try:
+            at = self.claude_cfg.stat().st_mtime
+        except OSError:
+            return
+        if at == self.claude_cfg_at:
+            return
+        self.claude_cfg_at = at
+        names = read_claude_mcp_servers(self.claude_cfg)
+        if names is None:
+            log(f"Claude Desktop's config at {self.claude_cfg} could not be read")
+            return
+        ours = broker_mod.NAME if broker_mod else "safepii-files"
+        foreign = sorted(n for n in names if n != ours)
+        state = (tuple(foreign), ours in names)
+        if state == self.claude_said:
+            return
+        self.claude_said = state
+        if foreign:
+            said = ("Claude Desktop is configured with "
+                    + ("an MCP server SafePII does not manage: " if len(foreign) == 1
+                       else f"{len(foreign)} MCP servers SafePII does not manage: ")
+                    + ", ".join(foreign[:5])
+                    + ". Files it reads do not pass through SafePII.")
+            log("posture: " + said)
+            self.emit(type="alert", msg=said, level="warn")
+            self.report_event("unmanaged-mcp-server",
+                              f"{self.claude_cfg}: {', '.join(foreign)}")
+        if self.sharing.listening and ours not in names:
+            said = ("SafePII is not registered with Claude Desktop, so Claude cannot read "
+                    "your files through it. Your administrator sets this up.")
+            log("posture: " + said)
+            self.emit(type="alert", msg=said, level="warn")
+            self.report_event("safepii-not-registered", str(self.claude_cfg))
+
+    def report_event(self, kind: str, detail: str) -> None:
+        """Tell the server something an administrator should see. Best-effort:
+        a machine that cannot reach the server has a bigger problem, and failing
+        to report must not stop the helper doing its job."""
+        r = self.server.api("/api/event", "POST", {"kind": kind, "detail": detail})
+        if not r["ok"]:
+            log(f"could not report {kind}: {r['error']}")
 
     def poll_shared_vault(self) -> None:
         """Re-read the shared folder's vault after Claude has read a file.

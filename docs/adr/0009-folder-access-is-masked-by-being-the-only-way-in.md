@@ -85,6 +85,16 @@ the minimal set, and on a decline ask in conversation rather than again.
 - SafePII becomes a *file server* to the model, not only a masking API. That is a new client
   shape: tools for listing, reading, searching and writing back, each one masking or restoring
   as it goes. `desktop/broker.py` is the prototype.
+- **On a standard deployment, registering the broker cannot be enforced — only the
+  protection can.** `managedMcpServers` turned out to be third-party only, tested on a real
+  machine against a schema that said otherwise (§5.6.3(b)). So the registration lives in a
+  user-writable file and needs `isLocalDevMcpEnabled` on, which is the key that would
+  otherwise stop a user adding their own file-reading MCP server. The split worth holding on
+  to: an empty `allowedWorkspaceFolders` forbids every folder and *is* enforced, so a user who
+  removes our entry loses the feature rather than gaining raw access. The residual risk is
+  narrower than "unenforceable" — it is "what else can they add" — and it is answered outside
+  Anthropic's controls, by application allowlisting, an ACL on the file, and the helper
+  reporting an unmanaged server to the audit trail. Fully closed only in third-party mode.
 - **Telling Claude Desktop where the broker is has three doors, and only two are usable.**
   The managed `managedMcpServers` policy takes HTTP on `127.0.0.1` and is the deployment
   answer. The app's own *Add a connector* field is not: it is for a remote server and requires

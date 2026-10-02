@@ -110,7 +110,7 @@ granting one.
 
 | Key | Set to | What it stops |
 |---|---|---|
-| `isLocalDevMcpEnabled` | `0` | **A user adding their own MCP server** — a filesystem server would read raw files and SafePII would never see it. See the caveat in Step 4 |
+| `isLocalDevMcpEnabled` | **leave on** | It would stop a user adding their own MCP server — but it also stops *ours* loading, because on a standard deployment that is the only route (Step 4). Set it to `0` only in third-party mode |
 | `isDesktopExtensionEnabled` | `0` | Desktop extensions, which can also read files |
 | `isDesktopExtensionDirectoryEnabled` | `0` | Browsing for more of them |
 | `isDesktopExtensionSignatureRequired` | `1` | If you do allow extensions, at least require a trusted publisher |
@@ -126,29 +126,17 @@ already harmless, while turning it off removes the surface your users want.
 
 ## Step 4 — Point Claude Desktop at the broker
 
-The helper serves on `http://127.0.0.1:47821/mcp` for as long as it runs. Claude
-Desktop has to be told, and there are two ways with very different properties.
+The helper serves on `http://127.0.0.1:47821/mcp` for as long as it runs, and
+Claude Desktop has to be told. **On a standard deployment there is no policy that
+does this.** Verified on a real machine, 2026-10-02: with `allowedWorkspaceFolders`
+demonstrably in force on the same key, `managedMcpServers` was ignored in both its
+HTTP and its stdio form, from `HKLM` and `HKCU`. Anthropic's own reference says why
+— that key "applies only while the app runs in third-party mode (3P)".
 
-**The managed way, which is the one to deploy:**
-
-```
-reg add "HKLM\SOFTWARE\Policies\Claude" /v managedMcpServers /t REG_SZ /d "[{\"name\":\"safepii-files\",\"url\":\"http://127.0.0.1:47821/mcp\",\"transport\":\"http\"}]" /f
-```
-
-A managed server may speak only `http` or `sse`, and loopback is the one
-plain-HTTP endpoint the app accepts without complaint. Being policy, the user
-cannot remove it — and because it needs nothing from `isLocalDevMcpEnabled`, you
-can switch that off in Step 3 and close the bypass.
-
-> **Verify this one on a machine before you roll it out.** How a JSON document is
-> encoded in a flat registry value is the single thing that could not be confirmed
-> by reading the application package; the Windows registry reader is not in the
-> published Linux build. The helper logs the exact shape it expects at startup:
-> `managed configuration: {"managedMcpServers": …}`.
-
-**The fallback, if the managed key will not take:** a stdio server in
-`claude_desktop_config.json` (the file **Developer → Open App Config File**
-opens):
+So the registration goes in `claude_desktop_config.json`, the file that
+**Developer → Open App Config File** opens. Its location varies: a packaged
+install keeps it under `%LOCALAPPDATA%\Packages\…\LocalCache\Roaming\Claude\`,
+nowhere near `%APPDATA%`. Use the menu item rather than guessing.
 
 ```json
 {
@@ -166,17 +154,50 @@ nothing it is the helper. `--bridge` means that process does not serve the folde
 itself; it relays to the helper's broker, so the folder is still served once, by
 the helper that holds the sign-in and the vault.
 
-**Know what this costs you.** That file is user-writable, and the route depends on
-`isLocalDevMcpEnabled` staying **on** — which is exactly the key that otherwise
-stops a user adding their own file-reading MCP server. So:
+### What this costs, and how to get it back
 
-- A user can delete our entry. They lose the feature; they do **not** gain
-  unmasked access, because `allowedWorkspaceFolders: []` still stands.
-- A user can add a filesystem MCP server of their own and read raw files through
-  it. **This is a real bypass**, and it is the reason the managed route is worth
-  getting working.
+That file is the user's to edit, and the route needs `isLocalDevMcpEnabled` to
+stay **on** — the same key that would otherwise stop a user adding their own MCP
+server. Two consequences, and only the second is a real risk:
 
----
+- **A user can delete our entry.** They lose masked file access; they gain
+  nothing, because `allowedWorkspaceFolders: []` still stands. The helper notices
+  and says so, on the bar and in the audit trail.
+- **A user can add a filesystem MCP server of their own** and read raw files
+  through it. This is the one hole in the fleet story. Close it with the two
+  controls below, which a regulated customer already operates.
+
+**4a. Application allowlisting (AppLocker or WDAC) — the real control.** Any MCP
+server a user adds has to execute something: `npx`, `node`, `python`, a binary.
+Allow only signed company binaries and they cannot. This fits us exactly: our
+bridge **is** `SafePIIHelper.exe`, the signed MSI binary, so the allowlist permits
+ours and refuses theirs. No cooperation from Anthropic required.
+
+**4b. Take write access to the config file away.** Write the entry as the
+administrator, then deny the user `Write`, `WRITE_DAC` and `WRITE_OWNER` on it, so
+they can neither edit it nor give themselves back the right to:
+
+```powershell
+$f = "<path from Developer → Open App Config File>"
+icacls $f /inheritance:d
+icacls $f /grant "Administrators:(F)" "SYSTEM:(F)"
+icacls $f /deny  "$env:USERNAME:(W,WDAC,WO)"
+```
+
+A local administrator can undo this; a standard user cannot. If your users are
+local administrators, none of this section means anything and 4a is all you have.
+
+**4c. SafePII reports what it cannot prevent.** The helper watches that file and,
+when an MCP server appears that is not ours, warns on the bar and records
+`unmanaged-mcp-server` against the machine in the audit trail — with the server's
+name and the path it was found at. It does the same when SafePII is *missing*
+from the configuration, which is otherwise a silent "why does nothing work". Set
+`watchClaudeConfig` to `0` to switch it off; there is rarely a reason to.
+
+**If the customer runs Claude Desktop in third-party mode**, none of this applies:
+`managedMcpServers` works there, so the registration is policy, `isLocalDevMcpEnabled`
+can be `0`, and the hole closes properly. It is the only configuration where this
+is fully enforceable, and it is a commercial decision rather than a technical one.
 
 ## Step 5 — Verify on one machine
 
@@ -193,8 +214,13 @@ stops a user adding their own file-reading MCP server. So:
    should offer to ask for a folder rather than report an error.
 5. **The round trip.** Share a folder from the bar, ask Claude to read a file, and
    check the reply is tokens on Claude's side and real values under your mouse.
-6. **The log tells the story**, at `%APPDATA%\SafePII\helper.log`:
-   `broker listening …`, `sharing <path> …`, `shared folder vault: N new token(s)`.
+6. **Posture reporting works.** Add a dummy MCP server to
+   `claude_desktop_config.json`, wait a few seconds, and the bar should warn that
+   Claude Desktop has a server SafePII does not manage. It should appear in the
+   audit trail as `unmanaged-mcp-server` against that machine. Remove it again.
+7. **The log tells the story**, at `%APPDATA%\SafePII\helper.log`:
+   `broker listening …`, `sharing <path> …`, `shared folder vault: N new token(s)`,
+   `watching Claude Desktop's config at …`, `posture: …`.
 
 ---
 
@@ -224,8 +250,11 @@ Worth reading before you tell anyone it is airtight.
   `allowedWorkspaceFolders: []` they lose file access rather than gain it, and the
   message guard goes with it — so messages they type are no longer checked. Have
   endpoint management watch for the process if that matters to you.
-- **The stdio route leaves `isLocalDevMcpEnabled` on**, which lets a user add
-  their own file-reading MCP server. Use the managed route (Step 4).
+- **A user can add their own file-reading MCP server**, because registering ours
+  needs `isLocalDevMcpEnabled` on and a standard deployment has no policy route
+  (Step 4). Application allowlisting is the control; the config-file ACL raises
+  the bar; SafePII reports it either way. In third-party mode this closes
+  properly.
 - **Read-only is a Cowork guarantee, not a Code one.** In Code sessions `mode: ro`
   binds Claude's file tools but not Bash or SSH, which is why Step 3 switches Code
   off.
@@ -251,11 +280,20 @@ reg add "HKLM\SOFTWARE\Policies\SafePII\Helper" /v onGuardFailure /t REG_SZ /d "
 
 :: Claude Desktop
 reg add "HKLM\SOFTWARE\Policies\Claude" /v allowedWorkspaceFolders /t REG_SZ /d "[]" /f
-reg add "HKLM\SOFTWARE\Policies\Claude" /v managedMcpServers /t REG_SZ /d "[{\"name\":\"safepii-files\",\"url\":\"http://127.0.0.1:47821/mcp\",\"transport\":\"http\"}]" /f
-reg add "HKLM\SOFTWARE\Policies\Claude" /v isLocalDevMcpEnabled /t REG_DWORD /d 0 /f
 reg add "HKLM\SOFTWARE\Policies\Claude" /v isDesktopExtensionEnabled /t REG_DWORD /d 0 /f
 reg add "HKLM\SOFTWARE\Policies\Claude" /v isDesktopExtensionDirectoryEnabled /t REG_DWORD /d 0 /f
 reg add "HKLM\SOFTWARE\Policies\Claude" /v isClaudeCodeForDesktopEnabled /t REG_DWORD /d 0 /f
 ```
 
 Both applications read policy at startup, so restart them after a change.
+
+`managedMcpServers` is **not** in that list, and `isLocalDevMcpEnabled` is left
+alone, for the reason in Step 4: on a standard deployment the first is ignored and
+the second is what loads our broker. In third-party mode, add the first and set
+the second to `0`.
+
+```
+:: Third-party mode only
+reg add "HKLM\SOFTWARE\Policies\Claude" /v managedMcpServers /t REG_SZ /d "[{\"name\":\"safepii-files\",\"url\":\"http://127.0.0.1:47821/mcp\",\"transport\":\"http\"}]" /f
+reg add "HKLM\SOFTWARE\Policies\Claude" /v isLocalDevMcpEnabled /t REG_DWORD /d 0 /f
+```

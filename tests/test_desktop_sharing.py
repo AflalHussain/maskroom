@@ -8,6 +8,7 @@ joins the ones restore searches, that the count they were shown is the count
 that gets served, and that the serving stops when the real values do.
 """
 import json
+import os
 import socket
 import sys
 import threading
@@ -88,6 +89,9 @@ def a_worker(helper, cfg, folder=None):
             {"ok": True, "status": 200, "data": {"mappings": {"TOK_PERSON_1": "Nimal Perera"}}}))
     a.sharing = helper.Sharing(cfg, a.server)
     _started.append(a.sharing)
+    # __init__ is bypassed, so anything a poll legitimately expects is set here.
+    a.claude_cfg, a.claude_cfg_at, a.claude_said = None, 0.0, None
+    a.forgot = False
     a.emitted = []
     a.emit = lambda **kw: a.emitted.append(kw)
     a.toasts = []
@@ -461,3 +465,93 @@ def test_the_helper_is_also_the_bridge(helper, tmp_path, monkeypatch, capsys):
     assert helper.main() == 0
     reply = json.loads(out.getvalue().strip())
     assert [t["name"] for t in reply["result"]["tools"]][:1] == ["list_files"]
+
+
+# --------------------------------------------------------------- watching Claude's config
+def a_config(tmp_path, servers: dict) -> Path:
+    p = tmp_path / "claude_desktop_config.json"
+    p.write_text(json.dumps({"mcpServers": servers}), "utf-8")
+    return p
+
+
+def watching(helper, tmp_path, servers, monkeypatch, **kw):
+    """A worker already looking at a config file we control."""
+    a = a_worker(helper, config(tmp_path, **kw))
+    path = a_config(tmp_path, servers)
+    monkeypatch.setattr(helper, "claude_config_paths", lambda: [path])
+    a.events_sent = []
+    a.report_event = lambda kind, detail: a.events_sent.append((kind, detail))
+    return a, path
+
+
+def test_an_mcp_server_that_is_not_ours_is_reported(helper, tmp_path, monkeypatch):
+    """The one hole left on a standard deployment: a user can add a filesystem
+    server, read raw files, and SafePII would never see them. It cannot be
+    prevented without a policy Anthropic scopes to third-party deployments, so it
+    is made visible instead."""
+    a, _ = watching(helper, tmp_path, {"safepii-files": {}, "filesystem": {}}, monkeypatch)
+    a.poll_claude_config()
+    said = [e for e in a.emitted if e.get("type") == "alert"]
+    assert said and said[0]["level"] == "warn"
+    assert "filesystem" in said[0]["msg"]
+    assert "do not pass through SafePII" in said[0]["msg"]
+    assert a.events_sent == [("unmanaged-mcp-server", f"{a.claude_cfg}: filesystem")]
+
+
+def test_our_own_server_is_not_reported_as_foreign(helper, tmp_path, monkeypatch):
+    a, _ = watching(helper, tmp_path, {"safepii-files": {}}, monkeypatch)
+    a.poll_claude_config()
+    assert not [e for e in a.emitted if e.get("type") == "alert"]
+    assert a.events_sent == []
+
+
+def test_safepii_missing_from_the_config_is_reported_too(helper, tmp_path, monkeypatch):
+    """Why nothing works, said once, instead of the user wondering."""
+    a, _ = watching(helper, tmp_path, {}, monkeypatch)
+    a.sharing.listen()
+    a.poll_claude_config()
+    assert [k for k, _ in a.events_sent] == ["safepii-not-registered"]
+    assert any("not registered with Claude Desktop" in e.get("msg", "") for e in a.emitted)
+
+
+def test_it_is_said_once_not_on_every_tick(helper, tmp_path, monkeypatch):
+    a, _ = watching(helper, tmp_path, {"filesystem": {}}, monkeypatch)
+    for _ in range(5):
+        a.poll_claude_config()
+    assert len(a.events_sent) == 1
+
+
+def test_a_change_is_noticed_and_said_again(helper, tmp_path, monkeypatch):
+    a, path = watching(helper, tmp_path, {"safepii-files": {}}, monkeypatch)
+    a.poll_claude_config()
+    assert a.events_sent == []
+    path.write_text(json.dumps({"mcpServers": {"safepii-files": {}, "sneaky": {}}}), "utf-8")
+    os.utime(path, (1, 1))
+    a.poll_claude_config()
+    assert [k for k, _ in a.events_sent] == ["unmanaged-mcp-server"]
+
+
+def test_an_unreadable_config_is_not_an_alarm(helper, tmp_path, monkeypatch):
+    """Claude rewrites that file; catching it half-written must not cry wolf."""
+    a, path = watching(helper, tmp_path, {}, monkeypatch)
+    path.write_text("{ not json", "utf-8")
+    a.poll_claude_config()
+    assert a.events_sent == []
+    assert not [e for e in a.emitted if e.get("type") == "alert"]
+
+
+def test_an_administrator_can_switch_the_watch_off(helper, tmp_path, monkeypatch):
+    a, _ = watching(helper, tmp_path, {"filesystem": {}}, monkeypatch, watchClaudeConfig=False)
+    a.poll_claude_config()
+    assert a.events_sent == []
+
+
+def test_the_packaged_install_path_is_among_those_looked_at(helper, monkeypatch):
+    """A real machine kept it under Packages\\...\\LocalCache, nowhere near
+    %APPDATA%, which is how this was found at all."""
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\x\AppData\Local")
+    monkeypatch.setenv("APPDATA", r"C:\Users\x\AppData\Roaming")
+    # Separators are the running platform's; what matters is the shape.
+    looked = [str(p).replace("\\", "/") for p in helper.claude_config_paths()]
+    assert any("Packages" in p and "LocalCache" in p for p in looked), looked
+    assert any(p.endswith("Roaming/Claude/claude_desktop_config.json") for p in looked), looked
