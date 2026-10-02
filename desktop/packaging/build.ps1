@@ -138,7 +138,34 @@ if ($SkipMsi) { Write-Host "built $appDir (no MSI requested)"; exit 0 }
 # ---- 3. the MSI. WiX v4 globs the directory itself, so there is no separate
 #         harvest step and no generated file list to fall out of step.
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-    throw "The WiX toolset is not on PATH. Install it with: dotnet tool install --global wix"
+    throw @"
+The WiX toolset is not on PATH. Install it with:
+
+    dotnet tool install --global wix --version 4.*
+
+Pin the version. An unpinned install now fetches WiX v7, which refuses to build
+until its Open Source Maintenance Fee EULA is accepted -- a commercial licence
+question, not a build step. This project's .wxs is written for v4 anyway.
+"@
+}
+# A v6 or later toolset will not build without that EULA, and says so in a way
+# that reads like our file is wrong. Say what it actually is, before the attempt.
+$wixVersion = (& wix --version 2>&1 | Out-String).Trim()
+if ($wixVersion -match '^(\d+)\.' -and [int]$Matches[1] -ge 6) {
+    throw @"
+WiX $wixVersion is installed, and v6 and later require the Open Source
+Maintenance Fee EULA to be accepted before they will build anything. For a
+commercial product that is a licence to buy, not a prompt to click through.
+
+Either settle that (https://wixtoolset.org/osmf/), or use the version this build
+kit was written for:
+
+    dotnet tool uninstall --global wix
+    dotnet tool install --global wix --version 4.*
+
+Or skip the MSI altogether: -SkipMsi leaves the frozen build in dist\, and
+README.md has the handful of commands that put it on a machine without one.
+"@
 }
 Write-Host "building the MSI"
 $msi = Join-Path $dist "SafePIIHelper-$version.msi"

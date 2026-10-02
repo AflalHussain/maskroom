@@ -10,12 +10,20 @@ On a Windows machine with Python 3.12:
 ```powershell
 py -m pip install pyinstaller uiautomation
 winget install Microsoft.DotNet.SDK.8     # or any .NET SDK; needed only for the MSI
-dotnet tool install --global wix          # the WiX toolset
+dotnet tool install --global wix --version 4.*   # pin it; see below
 
 powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -SkipMsi
 powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1
 powershell -ExecutionPolicy Bypass -File .\desktop\packaging\build.ps1 -Sign
 ```
+
+**Pin WiX to v4.** An unpinned `dotnet tool install --global wix` now fetches v7,
+which refuses to build anything until its **Open Source Maintenance Fee** EULA is
+accepted. For a product being sold that is a commercial licence to settle, not a
+prompt to click through, and it has nothing to do with this build. WiX v4 and v5
+predate it and are MIT-licensed; the `.wxs` here is written for v4's `<Files
+Include>` globbing in any case. If the fee is settled later, nothing here needs to
+change.
 
 **The `-ExecutionPolicy Bypass` prefix is not optional** on a machine with the
 default policy, which refuses to run the script and reports it in a way that reads

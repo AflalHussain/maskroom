@@ -349,6 +349,13 @@ release and nothing else.**
 **Not yet verified on Windows.** Nothing in `desktop/packaging/` has been run, because this
 repository is developed on Linux. The first build on a Windows machine is the test.
 
+**WiX licensing, found 2026-10-02:** an unpinned `dotnet tool install --global wix`
+now installs v7, which will not build until its **Open Source Maintenance Fee**
+EULA is accepted — a commercial licence for a product that is sold. The build is
+pinned to WiX v4, which predates the fee and is MIT-licensed, so nothing is
+blocked; but if the toolchain is ever moved forward, that fee is a line item
+somebody has to own. Not a blocker, and not free to ignore either.
+
 ### PKG-3 — Desktop users are invisible in the audit console — P2, verified
 The extension records intercept outcomes; the helper sends nothing to the server. The only
 trail is the local log. A regulator asking you to prove masking was enabled for a given user
