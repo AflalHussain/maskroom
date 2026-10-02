@@ -101,10 +101,22 @@ if (-not (Test-Path $exe)) { throw "expected $exe" }
 # behind it, so this needs no running helper.
 Write-Host "checking the frozen build answers"
 $probe = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-$answer = $probe | & $exe --stdio --bridge --port 1 2>$null | Out-String
-if ($answer -notmatch '"list_files"') {
+# PowerShell turns anything a native command writes to stderr into a
+# NativeCommandError, and $ErrorActionPreference = "Stop" makes that terminating.
+# The bridge logs one line to stderr as it starts -- correctly, since stdout
+# carries nothing but JSON-RPC -- which was enough to kill the build it had just
+# finished. Both streams are merged and the preference relaxed for this one call:
+# if the check fails, that stderr is exactly what we want to read.
+$prev = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $answer = $probe | & $exe --stdio --bridge --port 1 2>&1 | Out-String
+} finally {
+    $ErrorActionPreference = $prev
+}
+if ($answer -notmatch 'list_files') {
     throw @"
-The frozen build did not answer. It produced:
+The frozen build did not answer. It produced (stdout and stderr together):
 $answer
 A build that starts and cannot do this is missing something from the bundle --
 check the spec's hiddenimports and excludes before shipping it.
