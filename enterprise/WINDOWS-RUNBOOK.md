@@ -182,8 +182,8 @@ HTTP and its stdio form, from `HKLM` and `HKCU`. Anthropic's own reference says 
 — that key "applies only while the app runs in third-party mode (3P)".
 
 So the registration goes in `claude_desktop_config.json` — and **the helper does
-it itself**. On its first start it adds one key to that file and leaves every
-other byte alone: the folder Cowork uses, every preference, any MCP server
+it itself**, when it starts and again if the entry is ever taken out while it is
+running. It adds one key to that file and leaves every other byte alone: the folder Cowork uses, every preference, any MCP server
 already there. It will not write over a file it cannot parse, because a broken
 file is still somebody's settings, and it keeps one backup beside it the first
 time it writes.
@@ -214,7 +214,9 @@ one trailing comma stops Claude Desktop reading any of it. All three have bitten
 us. **Developer → Open App Config File** opens the right one if you must.
 
 Set `registerWithClaude` to `0` in SafePII's policy to stop the helper doing this,
-for a fleet that would rather deploy the file itself.
+for a fleet that would rather deploy the file itself. With it off, a missing entry
+is reported as posture (`safepii-not-registered`) rather than repaired — which is
+also what happens when the file is locked or unreadable.
 
 ### What this costs, and how to get it back
 

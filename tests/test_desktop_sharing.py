@@ -505,9 +505,22 @@ def test_our_own_server_is_not_reported_as_foreign(helper, tmp_path, monkeypatch
     assert a.events_sent == []
 
 
-def test_safepii_missing_from_the_config_is_reported_too(helper, tmp_path, monkeypatch):
-    """Why nothing works, said once, instead of the user wondering."""
-    a, _ = watching(helper, tmp_path, {}, monkeypatch)
+def test_safepii_removed_from_the_config_is_put_back(helper, tmp_path, monkeypatch):
+    """Reported from a real run: taken out while the helper was running, it
+    stayed out. Noticing and not repairing is a strange place to stop -- this is
+    the same file the helper writes its own entry into when it starts."""
+    a, path = watching(helper, tmp_path, {}, monkeypatch)
+    a.sharing.listen()
+    a.poll_claude_config()
+    assert "safepii-files" in json.loads(path.read_text("utf-8"))["mcpServers"]
+    assert a.events_sent == [], "putting it back is not something to report as posture"
+    assert any("added itself" in e.get("msg", "") for e in a.emitted)
+
+
+def test_when_it_cannot_be_put_back_it_is_reported(helper, tmp_path, monkeypatch):
+    """An administrator who switched registration off, or a file somebody has
+    locked. Then it is posture: the thing that cannot be fixed from here."""
+    a, _ = watching(helper, tmp_path, {}, monkeypatch, registerWithClaude=False)
     a.sharing.listen()
     a.poll_claude_config()
     assert [k for k, _ in a.events_sent] == ["safepii-not-registered"]
@@ -570,8 +583,8 @@ def test_it_adds_itself_and_leaves_everything_else_alone(helper, tmp_path, monke
     }), "utf-8")
     monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
     a = a_worker(helper, config(tmp_path))
-    said = a.sharing.register_with_claude()
-    assert "Restart Claude Desktop" in said
+    changed, said = a.sharing.register_with_claude()
+    assert changed and "Restart Claude Desktop" in said
 
     doc = json.loads(cfg.read_text("utf-8"))
     assert doc["coworkUserFilesPath"] == "C:\\Users\\x\\Claude"
@@ -587,9 +600,9 @@ def test_a_second_run_changes_nothing_and_says_nothing(helper, tmp_path, monkeyp
     cfg.write_text("{}", "utf-8")
     monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
     a = a_worker(helper, config(tmp_path))
-    assert a.sharing.register_with_claude()
+    assert a.sharing.register_with_claude()[0] is True
     before = cfg.read_text("utf-8")
-    assert a.sharing.register_with_claude() == ""
+    assert a.sharing.register_with_claude() == (False, "")
     assert cfg.read_text("utf-8") == before
 
 
@@ -602,8 +615,8 @@ def test_a_file_it_cannot_read_is_left_exactly_as_it_was(helper, tmp_path, monke
     cfg.write_text(broken, "utf-8")
     monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
     a = a_worker(helper, config(tmp_path))
-    said = a.sharing.register_with_claude()
-    assert "could not be read" in said
+    changed, said = a.sharing.register_with_claude()
+    assert changed is False and "could not be read" in said
     assert cfg.read_text("utf-8") == broken, "not one byte of it"
 
 
@@ -623,7 +636,7 @@ def test_it_will_not_invent_a_folder_to_write_into(helper, tmp_path, monkeypatch
     monkeypatch.setattr(helper, "claude_config_paths",
                         lambda: [tmp_path / "nowhere" / "claude_desktop_config.json"])
     a = a_worker(helper, config(tmp_path))
-    assert "not found" in a.sharing.register_with_claude()
+    assert "not found" in a.sharing.register_with_claude()[1]
     assert not (tmp_path / "nowhere").exists()
 
 
@@ -632,7 +645,7 @@ def test_an_administrator_can_switch_registration_off(helper, tmp_path, monkeypa
     cfg.write_text("{}", "utf-8")
     monkeypatch.setattr(helper, "claude_config_paths", lambda: [cfg])
     a = a_worker(helper, config(tmp_path, registerWithClaude=False))
-    assert a.sharing.register_with_claude() == ""
+    assert a.sharing.register_with_claude() == (False, "")
     assert cfg.read_text("utf-8") == "{}"
 
 

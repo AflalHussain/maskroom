@@ -1223,7 +1223,7 @@ class Sharing:
             log(f"sharing: could not resolve a token in a search term: {e}")
             return text
 
-    def register_with_claude(self) -> str:
+    def register_with_claude(self) -> tuple[bool, str]:
         """Put our entry in Claude Desktop's own config, leaving the rest alone.
 
         Hand-editing that file is how this goes wrong: it holds a user's whole
@@ -1236,14 +1236,14 @@ class Sharing:
         has lost them is worse than leaving it and saying so.
         """
         if broker_mod is None or not self.cfg.get("registerWithClaude", True):
-            return ""
+            return False, ""
         path = next((p for p in claude_config_paths() if p.is_file()), None)
         if path is None:
             # Only where Claude Desktop already keeps its data: guessing a
             # directory would write a file it never reads.
             path = next((p for p in claude_config_paths() if p.parent.is_dir()), None)
             if path is None:
-                return "Claude Desktop's configuration folder was not found."
+                return False, "Claude Desktop's configuration folder was not found."
         try:
             raw = path.read_text("utf-8") if path.is_file() else "{}"
             doc = json.loads(raw or "{}")
@@ -1251,14 +1251,14 @@ class Sharing:
                 raise ValueError("not an object")
         except (OSError, ValueError) as e:
             log(f"register: {path} could not be read ({e}); leaving it alone")
-            return (f"Claude Desktop's configuration could not be read ({e}). SafePII has not "
-                    f"changed it; fix the file and restart.")
+            return False, (f"Claude Desktop's configuration could not be read ({e}). SafePII "
+                           f"has not changed it; fix the file and restart.")
         servers = doc.get("mcpServers")
         if not isinstance(servers, dict):
             servers = {}
         want = our_mcp_entry(int(self.cfg.get("sharePort") or 0))
         if servers.get(broker_mod.NAME) == want:
-            return ""                      # already right; say nothing, do nothing
+            return False, ""               # already right; say nothing, do nothing
         servers[broker_mod.NAME] = want
         doc["mcpServers"] = servers
         try:
@@ -1269,11 +1269,11 @@ class Sharing:
             os.replace(tmp, path)
         except OSError as e:
             log(f"register: could not write {path}: {e}")
-            return (f"SafePII could not add itself to Claude Desktop's configuration ({e}). "
-                    f"An administrator may have locked that file.")
+            return False, (f"SafePII could not add itself to Claude Desktop's configuration "
+                           f"({e}). An administrator may have locked that file.")
         log(f"register: added {broker_mod.NAME} to {path}")
-        return ("SafePII added itself to Claude Desktop's connectors. "
-                "Restart Claude Desktop for it to take effect.")
+        return True, ("SafePII added itself to Claude Desktop's connectors. "
+                      "Restart Claude Desktop for it to take effect.")
 
     def note_mint(self) -> None:
         """A file Claude read put new values in the vault."""
@@ -1374,9 +1374,10 @@ class Automation(threading.Thread):
                 if err:
                     log(f"sharing: {err}")
                 else:
-                    said = self.sharing.register_with_claude()
+                    changed, said = self.sharing.register_with_claude()
                     if said:
-                        self.emit(type="alert", msg=said, level="info")
+                        self.emit(type="alert", msg=said,
+                                  level="info" if changed else "warn")
                 self.resume_share()
             except Exception as e:  # noqa: BLE001
                 log(f"sharing: could not start the broker: {e}")
@@ -1625,11 +1626,20 @@ class Automation(threading.Thread):
             self.report_event("unmanaged-mcp-server",
                               f"{self.claude_cfg}: {', '.join(foreign)}")
         if self.sharing.listening and ours not in names:
-            said = ("SafePII is not registered with Claude Desktop, so Claude cannot read "
-                    "your files through it. Your administrator sets this up.")
-            log("posture: " + said)
-            self.emit(type="alert", msg=said, level="warn")
-            self.report_event("safepii-not-registered", str(self.claude_cfg))
+            # Noticed and not repaired is a strange place to stop: this is the
+            # same file the helper writes its own entry into at startup, so a
+            # removal that happens while it is running is put back the same way.
+            # Somebody who means it switches registerWithClaude off.
+            changed, said = self.sharing.register_with_claude()
+            if changed:
+                log("posture: SafePII had gone from Claude Desktop's config; put it back")
+                self.emit(type="alert", msg=said, level="info")
+            else:
+                said = said or ("SafePII is not registered with Claude Desktop, so Claude "
+                                "cannot read your files through it.")
+                log("posture: " + said)
+                self.emit(type="alert", msg=said, level="warn")
+                self.report_event("safepii-not-registered", str(self.claude_cfg))
 
     def report_event(self, kind: str, detail: str) -> None:
         """Tell the server something an administrator should see. Best-effort:
