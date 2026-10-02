@@ -66,6 +66,14 @@ want at scale.
 customer's own gates. Keep it to machines you can reimage, and do not take an
 unsigned MSI past the pilot group.
 
+The MSI itself is also optional for a pilot: it does four things — put the program
+where the user cannot write to it, start it per user from `HKLM\…\Run`, write the
+server address as policy, and add a shortcut — and all four are a handful of
+commands. [`../desktop/packaging/README.md`](../desktop/packaging/README.md) spells
+them out for a machine without the .NET SDK. What you lose is an upgrade path, an
+uninstall entry and anything an endpoint tool can inventory, which is why it is a
+pilot technique and not a deployment.
+
 ### What the administrator needs on the day
 
 - **Domain or Intune** rights to push an MSI, ADMX templates and registry policy to

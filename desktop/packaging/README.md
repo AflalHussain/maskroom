@@ -36,6 +36,46 @@ The version comes from `__version__` in `desktop/helper.py` and nowhere else,
 so the executable's Properties, the MSI, the log line at startup and the update
 check can never disagree about which build this is.
 
+## Deploying without the MSI, for a pilot
+
+The MSI is packaging, not product. If `dotnet` is not on the machine — or is not
+wanted on it — a pilot can be deployed by doing the four things the installer
+does, which is all it does:
+
+```powershell
+# Elevated PowerShell. $src is what the build produced.
+$src = "$HOME\safepii-build\desktop\packaging\dist\SafePIIHelper"
+$dst = "C:\Program Files\SafePII"
+
+# 1. The program, somewhere the user cannot write to.
+Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
+Copy-Item $src $dst -Recurse
+
+# 2. Start it for every user who signs in to this machine.
+Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" `
+    -Name SafePIIHelper -Value "`"$dst\SafePIIHelper.exe`""
+
+# 3. The server address, as policy, so the user cannot point it elsewhere.
+New-Item -Path "HKLM:\SOFTWARE\Policies\SafePII\Helper" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\SafePII\Helper" `
+    -Name serverUrl -Value "https://safepii.example.com"
+
+# 4. Start it now rather than waiting for the next sign-in.
+Start-Process "$dst\SafePIIHelper.exe"
+```
+
+To remove it: delete the `SafePIIHelper` value under `Run`, stop the process, and
+delete the folder.
+
+**What you give up.** No upgrade story — a new build means repeating this, with
+the old one stopped first, rather than `msiexec /i` replacing it in place. No
+uninstall entry in Add/Remove Programs. No Start-menu shortcut. Nothing that an
+endpoint-management tool can inventory or report compliance on. All of which
+matter for a fleet and none of which matter for three machines you are watching.
+
+Do not let this become the deployment. The MSI is what an endpoint team can
+actually push, and it is also what gets signed.
+
 ## What the MSI does
 
 - Installs **per machine**, into Program Files, so a standard user cannot
