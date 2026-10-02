@@ -100,24 +100,31 @@ if (-not (Test-Path $exe)) { throw "expected $exe" }
 # --port 1 is closed on purpose: the bridge answers for itself when nothing is
 # behind it, so this needs no running helper.
 Write-Host "checking the frozen build answers"
-$probe = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-# PowerShell turns anything a native command writes to stderr into a
-# NativeCommandError, and $ErrorActionPreference = "Stop" makes that terminating.
-# The bridge logs one line to stderr as it starts -- correctly, since stdout
-# carries nothing but JSON-RPC -- which was enough to kill the build it had just
-# finished. Both streams are merged and the preference relaxed for this one call:
-# if the check fails, that stderr is exactly what we want to read.
-$prev = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-try {
-    $answer = $probe | & $exe --stdio --bridge --port 1 2>&1 | Out-String
-} finally {
-    $ErrorActionPreference = $prev
-}
+# Run through Start-Process with real file redirection rather than a pipeline.
+# A native command that writes anything to stderr makes PowerShell raise a
+# NativeCommandError, which $ErrorActionPreference = "Stop" turns terminating --
+# and `2>$null` does not prevent it, because the record is raised by PowerShell
+# rather than written to the stream being redirected. The bridge logs one line
+# as it starts, correctly, since stdout carries nothing but JSON-RPC. That line
+# was killing the build it had just finished. Redirecting to files sidesteps the
+# whole mechanism and keeps the two streams apart for the error message.
+$probeIn  = Join-Path $env:TEMP "safepii-probe-in.json"
+$probeOut = Join-Path $env:TEMP "safepii-probe-out.txt"
+$probeErr = Join-Path $env:TEMP "safepii-probe-err.txt"
+Set-Content -Path $probeIn -Value '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -Encoding ascii
+Start-Process -FilePath $exe -ArgumentList "--stdio","--bridge","--port","1" `
+    -RedirectStandardInput $probeIn -RedirectStandardOutput $probeOut `
+    -RedirectStandardError $probeErr -NoNewWindow -Wait
+$answer = if (Test-Path $probeOut) { Get-Content $probeOut -Raw } else { "" }
+$said   = if (Test-Path $probeErr) { Get-Content $probeErr -Raw } else { "" }
+Remove-Item $probeIn, $probeOut, $probeErr -ErrorAction SilentlyContinue
 if ($answer -notmatch 'list_files') {
     throw @"
-The frozen build did not answer. It produced (stdout and stderr together):
-$answer
+The frozen build did not answer.
+
+  it wrote to stdout: $answer
+  it wrote to stderr: $said
+
 A build that starts and cannot do this is missing something from the bundle --
 check the spec's hiddenimports and excludes before shipping it.
 "@
