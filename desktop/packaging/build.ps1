@@ -82,6 +82,20 @@ Write-Host "writing version_info.txt"
 if ($LASTEXITCODE -ne 0) { throw "could not write the version resource" }
 
 # ---- 2. freeze
+# A helper or bridge left running from the last build holds its own DLLs open,
+# and PyInstaller cannot clean the output directory: it fails with "Access is
+# denied" on something like _internal\libcrypto-3.dll, which looks like a
+# permissions problem and is not. Only processes running from this build's own
+# output are stopped -- an installed helper in Program Files is somebody's
+# working machine and is none of this script's business.
+Get-Process -Name SafePIIHelper -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($dist, [StringComparison]::OrdinalIgnoreCase) } |
+    ForEach-Object {
+        Write-Host "stopping SafePIIHelper (pid $($_.Id)) left over from the last build"
+        Stop-Process -Id $_.Id -Force
+    }
+Start-Sleep -Milliseconds 300
+
 Write-Host "freezing with PyInstaller"
 & py -m PyInstaller (Join-Path $here "safepii-helper.spec") `
     --noconfirm --distpath $dist --workpath $work

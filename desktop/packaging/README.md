@@ -30,6 +30,17 @@ failures read like this project's `.wxs` is at fault.
 default policy, which refuses to run the script and reports it in a way that reads
 like the script is broken.
 
+**A build after a test stops the executable first.** A helper or bridge still
+running from the previous build holds its own DLLs open, and PyInstaller then
+fails to clean its output with "Access is denied" on something like
+`_internal\libcrypto-3.dll` — which reads like a permissions problem and is not.
+The script stops anything running from its own `dist\` folder, and leaves an
+installed helper in Program Files alone.
+
+Note that the bridge, started by hand without redirected input, waits on stdin
+forever rather than exiting. That is correct for a server Claude Desktop starts
+and talks to; it does mean a manual check leaves a process behind.
+
 **Start with `-SkipMsi`.** It freezes and stops, which is the quickest way to find
 out whether the bundle is right before dealing with WiX at all — and the build
 checks itself at that point: it starts the frozen executable as the stdio bridge
