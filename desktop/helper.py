@@ -1370,12 +1370,34 @@ class Automation(threading.Thread):
         except Exception:  # noqa: BLE001
             return False
 
+    @staticmethod
+    def on_screen(ctrl) -> bool:
+        """Is this composer actually being shown?
+
+        Switching to another tab does not move UI Automation's focus: the
+        composer of the tab you left is still the focused element, still a
+        ProseMirror inside Claude.exe, so by every other test it looks like the
+        one to put the bar above. It reports itself as offscreen, though, and a
+        hidden control has no rectangle worth the name -- which is why the bar
+        used to sit there over a tab that had no composer at all.
+        """
+        try:
+            if ctrl.IsOffscreen:
+                return False
+        except Exception:  # noqa: BLE001
+            pass                      # not every provider answers; the rectangle still will
+        try:
+            r = ctrl.BoundingRectangle
+            return r.right > r.left and r.bottom > r.top
+        except Exception:  # noqa: BLE001
+            return True
+
     def poll_focus(self) -> None:
         try:
             ctrl = auto.GetFocusedControl()
         except Exception:  # noqa: BLE001
             ctrl = None
-        if ctrl is not None and self.looks_like_composer(ctrl):
+        if ctrl is not None and self.looks_like_composer(ctrl) and self.on_screen(ctrl):
             try:
                 r = composer_box(ctrl)
             except Exception:  # noqa: BLE001
@@ -2924,6 +2946,7 @@ class Hotkeys(threading.Thread):
         # closed panel does nothing -- whereas clearing the rectangle from a
         # hook that may be overruled would leave it stale and stop the next
         # click working.
+        log(f"collapse: a click at {x},{y} landed outside the bar")
         self.events.put({"type": "collapse"})
 
     @staticmethod
@@ -3048,7 +3071,10 @@ class Hotkeys(threading.Thread):
         _user32.CallNextHookEx.argtypes = [wt.HHOOK, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
         self._mproc = _HOOKPROC(self.mouse_proc)
         if not _user32.SetWindowsHookExW(self.WH_MOUSE_LL, self._mproc, _kernel32.GetModuleHandleW(None), 0):
-            log("hook: mouse hook FAILED; scroll tracking falls back to polling")
+            log(f"hook: mouse hook FAILED (error {ctypes.get_last_error()}); no scroll "
+                f"tracking, no click-away collapse, no double-click in the file dialog")
+        else:
+            log("hook: mouse hook installed")
         self._proc = _HOOKPROC(self.hook_proc)
         hook = _user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._proc, _kernel32.GetModuleHandleW(None), 0)
         if not hook:

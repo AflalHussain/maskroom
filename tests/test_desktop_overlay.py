@@ -1633,3 +1633,78 @@ def test_a_blocking_alert_is_not_dismissed_by_clicking_away(bar):
     b.events.put({"type": "collapse"})
     b.pump()
     assert b.panel is not None, "and a click elsewhere does not close it"
+
+
+# ------------------------------------------------ a composer on a tab you left
+class _Composer:
+    """A focused ProseMirror inside Claude.exe, which is all the other tests."""
+
+    def __init__(self, offscreen=False, rect=(100, 690, 900, 730)):
+        self.ClassName = "ProseMirror"
+        self.ProcessId = 4242
+        self.IsOffscreen = offscreen
+        self._rect = rect
+
+    @property
+    def BoundingRectangle(self):
+        return Rect(*self._rect)
+
+
+def _focus_worker(automation, helper, monkeypatch, ctrl):
+    monkeypatch.setattr(helper, "process_exe", lambda pid, fresh=False: helper.CLAUDE_EXE)
+    monkeypatch.setattr(helper, "composer_box", lambda c: c.BoundingRectangle)
+    sys.modules["uiautomation"].GetFocusedControl = lambda: ctrl
+    a = automation
+    a.composer, a.last_seen = None, 0.0
+    a.said = []
+    a.emit = lambda **kw: a.said.append(kw)
+    return a
+
+
+def test_the_bar_follows_a_composer_that_is_on_screen(automation, monkeypatch):
+    helper = sys.modules["helper"]
+    a = _focus_worker(automation, helper, monkeypatch, _Composer())
+    a.poll_focus()
+    assert [e for e in a.said if e["type"] == "composer"][-1]["visible"] is True
+
+
+def test_the_bar_goes_when_the_tab_holding_the_composer_does(automation, monkeypatch):
+    """Switching tabs does not move UI Automation's focus: the composer you left
+    is still focused, still a ProseMirror inside Claude.exe, and by every other
+    test still the thing to sit above. It says it is offscreen."""
+    helper = sys.modules["helper"]
+    a = _focus_worker(automation, helper, monkeypatch, _Composer(offscreen=True))
+    a.poll_focus()
+    assert [e for e in a.said if e["type"] == "composer"][-1]["visible"] is False
+
+
+def test_a_composer_with_no_rectangle_left_is_gone_too(automation, monkeypatch):
+    """Some providers never set IsOffscreen; a hidden control still collapses to
+    nothing."""
+    helper = sys.modules["helper"]
+    a = _focus_worker(automation, helper, monkeypatch, _Composer(rect=(0, 0, 0, 0)))
+    a.poll_focus()
+    assert [e for e in a.said if e["type"] == "composer"][-1]["visible"] is False
+
+
+def test_a_provider_that_answers_nothing_is_given_the_benefit_of_the_doubt(automation):
+    """Neither question can be answered for some providers. Better a bar that
+    lingers than one that never appears, so silence counts as on screen."""
+    class Mute:
+        ClassName, ProcessId = "ProseMirror", 4242
+
+        @property
+        def IsOffscreen(self):
+            raise OSError("not supported")
+
+        @property
+        def BoundingRectangle(self):
+            raise OSError("not supported")
+
+    assert automation.on_screen(Mute()) is True
+
+
+def test_offscreen_wins_over_a_rectangle_that_still_looks_fine(automation):
+    """A tab you left can keep its last rectangle; what it cannot do is claim to
+    be on screen."""
+    assert automation.on_screen(_Composer(offscreen=True, rect=(100, 690, 900, 730))) is False
