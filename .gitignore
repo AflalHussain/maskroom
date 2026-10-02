@@ -45,3 +45,8 @@ desktop/*.png
 desktop/packaging/__pycache__/
 desktop/packaging/build/
 desktop/packaging/dist/
+
+# Assembled by enterprise/make-handover.sh from files that live elsewhere in
+# the tree. A second copy of the ADMX is a copy that drifts.
+/handover/
+safepii-handover.zip

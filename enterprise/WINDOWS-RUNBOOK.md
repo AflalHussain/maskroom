@@ -361,16 +361,11 @@ should be days apart, not weeks.
 
 ## What to tell users, once
 
-The deployment is not silent and should not pretend to be. One paragraph, from
-their own IT, before stage 3 lands:
-
-> A tool called SafePII now runs alongside Claude. It replaces personal data —
-> names, NIC numbers, phone numbers, account numbers — with placeholders before
-> anything leaves your machine, and shows you the real values on your screen. You
-> will see a small bar above the message box. Claude can no longer open folders on
-> your computer directly; ask it for files and it will ask you to choose a folder
-> through SafePII, which masks them as it hands them over. If something looks
-> wrong, the bar has a panel with the last few things it did.
+The deployment is not silent and should not pretend to be.
+[`USER-NOTICE.md`](USER-NOTICE.md) is a paragraph to send, written to go out as
+it is, with notes for whoever sends it. **Send it before the policy lands**: the
+first thing a user notices is that Claude can no longer open their folders, and
+with no explanation that reads as a fault.
 
 ## Step 6 — Updating
 
