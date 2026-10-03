@@ -55,14 +55,15 @@ so a policy the app cannot parse leaves no folder attachable rather than every f
   folder the user already attaches.** Technically the most appealing answer, and the only one
   that would also mask what `grep` and `Bash` see inside the sandbox, which no MCP server can
   reach. Deferred, assessed in full at §5.6.2. The blocking objection is not the platform work
-  but the size contract: a filesystem must answer `getattr` before anyone opens anything, and
-  masked content is a different length, so either reads are wrong or every file is masked to
-  answer a `stat` — which `ls -l`, `find` and `grep -r` all perform. On top of that it is a
-  kernel-mode driver per platform (no FUSE on Windows), virtiofsd's cache mode and DAX
-  behaviour cannot be read from the package, and it would still need
-  `allowedWorkspaceFolders`, because the raw folder would still exist. It replaces the
-  delivery, not the control. Revisit for a customer who needs code execution over masked
-  data.
+  but a kernel-mode filesystem driver per platform — no FUSE on Windows, so WinFsp or ProjFS —
+  which is an endpoint review rather than a coding problem. The size contract makes it eager
+  rather than impossible: a filesystem must answer `getattr` before anything is opened and
+  masked content is a different length, so a listing masks the tree, which caching on mtime
+  reduces to once per file per change. The decisive unknown is whether the app's file sharing
+  tolerates a synthetic filesystem at all, and §5.6.2 names the afternoon's experiment that
+  settles it. It would still need `allowedWorkspaceFolders`, because the raw folder would
+  still exist: it replaces the delivery, not the control. Revisit for a customer who needs
+  code execution over masked data.
 - **A pre-masked mirror as the only design.** Kept as the working profile, not as the answer.
   It duplicates data, can fall stale between passes, and needs write-back designed; the strict
   profile has none of those problems.

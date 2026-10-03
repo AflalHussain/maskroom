@@ -438,9 +438,12 @@ which makes it read more of them (ADR 0009).
 `mode: ro` is enforced at the OS level on Cowork's mount, but in Code sessions it
 binds Claude's file tools only, not Bash or SSH. The runbook switches Code off.
 A customer who needs Claude to execute against their data needs the synthetic
-filesystem assessed in §5.6.2, whose blocking problem is `getattr`: a filesystem
-must report a size before anything is opened, and masked content is a different
-length.
+filesystem assessed in [`DESKTOP_APP_RESEARCH.md`](DESKTOP_APP_RESEARCH.md)
+§5.6.2, which is deferred rather than rejected and is written up as a handover:
+what is genuinely hard (a kernel-mode driver per platform), what is merely costly
+(masking becomes eager, which caching on mtime bounds), and the afternoon's
+experiment on a Linux host that settles the one unknown worth knowing before
+anybody buys a driver.
 
 ### FOLDER-5 — Write-back is one-way — P3, reported
 `write_file` restores tokens and writes beside the served folder, never into it.

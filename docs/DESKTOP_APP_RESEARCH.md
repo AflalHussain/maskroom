@@ -696,44 +696,69 @@ moment it happens.
   pointing at the real files resolves to the real paths. A masked mirror therefore has to be
   real bytes.
 
-**A synthetic filesystem (FUSE, WinFsp, ProjFS) assessed, 2026-10-01.** The proposal is to
-keep the folder the user attaches and mask underneath it: hold the real files somewhere
-Claude cannot reach, present a virtual folder whose reads are served from memory after
-masking, and let virtiofsd carry the masked bytes into the VM. Nothing pre-masked, nothing
-written to disk, and — the real prize — `grep` and `Bash` inside the sandbox would see masked
-content, which no MCP server can cover. It is the only design that protects a customer who
-needs Claude to *execute* against their data. Four things stand in the way.
+**A synthetic filesystem (FUSE, WinFsp, ProjFS) — assessed 2026-10-01, revised
+2026-10-03.** Deferred, not rejected, and the difference matters: this is the only design that
+also masks what `grep` and `Bash` see *inside* the sandbox, which no MCP server can reach. A
+customer who needs Claude to execute against their data has no other option. What follows is
+written so that somebody picking it up does not have to re-derive it.
 
-1. **The size contract forces eager masking, and this is the one that breaks the design as
-   proposed.** A filesystem answers `getattr` — the file's size — on *stat*, long before
-   anyone calls `open`. Masked content is a different length, because `TOK_PERSON_4A66D755`
-   is longer than `Nimal Perera`. Report the real size and reads are truncated or padded;
-   report the masked size and the file must be masked to answer a `stat`. `ls -l`, `find` and
-   `grep -r` stat everything, so the whole tree is masked to list it — exactly the cost that
-   intercepting at `open` was meant to avoid. Intercepting at `open`/`release` does not escape
-   it.
-2. **It is a filesystem driver per platform.** The virtiofsd path in the package is tagged
-   `[linux-vm]` and is for a Linux *host*. Windows has no FUSE: it is WinFsp, a third-party
-   kernel-mode driver, or ProjFS, Microsoft's own but a projection model with different
-   semantics. macOS needs macFUSE, a kernel extension that on Apple Silicon requires reduced
-   security settings, or the newer FSKit. "We install a filesystem driver" is a far harder
-   endpoint review than "we run a user-space helper", and that review, not the code, is the
-   expensive part of this.
-3. **The caching question cannot be answered by reading the package.** virtiofsd's arguments
-   are built inside the native `cowork-linux-helper` binary, not in the JavaScript, so the
-   cache mode in use is not visible. The risks are real and named: virtiofsd's `--cache`
-   modes, and **DAX**, which maps host file memory directly into the guest and is precisely
-   the kind of thing a FUSE-backed file does not support. Only a test on a real machine
-   settles it.
-4. **It buys convenience, not protection.** The raw folder still exists, so it can still be
-   attached — and Claude has a built-in tool for asking the user to grant a folder
-   mid-session (§5.6.3(c)). `allowedWorkspaceFolders` is still doing the enforcing. A
-   synthetic filesystem replaces the *delivery*, not the *control*.
+**The proposal.** Keep the folder the user attaches and mask underneath it: hold the real
+files where Claude cannot reach them, present a virtual folder whose reads are served from
+memory after masking, and let the app's own file sharing carry the masked bytes into the VM.
+Nothing pre-masked, nothing masked written to disk.
 
-Verdict: keep it for the customer who needs code execution over masked data, as
-platform-specific work with the `getattr` problem solved first. Not before the two mechanisms
-below are exhausted, and not as the answer to convenience — §5.6.3(c) is that, for a fraction
-of the cost.
+**What is genuinely hard**
+
+1. **A filesystem driver per platform, and that is the expensive part.** The virtiofsd path
+   in the package is tagged `[linux-vm]` and is for a Linux *host*. Windows — the product's
+   target — has no FUSE: it is **WinFsp**, a third-party kernel-mode driver, or **ProjFS**,
+   Microsoft's own, built in, but a projection model with different semantics worth studying
+   before choosing. macOS needs **macFUSE**, a kernel extension requiring reduced security
+   settings on Apple Silicon, or the newer **FSKit**. "We install a filesystem driver" is a
+   far harder endpoint review than "we run a user-space helper", and that review, not the
+   code, is what this costs.
+2. **Whether the app's file sharing tolerates a synthetic filesystem at all.** virtiofsd's
+   arguments are built inside the native `cowork-linux-helper` binary, not in the JavaScript,
+   so the cache mode in use cannot be read from the package. Two named risks: virtiofsd's
+   `--cache` modes, and **DAX**, which maps host file memory directly into the guest and is
+   exactly the kind of thing a FUSE-backed file does not support. **This is the decisive
+   unknown, and it is cheap to settle** — see the experiment below.
+3. **It replaces the delivery, not the control.** The raw folder still exists, so it can still
+   be attached, and Claude has a built-in tool for asking the user to grant a folder
+   mid-session (§5.6.3(c)). `allowedWorkspaceFolders` is still what enforces. A synthetic
+   filesystem does not remove the policy half; it changes what sits behind it.
+
+**What is merely costly, and was overstated here before**
+
+A filesystem answers `getattr` — the file's size — on *stat*, long before anyone calls `open`.
+Masked content is a different length, because `TOK_PERSON_4A66D755` is longer than
+`Nimal Perera`, so a size cannot be reported without masking the file first. `ls -l`, `find`
+and `grep -r` stat everything, so a listing masks the tree.
+
+That makes the design **eager rather than lazy**. It does not break it. Mask on `stat` and
+cache on `(path, mtime, size)` — which `broker.py` already does for its own reads — and each
+file is masked once per change. That is the same work the rejected pre-masked mirror did, with
+two advantages the mirror never had: nothing masked is written to disk, and nothing can go
+stale, because a changed file re-masks on its next `stat`. The cost is a first listing that is
+slow in proportion to the folder, and that is a tuning problem, not a wall.
+
+Padding the masked output to the original byte length, so a size can be reported without
+masking, does not work here: tokens are **longer** than the values they replace, so there is
+nothing to pad into. Do not spend time on it.
+
+**The experiment that would settle it**, before any driver is written or bought: on a Linux
+host, mount a trivial FUSE filesystem — one that serves a few static files and logs every
+`getattr`, `open` and `read` — attach it to Cowork as a workspace folder, and read a file from
+it. That answers risk 2 in an afternoon and costs nothing. If the mount is refused, or reads
+come back empty or stale, the design is dead on that platform and no amount of masking work
+would have saved it. If it works, the `getattr` log also shows exactly how eager the masking
+has to be in practice, which is the tuning question above.
+
+**Verdict.** Worth doing for a customer who needs code execution over masked data, in that
+order: the Linux experiment first, then the platform decision (WinFsp against ProjFS on
+Windows), then the masking layer, which is the part already written. Not the answer to
+convenience — §5.6.3(c) is that, for a fraction of the cost — and not a reason to delay the
+broker, which protects everything except the sandbox's own shell.
 
 #### 5.6.3 Where we *can* stand
 
